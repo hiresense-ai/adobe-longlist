@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Adobe Dashboard</title>
+    <style>
+      :root {
+        --red: #fa0f00;
+        --ink: #1a1a1a;
+        --muted: #6b7280;
+        --border: #e5e7eb;
+        --bg: #ffffff;
+        --soft: #f9fafb;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+          Arial, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 24px 20px 48px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .mark {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: var(--red);
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      p.sub {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+        min-width: 720px;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 16px;
+        background: var(--soft);
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border-bottom: 1px solid var(--border);
+      }
+      tbody td {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: middle;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr:hover {
+        background: #fafafa;
+      }
+      select,
+      input[type='text'] {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 13px;
+        font-family: inherit;
+        background: #fff;
+        color: var(--ink);
+      }
+      select:focus,
+      input:focus {
+        outline: 2px solid var(--red);
+        outline-offset: 1px;
+      }
+      .name {
+        font-weight: 600;
+      }
+      .email {
+        color: var(--muted);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="mark">A</div>
+        <div>
+          <h1>Adobe Dashboard</h1>
+          <p class="sub">
+            Core Adobe hiring longlist — update candidate status below
+          </p>
+        </div>
+      </header>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 24%">Candidate</th>
+              <th style="width: 20%">Role</th>
+              <th style="width: 20%">Status</th>
+              <th>Remarks</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              data-candidate-row
+              data-candidate-name="Ananya Rao"
+              data-candidate-email="ananya.rao@example.com"
+            >
+              <td>
+                <div class="name">Ananya Rao</div>
+                <div class="email">ananya.rao@example.com</div>
+              </td>
+              <td>Senior Product Designer</td>
+              <td><select data-longlist-status></select></td>
+              <td>
+                <input
+                  type="text"
+                  data-longlist-remarks
+                  placeholder="Add a remark..."
+                />
+              </td>
+            </tr>
+            <tr
+              data-candidate-row
+              data-candidate-name="Rohan Mehta"
+              data-candidate-email="rohan.mehta@example.com"
+            >
+              <td>
+                <div class="name">Rohan Mehta</div>
+                <div class="email">rohan.mehta@example.com</div>
+              </td>
+              <td>Staff Software Engineer</td>
+              <td><select data-longlist-status></select></td>
+              <td>
+                <input
+                  type="text"
+                  data-longlist-remarks
+                  placeholder="Add a remark..."
+                />
+              </td>
+            </tr>
+            <tr
+              data-candidate-row
+              data-candidate-name="Priya Nair"
+              data-candidate-email="priya.nair@example.com"
+            >
+              <td>
+                <div class="name">Priya Nair</div>
+                <div class="email">priya.nair@example.com</div>
+              </td>
+              <td>Engineering Manager</td>
+              <td><select data-longlist-status></select></td>
+              <td>
+                <input
+                  type="text"
+                  data-longlist-remarks
+                  placeholder="Add a remark..."
+                />
+              </td>
+            </tr>
+            <tr
+              data-candidate-row
+              data-candidate-name="Kabir Singh"
+              data-candidate-email="kabir.singh@example.com"
+            >
+              <td>
+                <div class="name">Kabir Singh</div>
+                <div class="email">kabir.singh@example.com</div>
+              </td>
+              <td>UX Researcher</td>
+              <td><select data-longlist-status></select></td>
+              <td>
+                <input
+                  type="text"
+                  data-longlist-remarks
+                  placeholder="Add a remark..."
+                />
+              </td>
+            </tr>
+            <tr
+              data-candidate-row
+              data-candidate-name="Sara Thomas"
+              data-candidate-email="sara.thomas@example.com"
+            >
+              <td>
+                <div class="name">Sara Thomas</div>
+                <div class="email">sara.thomas@example.com</div>
+              </td>
+              <td>Technical Program Manager</td>
+              <td><select data-longlist-status></select></td>
+              <td>
+                <input
+                  type="text"
+                  data-longlist-remarks
+                  placeholder="Add a remark..."
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </body>
+</html>
