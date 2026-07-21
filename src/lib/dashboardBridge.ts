@@ -206,13 +206,34 @@ export function buildBridgeScript(dashboardId: string): string {
 `
 }
 
-/** Injects the bootstrap bridge script into raw dashboard HTML before </body>. */
-export function injectBridgeScript(html: string, dashboardId: string): string {
-  const script = `<script>${buildBridgeScript(dashboardId)}</script>`
+export interface InjectedDashboardHtml {
+  html: string
+  /** The bootstrap script's own blob: URL — caller must revoke it alongside the HTML's blob URL. */
+  scriptUrl: string
+}
 
-  if (/<\/body>/i.test(html)) {
-    return html.replace(/<\/body>/i, `${script}</body>`)
-  }
+/**
+ * Injects the bootstrap bridge script into raw dashboard HTML before
+ * </body>, referenced via an external blob: <script src>, not inline.
+ *
+ * This matters because the HTML gets rendered from its own blob: URL, and
+ * blob: documents inherit the CSP of whichever context created them — i.e.
+ * this app's own CSP (script-src 'self' blob:). An inline <script> body
+ * would be silently blocked by that policy; a same-blob-scheme src is not.
+ */
+export function injectBridgeScript(
+  html: string,
+  dashboardId: string,
+): InjectedDashboardHtml {
+  const scriptBlob = new Blob([buildBridgeScript(dashboardId)], {
+    type: 'text/javascript',
+  })
+  const scriptUrl = URL.createObjectURL(scriptBlob)
+  const scriptTag = `<script src="${scriptUrl}"></script>`
 
-  return `${html}${script}`
+  const html_ = /<\/body>/i.test(html)
+    ? html.replace(/<\/body>/i, `${scriptTag}</body>`)
+    : `${html}${scriptTag}`
+
+  return { html: html_, scriptUrl }
 }

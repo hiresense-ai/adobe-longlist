@@ -29,6 +29,7 @@ export function useDashboardHtml(
 
     let cancelled = false
     let objectUrl: string | null = null
+    let scriptObjectUrl: string | null = null
 
     downloadDashboardHtml(storagePath)
       .then((html) => {
@@ -39,7 +40,11 @@ export function useDashboardHtml(
           return
         }
 
-        const withBridge = injectBridgeScript(html, dashboardId)
+        const { html: withBridge, scriptUrl } = injectBridgeScript(
+          html,
+          dashboardId,
+        )
+        scriptObjectUrl = scriptUrl
         const blob = new Blob([withBridge], { type: 'text/html' })
         objectUrl = URL.createObjectURL(blob)
         setResult({ key, blobUrl: objectUrl, error: null, isEmpty: false })
@@ -58,6 +63,7 @@ export function useDashboardHtml(
     return () => {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
+      if (scriptObjectUrl) URL.revokeObjectURL(scriptObjectUrl)
     }
   }, [storagePath, dashboardId, key])
 
