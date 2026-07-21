@@ -1,11 +1,13 @@
 import { useEffect, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase/client'
 import {
   listStatusesForDashboard,
   upsertCandidateStatus,
 } from '@/services/dashboardStatus.service'
+import { StatusBadge } from '@/components/status/StatusBadge'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import type { DashboardBridgeMessage, DashboardStatus } from '@/types'
@@ -20,12 +22,16 @@ interface UseDashboardStatusBridgeOptions {
  * - relays each candidate's persisted status into the iframe once it's ready
  * - saves status changes as they happen and acks success/failure back down
  * - keeps the iframe in sync when another user updates a status, via Realtime
+ * - tells the iframe which theme is active so it can color its native
+ *   status selects from the same statusConfig this app uses (colors are
+ *   computed here, in React — the iframe only ever applies what it's told)
  */
 export function useDashboardStatusBridge({
   dashboardId,
   iframeRef,
 }: UseDashboardStatusBridgeOptions) {
   const queryClient = useQueryClient()
+  const { resolvedTheme } = useTheme()
 
   useEffect(() => {
     if (!dashboardId) return
@@ -74,6 +80,10 @@ export function useDashboardStatusBridge({
         })
         queryClient.setQueryData(queryKey, statuses)
         postCurrentStatuses()
+        postToIframe({
+          type: 'longlist:theme-change',
+          theme: resolvedTheme === 'dark' ? 'dark' : 'light',
+        })
         return
       }
 
@@ -92,7 +102,13 @@ export function useDashboardStatusBridge({
             success: true,
             candidateName: payload.candidateName,
           })
-          toast.success(`${payload.candidateName}: status updated successfully`)
+          toast.success(
+            <span className="flex items-center gap-1.5">
+              {payload.candidateName}
+              <span className="text-muted-foreground">→</span>
+              <StatusBadge status={payload.status} />
+            </span>,
+          )
         } catch (error) {
           const message = getErrorMessage(error, 'Failed to save status')
           postToIframe({
@@ -142,5 +158,19 @@ export function useDashboardStatusBridge({
       window.removeEventListener('message', handleMessage)
       supabase.removeChannel(channel)
     }
-  }, [dashboardId, iframeRef, queryClient])
+  }, [dashboardId, iframeRef, queryClient, resolvedTheme])
+
+  // Theme can change independently of any bridge message (user toggles the
+  // app's theme while a dashboard is already open) — push it down live so
+  // colors adapt instantly without an iframe reload.
+  useEffect(() => {
+    if (!dashboardId) return
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        type: 'longlist:theme-change',
+        theme: resolvedTheme === 'dark' ? 'dark' : 'light',
+      },
+      '*',
+    )
+  }, [resolvedTheme, dashboardId, iframeRef])
 }

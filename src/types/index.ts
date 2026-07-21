@@ -64,3 +64,4 @@ export type DashboardHostMessage =
       candidateName: string
       error: string
     }
+  | { type: 'longlist:theme-change'; theme: 'light' | 'dark' }
