@@ -11,6 +11,7 @@ A secure internal dashboard portal. Authenticated users sign in, browse HTML hir
 - [Environment variables](#environment-variables)
 - [Supabase setup](#supabase-setup)
 - [Storage setup](#storage-setup)
+- [Admin dashboard management](#admin-dashboard-management)
 - [Authentication](#authentication)
 - [Running locally](#running-locally)
 - [Deployment](#deployment)
@@ -79,7 +80,7 @@ adobe-longlist/
 │   │   ├── Profile/
 │   │   └── NotFound/
 │   ├── routes/                  React Router route tree
-│   ├── services/                 dashboards.service, dashboardStatus.service
+│   ├── services/                 dashboards.service, dashboardStatus.service, dashboardAdmin.service (admin upload/delete)
 │   ├── supabase/                  client, auth, storage, database helpers
 │   └── types/                    Database + app types
 ├── .env.example
@@ -154,6 +155,26 @@ Any HTML file works as long as candidate rows follow this convention — no Java
 
 The host app automatically populates the `<select>` with the 8 standard status options and wires up saving — see `src/lib/dashboardBridge.ts` for the full protocol.
 
+The manual upload/`seed.sql` route above is one option; admins can also do this entirely from the UI — see the next section.
+
+## Admin dashboard management
+
+Signed-in users with `profiles.role = 'admin'` see an **Upload dashboard** button on the dashboard home page, and a delete icon on every card. Viewers see neither — enforced both in the UI (`user.role === 'admin'` checks in `src/pages/Dashboard/Dashboard.tsx` and `src/components/dashboard/DashboardCard.tsx`) and at the database level (the existing `dashboards_insert_admin` / `dashboards_update_admin` / `dashboards_delete_admin` RLS policies and matching `dashboards_bucket_*_admin` storage policies from `supabase/migrations/20260720000002_rls_policies.sql` and `20260720000003_storage.sql` — unchanged, no new migration was needed for this feature).
+
+**Upload** (`src/components/dashboard/UploadDashboardDialog.tsx`, `src/services/dashboardAdmin.service.ts`):
+1. Pick a Dashboard name, optional description/category, an `.html` file, and an optional thumbnail image (JPG/JPEG/PNG/WEBP, ≤ 5 MB).
+2. The HTML file uploads to the `dashboards` storage bucket at `dashboards/<uuid>.html`; the thumbnail (if any) uploads to `dashboards/thumbnails/<uuid>.<ext>`.
+3. A row is inserted into `public.dashboards` with `storage_path`, `thumbnail`, and `created_by` set.
+4. If the database insert fails after files were uploaded, the uploaded files are removed automatically (no orphaned storage objects).
+5. The dashboard list refreshes immediately (TanStack Query cache invalidation) and a success/error toast is shown.
+
+Dashboard thumbnails reuse the existing `thumbnail` column (a storage path resolved to a short-lived signed URL) — there is no separate `image_url` column. Cards render the thumbnail as a cover image with a dark gradient overlay (so the category badge stays legible) and fall back to a placeholder icon when no thumbnail is set.
+
+**Delete** (`src/components/dashboard/DeleteDashboardButton.tsx`):
+1. Click the delete icon on a card → a confirmation dialog appears ("Are you sure you want to delete this dashboard?").
+2. On confirm: the HTML file and thumbnail (if any) are removed from Storage, then the `dashboards` row is deleted. Its `dashboard_status` rows are removed automatically via `on delete cascade`.
+3. The list refreshes immediately and a success/error toast is shown.
+
 ## Authentication
 
 - Email/password auth via Supabase Auth (`src/supabase/auth.ts`).
@@ -200,6 +221,9 @@ Already covered in [Supabase setup](#supabase-setup) — there's nothing separat
 | Status dropdown doesn't save | Check the browser console for the `postMessage` bridge — the candidate row is missing `data-candidate-row`/`data-candidate-name`, or the dashboard's `dashboard_id` doesn't match the route |
 | Changes from another tab don't show up live | Realtime wasn't enabled for `dashboard_status` — confirm `20260720000001_init_schema.sql` ran fully (it adds the table to the `supabase_realtime` publication) |
 | 404 on refreshing a client-side route in production | SPA rewrites missing — confirm `vercel.json` is present and deployed |
+| "Upload dashboard" button / delete icon not visible | You're signed in as a `viewer`, not an `admin` — promote your account (see [Supabase setup](#supabase-setup) step 3) |
+| Upload fails with a row-level security error | The signed-in account isn't `role = 'admin'` in `public.profiles`, or the storage/RLS migrations weren't applied |
+| Uploaded thumbnail doesn't show on the card | Confirm the image is JPG/JPEG/PNG/WEBP and ≤ 5 MB — other types are rejected client-side before upload |
 
 ## Production checklist
 

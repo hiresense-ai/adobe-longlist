@@ -1,11 +1,14 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { LayoutGrid, SearchX } from 'lucide-react'
+import { LayoutGrid, SearchX, Upload } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import { useDashboards } from '@/hooks/useDashboards'
+import { useAuth } from '@/hooks/useAuth'
 import { filterDashboards } from '@/services/dashboards.service'
 import { DashboardCard } from '@/components/dashboard/DashboardCard'
 import { DashboardCardSkeleton } from '@/components/dashboard/DashboardCardSkeleton'
+import { UploadDashboardDialog } from '@/components/dashboard/UploadDashboardDialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { getErrorMessage } from '@/lib/errors'
@@ -13,6 +16,9 @@ import { getErrorMessage } from '@/lib/errors'
 export function Dashboard() {
   const [searchParams] = useSearchParams()
   const query = searchParams.get('q') ?? ''
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+  const [isUploadOpen, setIsUploadOpen] = useState(false)
   const {
     data: dashboards,
     isLoading,
@@ -28,14 +34,27 @@ export function Dashboard() {
 
   return (
     <div className="px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-foreground text-2xl font-semibold">Dashboards</h1>
           <p className="text-muted-foreground text-sm">
             Browse hiring dashboards and track candidate status in real time.
           </p>
         </div>
+        {isAdmin && (
+          <Button onClick={() => setIsUploadOpen(true)}>
+            <Upload className="size-4" />
+            Upload dashboard
+          </Button>
+        )}
       </div>
+
+      {isAdmin && (
+        <UploadDashboardDialog
+          open={isUploadOpen}
+          onOpenChange={setIsUploadOpen}
+        />
+      )}
 
       {isLoading && (
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

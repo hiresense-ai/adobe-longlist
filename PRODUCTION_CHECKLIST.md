@@ -35,6 +35,9 @@
 - [ ] Changing a candidate's status saves, shows a success toast, and persists after reload
 - [ ] A second browser/tab viewing the same dashboard receives the status update live (Realtime)
 - [ ] Non-admin (`viewer`) accounts cannot insert/update/delete rows in `dashboards` (verify via the RLS policies, e.g. attempt an insert from the browser console and confirm it's rejected)
+- [ ] Admin can upload a dashboard (HTML + optional thumbnail) from the UI; it appears in the list immediately with the thumbnail rendering correctly
+- [ ] Admin can delete a dashboard via the confirmation dialog; its HTML/thumbnail files and `dashboard_status` rows are gone afterward
+- [ ] Non-admin (`viewer`) accounts do not see the "Upload dashboard" button or per-card delete icon
 - [ ] Dark mode toggle persists across reloads and respects system preference by default
 - [ ] Responsive check on mobile, tablet, and desktop breakpoints
 - [ ] 404 page renders for unknown routes; the route-level error boundary renders for unexpected runtime errors

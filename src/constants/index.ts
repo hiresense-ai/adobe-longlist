@@ -41,6 +41,14 @@ export const ROUTES = {
 
 export const STORAGE_BUCKET = 'dashboards'
 export const STORAGE_FOLDER = 'dashboards'
+export const THUMBNAIL_STORAGE_FOLDER = 'dashboards/thumbnails'
+
+export const ALLOWED_THUMBNAIL_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+] as const
+export const MAX_THUMBNAIL_SIZE_BYTES = 5 * 1024 * 1024
 
 export const APP_NAME = 'Adobe Longlist'
 export const APP_DESCRIPTION =
