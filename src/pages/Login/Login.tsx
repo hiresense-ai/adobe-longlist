@@ -16,10 +16,11 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
-import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES, APP_NAME } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
+import loginHeroBg from '@/assets/login-hero-bg.jpg'
+import hireSenseLogo from '@/assets/hiresense-logo.png'
 
 // Deliberately not tied to the current password-creation policy: existing
 // accounts may have passwords set under an older, shorter policy, and this
@@ -66,99 +67,16 @@ export function Login() {
 
   return (
     <div className="relative flex min-h-svh flex-col bg-zinc-950 lg:flex-row">
-      {/* Hero — decorative only, hidden below 1024px per spec. No source
-          background image was supplied (only shared as a pasted chat
-          image, not a file this environment can read), so this is a
-          procedural stand-in built from gradients/SVG in the same red/near-
-          black palette as the reference design. Swap in a real image via
-          a `background-image` on this element if one is provided later. */}
+      {/* Hero — the reference design's own artwork (Adobe mark, headline,
+          tagline, and decorative chart previews are all baked into this
+          image), used exactly as provided rather than recreated. Purely
+          decorative/hidden below 1024px: the real accessible "Adobe
+          Longlist" heading lives in the card on the right. */}
       <div
         aria-hidden="true"
-        className="relative isolate hidden overflow-hidden lg:flex lg:w-[58%] lg:shrink-0 lg:flex-col lg:justify-between lg:p-12 xl:p-16"
-      >
-        <div className="absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,rgba(250,15,0,0.32),transparent_60%)]" />
-        <svg
-          className="absolute inset-0 size-full opacity-[0.35]"
-          viewBox="0 0 800 900"
-          fill="none"
-          preserveAspectRatio="xMidYMid slice"
-        >
-          <path
-            d="M-40 620 C 160 560, 280 720, 480 640 S 820 520, 900 600"
-            stroke="url(#loginHeroLine)"
-            strokeWidth="1.5"
-            fill="none"
-          />
-          <path
-            d="M-40 700 C 180 660, 300 800, 500 720 S 840 600, 900 680"
-            stroke="url(#loginHeroLine)"
-            strokeWidth="1"
-            fill="none"
-          />
-          <defs>
-            <linearGradient id="loginHeroLine" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#FA0F00" stopOpacity="0" />
-              <stop offset="50%" stopColor="#FA0F00" stopOpacity="0.8" />
-              <stop offset="100%" stopColor="#FA0F00" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-        </svg>
-        {/* Floating chart-preview cards, purely decorative */}
-        <div className="absolute top-[38%] right-[8%] hidden h-24 w-40 rounded-xl border border-white/10 bg-white/5 shadow-2xl backdrop-blur-sm xl:block">
-          <div className="flex h-full items-end gap-1.5 p-3">
-            {[40, 65, 45, 80, 55].map((h, i) => (
-              <div
-                key={i}
-                className="bg-primary/70 w-full rounded-sm"
-                style={{ height: `${h}%` }}
-              />
-            ))}
-          </div>
-        </div>
-        <div className="absolute top-[58%] right-[22%] hidden size-20 rounded-full border border-white/10 bg-white/5 shadow-2xl backdrop-blur-sm xl:block">
-          <svg viewBox="0 0 36 36" className="size-full p-3">
-            <circle
-              cx="18"
-              cy="18"
-              r="14"
-              fill="none"
-              stroke="rgba(255,255,255,0.15)"
-              strokeWidth="4"
-            />
-            <circle
-              cx="18"
-              cy="18"
-              r="14"
-              fill="none"
-              stroke="#FA0F00"
-              strokeWidth="4"
-              strokeDasharray="62 88"
-              strokeLinecap="round"
-              transform="rotate(-90 18 18)"
-            />
-          </svg>
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/20 to-black/60" />
-
-        <div className="animate-in fade-in relative z-10 flex items-center gap-2.5 duration-700 motion-reduce:animate-none">
-          <span className="bg-primary flex size-9 items-center justify-center rounded-lg text-sm font-bold text-white">
-            A
-          </span>
-          <span className="text-base font-semibold text-white">{APP_NAME}</span>
-        </div>
-
-        <div className="animate-in fade-in slide-in-from-bottom-2 relative z-10 max-w-md duration-700 motion-reduce:animate-none">
-          <h2 className="text-4xl font-bold tracking-tight text-white xl:text-5xl">
-            {APP_NAME}
-          </h2>
-          <div className="bg-primary mt-4 h-1 w-14 rounded-full" />
-          <p className="mt-4 text-lg text-white/70">
-            Data-driven talent insights.
-            <br />
-            Smarter hiring decisions.
-          </p>
-        </div>
-      </div>
+        className="animate-in fade-in hidden bg-cover bg-center bg-no-repeat duration-700 motion-reduce:animate-none lg:block lg:w-[58%] lg:shrink-0"
+        style={{ backgroundImage: `url(${loginHeroBg})` }}
+      />
 
       {/* Login card */}
       <div className="flex flex-1 items-center justify-center px-4 py-12 sm:px-6">
@@ -261,8 +179,13 @@ export function Login() {
         </div>
       </div>
 
-      <div className="absolute right-6 bottom-6 z-10">
-        <PoweredByHireSense className="text-white/50" />
+      <div className="absolute right-6 bottom-6 z-10 flex items-center gap-2">
+        <span className="text-xs text-white/50">Powered by</span>
+        <img
+          src={hireSenseLogo}
+          alt="HireSense.ai"
+          className="h-4 w-auto opacity-80"
+        />
       </div>
     </div>
   )
