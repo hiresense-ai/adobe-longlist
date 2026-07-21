@@ -18,7 +18,7 @@ export function DashboardCard({
   const isAdmin = user?.role === 'admin'
 
   return (
-    <div className="group border-border bg-card shadow-soft flex flex-col overflow-hidden rounded-2xl border transition-shadow hover:shadow-lg">
+    <div className="group border-border bg-card shadow-soft dark:hover:shadow-elevated flex flex-col overflow-hidden rounded-2xl border transition-all duration-200 hover:shadow-lg dark:hover:border-white/15">
       <div className="bg-muted relative aspect-video w-full overflow-hidden">
         {dashboard.thumbnailUrl ? (
           <img
