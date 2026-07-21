@@ -4,7 +4,7 @@ import {
   useNavigate,
   useSearchParams,
 } from 'react-router-dom'
-import { LogOut, Search, User as UserIcon } from 'lucide-react'
+import { LogOut, Search, User as UserIcon, Users } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Input } from '@/components/ui/input'
@@ -29,6 +29,7 @@ export function Navbar() {
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const isHome = location.pathname === ROUTES.home
+  const isAdmin = user?.role === 'admin'
 
   async function handleLogout() {
     try {
@@ -50,6 +51,16 @@ export function Navbar() {
             {APP_NAME}
           </span>
         </Link>
+
+        {isAdmin && (
+          <Link
+            to={ROUTES.adminUsers}
+            className="text-muted-foreground hover:text-foreground hidden items-center gap-1.5 text-sm font-medium transition-colors md:flex"
+          >
+            <Users className="size-4" />
+            Users
+          </Link>
+        )}
 
         <div className="ml-auto flex flex-1 items-center justify-end gap-3">
           {isHome && (
@@ -99,6 +110,14 @@ export function Navbar() {
                   Profile
                 </Link>
               </DropdownMenuItem>
+              {isAdmin && (
+                <DropdownMenuItem asChild className="md:hidden">
+                  <Link to={ROUTES.adminUsers}>
+                    <Users className="size-4" />
+                    Users
+                  </Link>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={handleLogout}

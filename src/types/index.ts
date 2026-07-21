@@ -22,6 +22,18 @@ export interface ApiError {
   status?: number
 }
 
+/** A row in the admin User Management table — combines auth.users + profiles. */
+export interface AdminUserRow {
+  id: string
+  email: string
+  name: string | null
+  role: import('./database.types').UserRole
+  createdAt: string
+  lastSignInAt: string | null
+  disabled: boolean
+  emailConfirmed: boolean
+}
+
 /** postMessage contract between an embedded HTML dashboard (iframe) and the host app. */
 export type DashboardBridgeMessage =
   | {

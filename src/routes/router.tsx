@@ -3,6 +3,7 @@ import { createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { GuestRoute } from '@/components/auth/GuestRoute'
+import { AdminRoute } from '@/components/auth/AdminRoute'
 import { RouteErrorBoundary } from '@/components/common/RouteErrorBoundary'
 import { NotFound } from '@/pages/NotFound'
 import { ROUTES } from '@/constants'
@@ -20,6 +21,7 @@ const DashboardViewer = lazyNamed(
   'DashboardViewer',
 )
 const Profile = lazyNamed(() => import('@/pages/Profile'), 'Profile')
+const AdminUsers = lazyNamed(() => import('@/pages/AdminUsers'), 'AdminUsers')
 
 export const router = createBrowserRouter([
   {
@@ -45,6 +47,10 @@ export const router = createBrowserRouter([
           { path: ROUTES.home, element: <Dashboard /> },
           { path: ROUTES.dashboardPattern, element: <DashboardViewer /> },
           { path: ROUTES.profile, element: <Profile /> },
+          {
+            element: <AdminRoute />,
+            children: [{ path: ROUTES.adminUsers, element: <AdminUsers /> }],
+          },
         ],
       },
     ],

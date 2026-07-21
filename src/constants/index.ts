@@ -36,8 +36,13 @@ export const ROUTES = {
   dashboardPattern: '/dashboards/:id',
   dashboard: (id: string) => `/dashboards/${id}`,
   profile: '/profile',
+  adminUsers: '/admin/users',
   notFound: '*',
 } as const
+
+export const MIN_PASSWORD_LENGTH = 8
+/** At least one lowercase, one uppercase, one digit. */
+export const STRONG_PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/
 
 export const STORAGE_BUCKET = 'dashboards'
 export const STORAGE_FOLDER = 'dashboards'
@@ -60,4 +65,5 @@ export const QUERY_KEYS = {
   dashboardStatuses: (dashboardId: string) =>
     ['dashboard-statuses', dashboardId] as const,
   profile: (userId: string) => ['profile', userId] as const,
+  adminUsers: ['admin-users'] as const,
 }
