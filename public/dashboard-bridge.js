@@ -20,8 +20,11 @@
   var ATTR_STATUS = 'data-longlist-status'
   var ATTR_REMARKS = 'data-longlist-remarks'
   var ACTION_ATTR = 'data-longlist-action'
+  var ACTION_CELL_ATTR = 'data-longlist-action-cell'
   var ACTION_HEADER_ATTR = 'data-longlist-action-header'
   var ACTION_NAME_ATTR = 'data-longlist-action-name'
+  var ACTION_LABEL_ATTR = 'data-longlist-action-label'
+  var ACTION_CHEVRON_ATTR = 'data-longlist-action-chevron'
 
   var meta = document.querySelector('meta[name="longlist-dashboard-id"]')
   var DASHBOARD_ID = meta ? meta.getAttribute('content') : null
@@ -40,12 +43,6 @@
     return select.closest('[' + ATTR_ROW + ']') || select
   }
 
-  // A plain data-URI chevron (neutral gray, theme-agnostic) — the closed
-  // native <select> arrow looks cheap for a "clickable action button" feel,
-  // so appearance is reset and this stands in for it.
-  var CHEVRON_SVG =
-    'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236B7280" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"%3E%3Cpolyline points="6 9 12 15 18 9"/%3E%3C/svg%3E'
-
   function injectBaseStyles() {
     var style = document.createElement('style')
     style.textContent =
@@ -55,33 +52,42 @@
       '[' +
       ATTR_STATUS +
       ']:focus-visible { outline-width: 2px; outline-style: solid; outline-offset: 2px; }' +
-      // Action dropdown: styled like a modern SaaS action button (GitHub /
-      // Linear / Atlassian style) rather than a default browser select.
-      // Only the box-model/typography/chrome live here — background/text/
-      // border colors are always set per-selected-value via inline style in
+      // Action control: a small enterprise-style combobox button (not a
+      // native <select> — its popup can't be restyled in any browser).
+      // Only box-model/typography/chrome live here; background/text/border
+      // colors are always set per-selected-value via inline style in
       // applyActionStyle(), never here.
       '[' +
       ACTION_ATTR +
       '] {' +
-      'appearance: none; -webkit-appearance: none; -moz-appearance: none;' +
-      'height: 42px; min-width: 260px;' +
-      'padding: 0 40px 0 18px;' +
-      'border-radius: 9999px; border: 1px solid transparent;' +
-      'font-weight: 600; font-size: 14px; font-family: inherit; line-height: 1;' +
+      'all: unset; box-sizing: border-box; display: inline-flex; align-items: center;' +
+      'justify-content: space-between; gap: 8px;' +
+      'height: 40px; width: 250px;' +
+      'padding: 0 12px;' +
+      'border-radius: 10px; border: 1px solid transparent;' +
+      'font-weight: 500; font-size: 14px; font-family: inherit; line-height: 1;' +
       'cursor: pointer;' +
-      'background-repeat: no-repeat; background-position: right 16px center; background-size: 12px 12px;' +
-      "background-image: url('" +
-      CHEVRON_SVG +
-      "');" +
-      'box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05), 0 1px 2px -1px rgba(0,0,0,0.04);' +
+      'box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);' +
       'transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease;' +
       '}' +
       '[' +
       ACTION_ATTR +
-      ']:hover { box-shadow: 0 4px 6px -2px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.06); }' +
+      ']:hover { box-shadow: 0 2px 5px 0 rgba(0,0,0,0.08); }' +
       '[' +
       ACTION_ATTR +
-      ']:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--action-ring-color, rgba(0,0,0,0.18)), 0 1px 2px 0 rgba(0,0,0,0.05); }'
+      ']:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--action-ring-color, rgba(0,0,0,0.18)); }' +
+      '[' +
+      ACTION_LABEL_ATTR +
+      '] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; text-align: left; }' +
+      '[' +
+      ACTION_CHEVRON_ATTR +
+      '] { flex-shrink: 0; transition: transform 200ms ease; opacity: 0.6; }' +
+      '[' +
+      ACTION_ATTR +
+      '][aria-expanded="true"] [' +
+      ACTION_CHEVRON_ATTR +
+      '] { transform: rotate(180deg); }' +
+      '.ll-action-option:hover, .ll-action-option[data-active="true"] { background: var(--ll-hover-bg, rgba(0,0,0,0.05)); }'
     document.head.appendChild(style)
   }
 
@@ -121,10 +127,10 @@
     document.querySelectorAll('[' + ACTION_ATTR + ']').forEach(applyActionStyle)
   }
 
-  function showFeedback(select, ok, message) {
+  function showFeedback(el, ok, message) {
     var badge =
-      select.parentElement &&
-      select.parentElement.querySelector('[data-longlist-feedback]')
+      el.parentElement &&
+      el.parentElement.querySelector('[data-longlist-feedback]')
     if (!badge) {
       badge = document.createElement('span')
       badge.setAttribute('data-longlist-feedback', '')
@@ -134,7 +140,7 @@
       badge.style.borderRadius = '9999px'
       badge.style.padding = '2px 8px'
       badge.style.transition = 'background-color 220ms ease, color 220ms ease'
-      select.insertAdjacentElement('afterend', badge)
+      el.insertAdjacentElement('afterend', badge)
     }
     // Reuse the master status palette rather than inventing new colors:
     // "Selected" for success, "Rejected" for error.
@@ -194,12 +200,27 @@
   }
 
   // ---------------------------------------------------------------------
-  // Action column — injected at runtime next to whatever "Status" column
-  // an uploaded dashboard's own table already displays (e.g. an
-  // Active/Passive availability tag). That existing column is never
-  // touched: we only ever read its header text to find where to insert a
-  // new one, and never modify its cells.
+  // Action column — injected at runtime as the LAST column of any table
+  // that has a "Status" column (e.g. an Active/Passive availability tag).
+  // That existing column is only ever read (to detect this is a candidate
+  // table), never modified. Rendered as a custom button + floating listbox
+  // rather than a native <select>, since a native select's open popup
+  // cannot be restyled (rounded corners / shadow / hover / spacing) in any
+  // browser. Every interaction on the trigger stops propagation so it can
+  // never bubble into a dashboard's own row-click handler (e.g. one that
+  // opens a "candidate details" modal) — the popup itself is portaled to
+  // <body>, so it's never a descendant of the row in the first place.
   // ---------------------------------------------------------------------
+
+  var UNSET_ACTION_PALETTE = {
+    light: { background: '#FFFFFF', text: '#6B7280', border: '#D1D5DB' },
+    dark: { background: '#1F2937', text: '#9CA3AF', border: '#374151' },
+  }
+
+  var actionUidCounter = 0
+  var openPopupEl = null
+  var openTriggerEl = null
+  var closeOpenPopup = null
 
   function getHeaderCells(table) {
     var head = table.querySelector('thead')
@@ -231,54 +252,24 @@
     )
   }
 
-  function ensureActionHeader(table, statusIdx) {
+  function stickyCellStyle(el, isHeader) {
+    el.style.position = 'sticky'
+    el.style.right = '0'
+    el.style.zIndex = isHeader ? '3' : '2'
+    el.style.background = isHeader ? '#F9FAFB' : '#FFFFFF'
+    el.style.boxShadow =
+      '-8px 0 8px -8px rgba(0,0,0,' + (isHeader ? '0.12' : '0.1') + ')'
+  }
+
+  function ensureActionHeader(table) {
     var headRow = (table.querySelector('thead') || table).querySelector('tr')
     if (!headRow) return
     if (headRow.querySelector('[' + ACTION_HEADER_ATTR + ']')) return
     var th = document.createElement('th')
     th.setAttribute(ACTION_HEADER_ATTR, '')
     th.textContent = 'Action'
-    var refNode = headRow.children[statusIdx + 1] || null
-    if (refNode) headRow.insertBefore(th, refNode)
-    else headRow.appendChild(th)
-  }
-
-  function populateActionOptions(select) {
-    if (select.options.length > 0) return
-    var blank = document.createElement('option')
-    blank.value = ''
-    blank.textContent = '— Select action —'
-    select.appendChild(blank)
-    ACTION_OPTIONS.forEach(function (value) {
-      var option = document.createElement('option')
-      option.value = value
-      option.textContent = value
-      select.appendChild(option)
-    })
-  }
-
-  // Neutral "no action chosen yet" look — still a fully-styled button (not a
-  // blank/native control), just visually quiet until a real value is picked.
-  var UNSET_ACTION_PALETTE = {
-    light: { background: '#F9FAFB', text: '#6B7280', border: '#E5E7EB' },
-    dark: { background: '#1F2937', text: '#9CA3AF', border: '#374151' },
-  }
-
-  // Box shape/shadow/typography live entirely in the injected stylesheet
-  // (shared by every action select, in every theme); this only ever sets
-  // the three colors that actually vary — background, text, and border —
-  // plus a CSS custom property so the :focus-visible ring in that same
-  // stylesheet can pick up the current color without duplicating logic.
-  function applyActionStyle(select) {
-    var styles = select.value ? ACTION_STYLES[select.value] : null
-    var palette =
-      (styles && (styles[currentTheme] || styles.light)) ||
-      UNSET_ACTION_PALETTE[currentTheme] ||
-      UNSET_ACTION_PALETTE.light
-    select.style.backgroundColor = palette.background
-    select.style.color = palette.text
-    select.style.borderColor = palette.border
-    select.style.setProperty('--action-ring-color', palette.border)
+    stickyCellStyle(th, true)
+    headRow.appendChild(th)
   }
 
   function extractRowIdentity(tr, nameIdx) {
@@ -290,72 +281,353 @@
     return (cell.textContent || '').trim()
   }
 
-  function handleActionChange(event) {
-    var select = event.target
-    applyActionStyle(select)
-    var name = select.getAttribute(ACTION_NAME_ATTR)
+  function getActionValue(trigger) {
+    return trigger.getAttribute('data-value') || ''
+  }
+
+  function setActionValue(trigger, value) {
+    trigger.setAttribute('data-value', value || '')
+    var label = trigger.querySelector('[' + ACTION_LABEL_ATTR + ']')
+    if (label) label.textContent = value || 'Select Action'
+    trigger.title = value || 'Select Action'
+    applyActionStyle(trigger)
+  }
+
+  // Box shape/typography live in the injected stylesheet (shared, static);
+  // this only sets the three colors that vary by selected value —
+  // background, text, border — plus a CSS custom property so the
+  // :focus-visible ring in that same stylesheet can match the current
+  // color without duplicating the palette lookup.
+  function applyActionStyle(trigger) {
+    var value = getActionValue(trigger)
+    var styles = value ? ACTION_STYLES[value] : null
+    var palette =
+      (styles && (styles[currentTheme] || styles.light)) ||
+      UNSET_ACTION_PALETTE[currentTheme] ||
+      UNSET_ACTION_PALETTE.light
+    trigger.style.backgroundColor = palette.background
+    trigger.style.color = palette.text
+    trigger.style.borderColor = palette.border
+    trigger.style.setProperty('--action-ring-color', palette.border)
+  }
+
+  function commitActionSelection(trigger, value) {
+    setActionValue(trigger, value)
+    var name = trigger.getAttribute(ACTION_NAME_ATTR)
     if (!name) return
-    var value = select.value || null
-    actionValuesByName[name.toLowerCase()] = value
+    actionValuesByName[name.toLowerCase()] = value || null
     window.parent.postMessage(
       {
         type: 'longlist:action-update',
         payload: {
           dashboardId: DASHBOARD_ID,
           candidateName: name,
-          action: value,
+          action: value || null,
         },
       },
       '*',
     )
   }
 
-  function ensureActionCells(table, statusIdx, nameIdx) {
+  function closeActionPopup() {
+    if (!openPopupEl) return
+    var popup = openPopupEl
+    var cleanup = closeOpenPopup
+    openPopupEl = null
+    openTriggerEl = null
+    closeOpenPopup = null
+    if (cleanup) cleanup()
+    if (popup.parentNode) popup.parentNode.removeChild(popup)
+    document
+      .querySelectorAll('[' + ACTION_ATTR + '][aria-expanded="true"]')
+      .forEach(function (btn) {
+        btn.setAttribute('aria-expanded', 'false')
+      })
+  }
+
+  function openActionPopup(trigger) {
+    closeActionPopup()
+
+    var isDark = currentTheme === 'dark'
+    var rect = trigger.getBoundingClientRect()
+    var currentValue = getActionValue(trigger)
+    var optionValues = [''].concat(ACTION_OPTIONS)
+
+    var popup = document.createElement('div')
+    popup.setAttribute('role', 'listbox')
+    popup.setAttribute('aria-label', 'Action')
+    popup.tabIndex = -1
+    popup.id = trigger.id + '-listbox'
+    popup.style.position = 'fixed'
+    popup.style.zIndex = '2147483000'
+    popup.style.width = rect.width + 'px'
+    popup.style.maxHeight = '280px'
+    popup.style.overflowY = 'auto'
+    popup.style.boxSizing = 'border-box'
+    popup.style.padding = '6px'
+    popup.style.borderRadius = '10px'
+    popup.style.outline = 'none'
+    popup.style.fontFamily = 'inherit'
+    popup.style.background = isDark ? '#161B22' : '#FFFFFF'
+    popup.style.border = '1px solid ' + (isDark ? '#30363D' : '#E5E7EB')
+    popup.style.boxShadow =
+      '0 10px 15px -3px rgba(0,0,0,0.2), 0 4px 6px -4px rgba(0,0,0,0.15)'
+    popup.style.setProperty('--ll-hover-bg', isDark ? '#21262D' : '#F3F4F6')
+
+    var spaceBelow = window.innerHeight - rect.bottom
+    if (spaceBelow < 220 && rect.top > spaceBelow) {
+      popup.style.bottom = window.innerHeight - rect.top + 4 + 'px'
+    } else {
+      popup.style.top = rect.bottom + 4 + 'px'
+    }
+    popup.style.left = rect.left + 'px'
+
+    var optionEls = optionValues.map(function (value, i) {
+      var opt = document.createElement('div')
+      opt.className = 'll-action-option'
+      opt.setAttribute('role', 'option')
+      opt.id = trigger.id + '-opt-' + i
+      opt.textContent = value || 'Select Action'
+      opt.style.padding = '8px 10px'
+      opt.style.borderRadius = '8px'
+      opt.style.fontSize = '14px'
+      opt.style.cursor = 'pointer'
+      opt.style.whiteSpace = 'normal'
+      opt.style.wordBreak = 'break-word'
+      opt.style.color = value
+        ? isDark
+          ? '#F8FAFC'
+          : '#111827'
+        : isDark
+          ? '#9CA3AF'
+          : '#6B7280'
+      opt.setAttribute(
+        'aria-selected',
+        value === currentValue ? 'true' : 'false',
+      )
+      opt.addEventListener('mouseenter', function () {
+        setActiveOption(i)
+      })
+      opt.addEventListener('click', function (e) {
+        e.stopPropagation()
+        commitActionSelection(trigger, value)
+        closeActionPopup()
+        trigger.focus()
+      })
+      popup.appendChild(opt)
+      return opt
+    })
+
+    function setActiveOption(index) {
+      optionEls.forEach(function (opt, i) {
+        opt.setAttribute('data-active', i === index ? 'true' : 'false')
+      })
+      popup.setAttribute('aria-activedescendant', optionEls[index].id)
+    }
+
+    var initialIndex = Math.max(0, optionValues.indexOf(currentValue))
+    setActiveOption(initialIndex)
+
+    document.body.appendChild(popup)
+    popup.focus()
+    trigger.setAttribute('aria-expanded', 'true')
+
+    function activeIndex() {
+      for (var i = 0; i < optionEls.length; i++) {
+        if (optionEls[i].getAttribute('data-active') === 'true') return i
+      }
+      return 0
+    }
+
+    function onKeydown(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeActionPopup()
+        trigger.focus()
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        var next = Math.min(optionEls.length - 1, activeIndex() + 1)
+        setActiveOption(next)
+        optionEls[next].scrollIntoView({ block: 'nearest' })
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        var prev = Math.max(0, activeIndex() - 1)
+        setActiveOption(prev)
+        optionEls[prev].scrollIntoView({ block: 'nearest' })
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        setActiveOption(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        setActiveOption(optionEls.length - 1)
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        commitActionSelection(trigger, optionValues[activeIndex()])
+        closeActionPopup()
+        trigger.focus()
+      } else if (e.key === 'Tab') {
+        // Don't preventDefault — close and refocus the trigger first so the
+        // browser's native Tab handling continues from the button's real
+        // position in the row, not from the popup (a detached body child).
+        closeActionPopup()
+        trigger.focus()
+      }
+    }
+    popup.addEventListener('keydown', onKeydown)
+
+    function onOutsideClick(e) {
+      if (popup.contains(e.target) || trigger.contains(e.target)) return
+      closeActionPopup()
+    }
+    // Deferred so the same click that opened the popup doesn't immediately
+    // close it again (the trigger's own click handler runs first).
+    window.setTimeout(function () {
+      document.addEventListener('click', onOutsideClick, true)
+    }, 0)
+
+    function onScrollOrResize() {
+      closeActionPopup()
+    }
+    window.addEventListener('scroll', onScrollOrResize, true)
+    window.addEventListener('resize', onScrollOrResize)
+
+    openPopupEl = popup
+    openTriggerEl = trigger
+    closeOpenPopup = function () {
+      document.removeEventListener('click', onOutsideClick, true)
+      window.removeEventListener('scroll', onScrollOrResize, true)
+      window.removeEventListener('resize', onScrollOrResize)
+      popup.removeEventListener('keydown', onKeydown)
+    }
+  }
+
+  var STOP_PROPAGATION_EVENTS = [
+    'click',
+    'mousedown',
+    'mouseup',
+    'pointerdown',
+    'pointerup',
+    'touchstart',
+    'touchend',
+  ]
+
+  function createActionTrigger(name) {
+    actionUidCounter += 1
+    var button = document.createElement('button')
+    button.type = 'button'
+    button.id = 'll-action-' + actionUidCounter
+    button.setAttribute(ACTION_ATTR, '')
+    button.setAttribute('aria-haspopup', 'listbox')
+    button.setAttribute('aria-expanded', 'false')
+    if (name) {
+      button.setAttribute(ACTION_NAME_ATTR, name)
+      button.setAttribute('aria-label', 'Action for ' + name)
+    }
+
+    var label = document.createElement('span')
+    label.setAttribute(ACTION_LABEL_ATTR, '')
+    button.appendChild(label)
+
+    var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    chevron.setAttribute(ACTION_CHEVRON_ATTR, '')
+    chevron.setAttribute('width', '14')
+    chevron.setAttribute('height', '14')
+    chevron.setAttribute('viewBox', '0 0 24 24')
+    chevron.setAttribute('fill', 'none')
+    chevron.setAttribute('stroke', 'currentColor')
+    chevron.setAttribute('stroke-width', '2.5')
+    chevron.setAttribute('stroke-linecap', 'round')
+    chevron.setAttribute('stroke-linejoin', 'round')
+    var polyline = document.createElementNS(
+      'http://www.w3.org/2000/svg',
+      'polyline',
+    )
+    polyline.setAttribute('points', '6 9 12 15 18 9')
+    chevron.appendChild(polyline)
+    button.appendChild(chevron)
+
+    // Never let interacting with this control reach an ancestor row's own
+    // click handler (e.g. one that opens a candidate-details modal).
+    STOP_PROPAGATION_EVENTS.forEach(function (evt) {
+      button.addEventListener(evt, function (e) {
+        e.stopPropagation()
+      })
+    })
+
+    button.addEventListener('click', function () {
+      if (button.getAttribute('aria-expanded') === 'true') {
+        closeActionPopup()
+      } else {
+        openActionPopup(button)
+      }
+    })
+
+    button.addEventListener('keydown', function (e) {
+      if (
+        e.key === 'ArrowDown' ||
+        e.key === 'ArrowUp' ||
+        e.key === 'Enter' ||
+        e.key === ' '
+      ) {
+        e.preventDefault()
+        if (button.getAttribute('aria-expanded') !== 'true') {
+          openActionPopup(button)
+        }
+      }
+    })
+
+    return button
+  }
+
+  function ensureActionCells(table, nameIdx, minCells) {
     var rows = table.querySelectorAll('tbody tr')
     rows.forEach(function (tr) {
-      if (tr.children.length <= statusIdx) return // e.g. a colspan "no results" row
+      if (tr.children.length < minCells) return // e.g. a colspan "no results" row
 
-      var existing = tr.querySelector('[' + ACTION_ATTR + ']')
-      if (existing) {
-        var storedName = existing.getAttribute(ACTION_NAME_ATTR)
+      var existingTd = tr.querySelector('[' + ACTION_CELL_ATTR + ']')
+      if (existingTd) {
+        var trigger = existingTd.querySelector('[' + ACTION_ATTR + ']')
+        if (!trigger) return
+        var storedName = trigger.getAttribute(ACTION_NAME_ATTR)
         var known = storedName
           ? actionValuesByName[storedName.toLowerCase()]
           : undefined
-        if (known !== undefined && existing.value !== (known || '')) {
-          existing.value = known || ''
-          applyActionStyle(existing)
+        if (known !== undefined && getActionValue(trigger) !== (known || '')) {
+          setActionValue(trigger, known || '')
         }
         return
       }
 
       var name = extractRowIdentity(tr, nameIdx)
       var td = document.createElement('td')
-      var select = document.createElement('select')
-      select.setAttribute(ACTION_ATTR, '')
-      if (name) select.setAttribute(ACTION_NAME_ATTR, name)
-      populateActionOptions(select)
-      select.addEventListener('change', handleActionChange)
-      td.appendChild(select)
+      td.setAttribute(ACTION_CELL_ATTR, '')
+      stickyCellStyle(td, false)
 
-      var refNode = tr.children[statusIdx + 1] || null
-      if (refNode) tr.insertBefore(td, refNode)
-      else tr.appendChild(td)
+      var trigger = createActionTrigger(name)
+      td.appendChild(trigger)
+      tr.appendChild(td)
 
       var knownValue = name ? actionValuesByName[name.toLowerCase()] : undefined
-      if (knownValue) select.value = knownValue
-      applyActionStyle(select)
+      setActionValue(trigger, knownValue || '')
     })
   }
 
   function syncActionColumns() {
     if (!ACTION_OPTIONS.length) return // config not delivered yet
     document.querySelectorAll('table').forEach(function (table) {
+      // Read header cells BEFORE ensureActionHeader() runs, and use
+      // statusIdx (not the header's total length) as the "is this a real
+      // data row" threshold below: the header permanently gains our Action
+      // column after the first sync, but a freshly re-rendered <tbody> row
+      // (e.g. after the dashboard's own filter/sort) always starts without
+      // one — comparing against the inflated total would wrongly treat
+      // every legitimate row as a short/placeholder row forever after.
       var headerCells = getHeaderCells(table)
       var statusIdx = findColumnIndex(headerCells, isStatusHeader)
       if (statusIdx === -1) return
       var nameIdx = findColumnIndex(headerCells, isNameHeader)
-      ensureActionHeader(table, statusIdx)
-      ensureActionCells(table, statusIdx, nameIdx)
+      ensureActionHeader(table)
+      ensureActionCells(table, nameIdx, statusIdx + 1)
     })
   }
 
@@ -375,8 +647,18 @@
     // Some uploaded dashboards render/re-render their whole table body from
     // their own script (filters, sorting, search) — anything we inject gets
     // wiped when that happens. Re-run the (idempotent) sync on every DOM
-    // change so the Action column survives those re-renders.
-    new MutationObserver(scheduleSyncActionColumns).observe(document.body, {
+    // change so the Action column survives those re-renders. Also close any
+    // open popup, since the row it belongs to may no longer exist.
+    new MutationObserver(function () {
+      // Only force-close the popup if the row it belongs to was actually
+      // wiped out by a re-render — not on every mutation, since appending
+      // the popup itself (or the action cells) to the document is itself a
+      // mutation this same observer sees.
+      if (openTriggerEl && !document.body.contains(openTriggerEl)) {
+        closeActionPopup()
+      }
+      scheduleSyncActionColumns()
+    }).observe(document.body, {
       childList: true,
       subtree: true,
     })
@@ -431,9 +713,9 @@
       if (data.type === 'longlist:action-ack') {
         document
           .querySelectorAll('[' + ACTION_ATTR + ']')
-          .forEach(function (select) {
-            if (select.getAttribute(ACTION_NAME_ATTR) === data.candidateName) {
-              showFeedback(select, data.success, data.error)
+          .forEach(function (trigger) {
+            if (trigger.getAttribute(ACTION_NAME_ATTR) === data.candidateName) {
+              showFeedback(trigger, data.success, data.error)
             }
           })
       }

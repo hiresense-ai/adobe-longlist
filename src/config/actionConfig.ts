@@ -29,15 +29,15 @@ export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
   'Reviewed earlier (SR) - Adobe': {
     value: 'Reviewed earlier (SR) - Adobe',
     label: 'Reviewed earlier (SR) - Adobe',
-    light: { background: '#F3F4F6', text: '#374151', border: '#D1D5DB' },
-    dark: { background: '#1F2937', text: '#D1D5DB', border: '#374151' },
+    light: { background: '#F3E8FF', text: '#7E22CE', border: '#E9D5FF' },
+    dark: { background: '#3B0764', text: '#D8B4FE', border: '#6B21A8' },
     sortOrder: 1,
   },
   'Reviewed earlier (TR) - Adobe': {
     value: 'Reviewed earlier (TR) - Adobe',
     label: 'Reviewed earlier (TR) - Adobe',
-    light: { background: '#F1F5F9', text: '#334155', border: '#CBD5E1' },
-    dark: { background: '#1E293B', text: '#CBD5E1', border: '#334155' },
+    light: { background: '#E0E7FF', text: '#4338CA', border: '#C7D2FE' },
+    dark: { background: '#1E1B4B', text: '#A5B4FC', border: '#3730A3' },
     sortOrder: 2,
   },
   'Interview stage - Adobe': {
@@ -50,8 +50,8 @@ export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
   'Interview stage - HireSense': {
     value: 'Interview stage - HireSense',
     label: 'Interview stage - HireSense',
-    light: { background: '#EDE9FE', text: '#6D28D9', border: '#DDD6FE' },
-    dark: { background: '#4C1D95', text: '#C4B5FD', border: '#5B21B6' },
+    light: { background: '#CFFAFE', text: '#0E7490', border: '#A5F3FC' },
+    dark: { background: '#083344', text: '#67E8F9', border: '#155E75' },
     sortOrder: 4,
   },
   'Offer - Adobe': {
