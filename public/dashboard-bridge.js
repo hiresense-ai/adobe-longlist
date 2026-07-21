@@ -365,7 +365,6 @@
     popup.style.position = 'fixed'
     popup.style.zIndex = '2147483000'
     popup.style.width = rect.width + 'px'
-    popup.style.maxHeight = '280px'
     popup.style.overflowY = 'auto'
     popup.style.boxSizing = 'border-box'
     popup.style.padding = '6px'
@@ -378,11 +377,28 @@
       '0 8px 16px -4px rgba(0,0,0,0.12), 0 2px 4px -2px rgba(0,0,0,0.08)'
     popup.style.setProperty('--ll-hover-bg', '#F3F4F6')
 
-    var spaceBelow = window.innerHeight - rect.bottom
-    if (spaceBelow < 220 && rect.top > spaceBelow) {
-      popup.style.bottom = window.innerHeight - rect.top + 4 + 'px'
+    // window.innerHeight here is the iframe's OWN viewport — the true hard
+    // clip boundary, since content inside a sandboxed iframe can never
+    // render outside the iframe's own box no matter how it's positioned.
+    // Rather than a fixed maxHeight + binary flip, pick whichever side (up
+    // or down) has more room, then cap maxHeight to what that side actually
+    // has — otherwise a short iframe would clip part of the list with no
+    // way to scroll to it, since the clipping happens at the iframe edge,
+    // outside the popup's own overflow:auto box.
+    var GAP = 4
+    var EDGE_MARGIN = 8
+    var spaceBelow = window.innerHeight - rect.bottom - GAP - EDGE_MARGIN
+    var spaceAbove = rect.top - GAP - EDGE_MARGIN
+    var openUpward = spaceBelow < 160 && spaceAbove > spaceBelow
+    var maxHeight = Math.max(
+      120,
+      Math.min(320, openUpward ? spaceAbove : spaceBelow),
+    )
+    popup.style.maxHeight = maxHeight + 'px'
+    if (openUpward) {
+      popup.style.bottom = window.innerHeight - rect.top + GAP + 'px'
     } else {
-      popup.style.top = rect.bottom + 4 + 'px'
+      popup.style.top = rect.bottom + GAP + 'px'
     }
     popup.style.left = rect.left + 'px'
 
@@ -427,6 +443,9 @@
     setActiveOption(initialIndex)
 
     document.body.appendChild(popup)
+    // Keep the current selection visible without an animated jump, in case
+    // it's scrolled out of the now-height-capped view.
+    optionEls[initialIndex].scrollIntoView({ block: 'nearest' })
     popup.focus()
     trigger.setAttribute('aria-expanded', 'true')
 
