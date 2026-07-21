@@ -40,19 +40,48 @@
     return select.closest('[' + ATTR_ROW + ']') || select
   }
 
+  // A plain data-URI chevron (neutral gray, theme-agnostic) — the closed
+  // native <select> arrow looks cheap for a "clickable action button" feel,
+  // so appearance is reset and this stands in for it.
+  var CHEVRON_SVG =
+    'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236B7280" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"%3E%3Cpolyline points="6 9 12 15 18 9"/%3E%3C/svg%3E'
+
   function injectBaseStyles() {
     var style = document.createElement('style')
     style.textContent =
       '[' +
       ATTR_STATUS +
-      '], [' +
-      ACTION_ATTR +
       '] { transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease; }' +
       '[' +
       ATTR_STATUS +
-      ']:focus-visible, [' +
+      ']:focus-visible { outline-width: 2px; outline-style: solid; outline-offset: 2px; }' +
+      // Action dropdown: styled like a modern SaaS action button (GitHub /
+      // Linear / Atlassian style) rather than a default browser select.
+      // Only the box-model/typography/chrome live here — background/text/
+      // border colors are always set per-selected-value via inline style in
+      // applyActionStyle(), never here.
+      '[' +
       ACTION_ATTR +
-      ']:focus-visible { outline-width: 2px; outline-style: solid; outline-offset: 2px; }'
+      '] {' +
+      'appearance: none; -webkit-appearance: none; -moz-appearance: none;' +
+      'height: 42px; min-width: 260px;' +
+      'padding: 0 40px 0 18px;' +
+      'border-radius: 9999px; border: 1px solid transparent;' +
+      'font-weight: 600; font-size: 14px; font-family: inherit; line-height: 1;' +
+      'cursor: pointer;' +
+      'background-repeat: no-repeat; background-position: right 16px center; background-size: 12px 12px;' +
+      "background-image: url('" +
+      CHEVRON_SVG +
+      "');" +
+      'box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05), 0 1px 2px -1px rgba(0,0,0,0.04);' +
+      'transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease;' +
+      '}' +
+      '[' +
+      ACTION_ATTR +
+      ']:hover { box-shadow: 0 4px 6px -2px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.06); }' +
+      '[' +
+      ACTION_ATTR +
+      ']:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--action-ring-color, rgba(0,0,0,0.18)), 0 1px 2px 0 rgba(0,0,0,0.05); }'
     document.head.appendChild(style)
   }
 
@@ -228,35 +257,28 @@
     })
   }
 
+  // Neutral "no action chosen yet" look — still a fully-styled button (not a
+  // blank/native control), just visually quiet until a real value is picked.
+  var UNSET_ACTION_PALETTE = {
+    light: { background: '#F9FAFB', text: '#6B7280', border: '#E5E7EB' },
+    dark: { background: '#1F2937', text: '#9CA3AF', border: '#374151' },
+  }
+
+  // Box shape/shadow/typography live entirely in the injected stylesheet
+  // (shared by every action select, in every theme); this only ever sets
+  // the three colors that actually vary — background, text, and border —
+  // plus a CSS custom property so the :focus-visible ring in that same
+  // stylesheet can pick up the current color without duplicating logic.
   function applyActionStyle(select) {
-    if (!select.value) {
-      select.style.backgroundColor = ''
-      select.style.color = ''
-      select.style.borderColor = ''
-      select.style.borderWidth = ''
-      select.style.borderStyle = ''
-      select.style.borderRadius = ''
-      select.style.padding = ''
-      select.style.fontWeight = ''
-      select.style.outlineColor = ''
-      select.style.cursor = 'pointer'
-      return
-    }
-    var styles = ACTION_STYLES[select.value]
-    if (!styles) return
-    var palette = styles[currentTheme] || styles.light
+    var styles = select.value ? ACTION_STYLES[select.value] : null
+    var palette =
+      (styles && (styles[currentTheme] || styles.light)) ||
+      UNSET_ACTION_PALETTE[currentTheme] ||
+      UNSET_ACTION_PALETTE.light
     select.style.backgroundColor = palette.background
     select.style.color = palette.text
     select.style.borderColor = palette.border
-    select.style.borderWidth = '1px'
-    select.style.borderStyle = 'solid'
-    select.style.borderRadius = '9999px'
-    select.style.padding = '4px 10px'
-    select.style.fontWeight = '500'
-    select.style.fontSize = '13px'
-    select.style.fontFamily = 'inherit'
-    select.style.cursor = 'pointer'
-    select.style.outlineColor = palette.text
+    select.style.setProperty('--action-ring-color', palette.border)
   }
 
   function extractRowIdentity(tr, nameIdx) {
