@@ -40,9 +40,12 @@ export const ROUTES = {
   notFound: '*',
 } as const
 
-export const MIN_PASSWORD_LENGTH = 8
-/** At least one lowercase, one uppercase, one digit. */
-export const STRONG_PASSWORD_PATTERN = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/
+export const MIN_PASSWORD_LENGTH = 12
+/** At least one lowercase, one uppercase, one digit, and one special character. */
+export const STRONG_PASSWORD_PATTERN =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/
+export const PASSWORD_REQUIREMENTS_HINT =
+  'Include an uppercase letter, a lowercase letter, a number, and a special character.'
 
 export const STORAGE_BUCKET = 'dashboards'
 export const STORAGE_FOLDER = 'dashboards'
@@ -54,6 +57,9 @@ export const ALLOWED_THUMBNAIL_MIME_TYPES = [
   'image/webp',
 ] as const
 export const MAX_THUMBNAIL_SIZE_BYTES = 5 * 1024 * 1024
+
+export const ALLOWED_HTML_MIME_TYPES = ['text/html'] as const
+export const MAX_HTML_SIZE_BYTES = 10 * 1024 * 1024
 
 export const APP_NAME = 'Adobe Longlist'
 export const APP_DESCRIPTION =

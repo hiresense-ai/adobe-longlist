@@ -17,13 +17,25 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { updatePassword } from '@/supabase/auth'
-import { ROUTES, APP_NAME } from '@/constants'
+import {
+  ROUTES,
+  APP_NAME,
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_REQUIREMENTS_HINT,
+  STRONG_PASSWORD_PATTERN,
+} from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 
 const schema = z
   .object({
-    password: z.string().min(6, 'Password must be at least 6 characters'),
-    confirmPassword: z.string().min(6, 'Please confirm your password'),
+    password: z
+      .string()
+      .min(
+        MIN_PASSWORD_LENGTH,
+        `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+      )
+      .regex(STRONG_PASSWORD_PATTERN, PASSWORD_REQUIREMENTS_HINT),
+    confirmPassword: z.string().min(1, 'Please confirm your password'),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',
@@ -96,6 +108,10 @@ export function ResetPassword() {
                         />
                       </div>
                     </FormControl>
+                    <p className="text-muted-foreground text-xs">
+                      At least {MIN_PASSWORD_LENGTH} characters.{' '}
+                      {PASSWORD_REQUIREMENTS_HINT}
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}

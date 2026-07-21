@@ -49,6 +49,14 @@ export function useDashboardStatusBridge({
     }
 
     async function handleMessage(event: MessageEvent) {
+      // Checking event.source (not event.origin) is deliberate: the iframe
+      // is sandboxed without allow-same-origin, so its origin is opaque
+      // ("null") and can't be string-matched. Comparing the message's
+      // source window object to this exact iframe's contentWindow is
+      // actually the stronger check — it rejects messages from any other
+      // window (e.g. a page that opened this tab via window.open and tried
+      // to forge a status-update message), not just ones with a mismatched
+      // origin string.
       if (
         !iframeRef.current?.contentWindow ||
         event.source !== iframeRef.current.contentWindow

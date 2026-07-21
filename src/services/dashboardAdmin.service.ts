@@ -1,6 +1,8 @@
 import { supabase } from '@/supabase/client'
 import {
+  ALLOWED_HTML_MIME_TYPES,
   ALLOWED_THUMBNAIL_MIME_TYPES,
+  MAX_HTML_SIZE_BYTES,
   MAX_THUMBNAIL_SIZE_BYTES,
   STORAGE_BUCKET,
   STORAGE_FOLDER,
@@ -21,6 +23,20 @@ export interface UploadDashboardInput {
 export function validateHtmlFile(file: File): string | null {
   if (!file.name.toLowerCase().endsWith('.html')) {
     return 'Only .html files are allowed.'
+  }
+  // Some platforms leave File#type empty for .html files; only reject when
+  // the browser reports a *different*, non-HTML MIME type outright (e.g. a
+  // renamed .svg/.js/.zip file), rather than trusting the extension alone.
+  if (
+    file.type &&
+    !ALLOWED_HTML_MIME_TYPES.includes(
+      file.type as (typeof ALLOWED_HTML_MIME_TYPES)[number],
+    )
+  ) {
+    return 'File must be a valid HTML document.'
+  }
+  if (file.size > MAX_HTML_SIZE_BYTES) {
+    return 'HTML file must be 10 MB or smaller.'
   }
   return null
 }

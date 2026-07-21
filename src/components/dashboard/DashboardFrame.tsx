@@ -64,7 +64,14 @@ export function DashboardFrame({
         src={src}
         title={title}
         onLoad={onLoad}
-        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        // Deliberately no `allow-same-origin`: combined with allow-scripts
+        // that would let the sandboxed HTML strip its own sandbox and reach
+        // the parent's cookies/localStorage. Without it the iframe gets an
+        // opaque origin, so it can never read this app's storage, and no
+        // `allow-top-navigation` means it can't navigate the parent tab
+        // either. No `allow-popups` — none of the dashboard templates open
+        // popups, so it's dropped rather than left as unused attack surface.
+        sandbox="allow-scripts allow-forms allow-modals"
         className="size-full flex-1 border-0 bg-white"
       />
     </div>

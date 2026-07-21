@@ -20,9 +20,12 @@ import { useAuth } from '@/hooks/useAuth'
 import { ROUTES, APP_NAME } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 
+// Deliberately not tied to the current password-creation policy: existing
+// accounts may have passwords set under an older, shorter policy, and this
+// form must keep letting them sign in with whatever their real password is.
 const loginSchema = z.object({
   email: z.string().min(1, 'Email is required').email('Enter a valid email'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: z.string().min(1, 'Password is required'),
 })
 
 type LoginFormValues = z.infer<typeof loginSchema>

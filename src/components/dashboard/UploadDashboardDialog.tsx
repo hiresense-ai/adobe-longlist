@@ -204,6 +204,9 @@ export function UploadDashboardDialog({
                   setFileErrors((prev) => ({ ...prev, html: undefined }))
                 }}
               />
+              <p className="text-muted-foreground text-xs">
+                HTML file — up to 10 MB.
+              </p>
               {fileErrors.html && (
                 <p className="text-destructive text-sm">{fileErrors.html}</p>
               )}

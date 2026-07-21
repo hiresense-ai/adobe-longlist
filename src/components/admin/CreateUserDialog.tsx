@@ -30,7 +30,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCreateAdminUser } from '@/hooks/useAdminUserMutations'
-import { MIN_PASSWORD_LENGTH, STRONG_PASSWORD_PATTERN } from '@/constants'
+import {
+  MIN_PASSWORD_LENGTH,
+  PASSWORD_REQUIREMENTS_HINT,
+  STRONG_PASSWORD_PATTERN,
+} from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 
 const createUserSchema = z.object({
@@ -43,10 +47,7 @@ const createUserSchema = z.object({
       MIN_PASSWORD_LENGTH,
       `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
     )
-    .regex(
-      STRONG_PASSWORD_PATTERN,
-      'Include an uppercase letter, a lowercase letter, and a number',
-    ),
+    .regex(STRONG_PASSWORD_PATTERN, PASSWORD_REQUIREMENTS_HINT),
   role: z.enum(['admin', 'viewer']),
 })
 
@@ -182,6 +183,10 @@ export function CreateUserDialog({
                       {...field}
                     />
                   </FormControl>
+                  <p className="text-muted-foreground text-xs">
+                    At least {MIN_PASSWORD_LENGTH} characters.{' '}
+                    {PASSWORD_REQUIREMENTS_HINT}
+                  </p>
                   <FormMessage />
                 </FormItem>
               )}
