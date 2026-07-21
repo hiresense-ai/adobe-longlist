@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { DashboardFrame } from '@/components/dashboard/DashboardFrame'
+import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
 import { useDashboard } from '@/hooks/useDashboard'
 import { useDashboardHtml } from '@/hooks/useDashboardHtml'
 import { useDashboardStatusBridge } from '@/hooks/useDashboardStatusBridge'
@@ -30,6 +31,7 @@ export function DashboardViewer() {
     isLoading: isHtmlLoading,
     error: htmlError,
     isEmpty,
+    hasHireSenseBranding,
   } = useDashboardHtml(dashboard?.storage_path, dashboard?.id)
 
   useDashboardStatusBridge({
@@ -102,6 +104,9 @@ export function DashboardViewer() {
           <p className="text-muted-foreground mt-1 text-sm">
             {dashboard.description}
           </p>
+        )}
+        {!isHtmlLoading && !htmlError && !isEmpty && !hasHireSenseBranding && (
+          <PoweredByHireSense className="mt-1 inline-block" />
         )}
       </div>
 

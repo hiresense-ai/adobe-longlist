@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ThemeToggle } from '@/components/common/ThemeToggle'
+import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES, APP_NAME } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
@@ -47,8 +48,11 @@ export function Navbar() {
           <span className="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg text-sm font-bold">
             A
           </span>
-          <span className="text-foreground hidden text-base font-semibold sm:inline">
-            {APP_NAME}
+          <span className="hidden flex-col sm:flex">
+            <span className="text-foreground text-base leading-tight font-semibold">
+              {APP_NAME}
+            </span>
+            <PoweredByHireSense />
           </span>
         </Link>
 

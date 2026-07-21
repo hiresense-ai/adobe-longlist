@@ -7,6 +7,7 @@ interface UseDashboardHtmlResult {
   isLoading: boolean
   error: Error | null
   isEmpty: boolean
+  hasHireSenseBranding: boolean
 }
 
 interface Result {
@@ -14,6 +15,7 @@ interface Result {
   blobUrl: string | null
   error: Error | null
   isEmpty: boolean
+  hasHireSenseBranding: boolean
 }
 
 /** Downloads a dashboard's HTML from Storage, injects the status bridge script, and exposes it as a blob: URL for a sandboxed iframe. */
@@ -35,14 +37,27 @@ export function useDashboardHtml(
         if (cancelled) return
 
         if (!html.trim()) {
-          setResult({ key, blobUrl: null, error: null, isEmpty: true })
+          setResult({
+            key,
+            blobUrl: null,
+            error: null,
+            isEmpty: true,
+            hasHireSenseBranding: false,
+          })
           return
         }
 
+        const hasHireSenseBranding = /hiresense/i.test(html)
         const withBridge = injectBridgeScript(html, dashboardId)
         const blob = new Blob([withBridge], { type: 'text/html' })
         objectUrl = URL.createObjectURL(blob)
-        setResult({ key, blobUrl: objectUrl, error: null, isEmpty: false })
+        setResult({
+          key,
+          blobUrl: objectUrl,
+          error: null,
+          isEmpty: false,
+          hasHireSenseBranding,
+        })
       })
       .catch((err: unknown) => {
         if (cancelled) return
@@ -52,6 +67,7 @@ export function useDashboardHtml(
           error:
             err instanceof Error ? err : new Error('Failed to load dashboard'),
           isEmpty: false,
+          hasHireSenseBranding: false,
         })
       })
 
@@ -68,5 +84,6 @@ export function useDashboardHtml(
     isLoading: !isCurrent,
     error: isCurrent ? result.error : null,
     isEmpty: isCurrent ? result.isEmpty : false,
+    hasHireSenseBranding: isCurrent ? result.hasHireSenseBranding : false,
   }
 }

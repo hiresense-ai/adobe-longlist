@@ -16,6 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES, APP_NAME } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
@@ -153,6 +154,9 @@ export function Login() {
         <p className="text-muted-foreground mt-6 text-center text-xs">
           Internal access only &middot; contact your admin for an account
         </p>
+        <div className="mt-3 flex justify-center">
+          <PoweredByHireSense />
+        </div>
       </div>
     </div>
   )
