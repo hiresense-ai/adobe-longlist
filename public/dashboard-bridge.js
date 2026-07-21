@@ -474,9 +474,21 @@
       } else if (e.key === 'Home') {
         e.preventDefault()
         setActiveOption(0)
+        optionEls[0].scrollIntoView({ block: 'nearest' })
       } else if (e.key === 'End') {
         e.preventDefault()
         setActiveOption(optionEls.length - 1)
+        optionEls[optionEls.length - 1].scrollIntoView({ block: 'nearest' })
+      } else if (e.key === 'PageDown') {
+        e.preventDefault()
+        var pageNext = Math.min(optionEls.length - 1, activeIndex() + 4)
+        setActiveOption(pageNext)
+        optionEls[pageNext].scrollIntoView({ block: 'nearest' })
+      } else if (e.key === 'PageUp') {
+        e.preventDefault()
+        var pagePrev = Math.max(0, activeIndex() - 4)
+        setActiveOption(pagePrev)
+        optionEls[pagePrev].scrollIntoView({ block: 'nearest' })
       } else if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
         commitActionSelection(trigger, optionValues[activeIndex()])
@@ -502,11 +514,42 @@
       document.addEventListener('click', onOutsideClick, true)
     }, 0)
 
-    function onScrollOrResize() {
+    // Closes the popup if some ANCESTOR of the trigger scrolls (which would
+    // move the trigger out from under this fixed-position popup) — but a
+    // capture-phase listener on window sees every scroll event in the
+    // document, including the popup's own internal list scrolling, so it
+    // must ignore scrolls that originated inside the popup itself. Getting
+    // this wrong closes the popup the instant it's scrolled at all — by
+    // wheel, trackpad, dragging the scrollbar, or the keyboard handlers'
+    // own scrollIntoView calls above — which looks exactly like "scrolling
+    // doesn't work."
+    function onScrollOrResize(e) {
+      if (e && e.type === 'scroll' && e.target && popup.contains(e.target)) {
+        return
+      }
       closeActionPopup()
     }
     window.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
+
+    // While open, block wheel/touch scrolling of anything OUTSIDE the popup
+    // (the dashboard's own table/page) so the trigger never moves under an
+    // open popup — without this, the underlying table or page could still
+    // scroll via mouse wheel or a touchpad even though the popup itself
+    // isn't the target. Scrolling the popup's own content is unaffected,
+    // since events that target it (or land inside it) are left alone.
+    function blockOutsideScroll(e) {
+      if (popup.contains(e.target)) return
+      e.preventDefault()
+    }
+    document.addEventListener('wheel', blockOutsideScroll, {
+      passive: false,
+      capture: true,
+    })
+    document.addEventListener('touchmove', blockOutsideScroll, {
+      passive: false,
+      capture: true,
+    })
 
     openPopupEl = popup
     openTriggerEl = trigger
@@ -514,6 +557,12 @@
       document.removeEventListener('click', onOutsideClick, true)
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
+      document.removeEventListener('wheel', blockOutsideScroll, {
+        capture: true,
+      })
+      document.removeEventListener('touchmove', blockOutsideScroll, {
+        capture: true,
+      })
       popup.removeEventListener('keydown', onKeydown)
     }
   }
