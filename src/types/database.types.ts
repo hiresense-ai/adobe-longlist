@@ -8,6 +8,16 @@ export type CandidateStatus =
   | 'Offer Released'
   | 'Joined'
 
+/** Recruiter-selected next action for a candidate — independent of CandidateStatus. */
+export type CandidateAction =
+  | 'Interview Reject - Adobe'
+  | 'Reviewed earlier (SR) - Adobe'
+  | 'Reviewed earlier (TR) - Adobe'
+  | 'Interview stage - Adobe'
+  | 'Interview stage - HireSense'
+  | 'Offer - Adobe'
+  | 'Offer - HireSense'
+
 export type UserRole = 'admin' | 'viewer'
 
 export interface Database {
@@ -88,6 +98,7 @@ export interface Database {
           candidate_name: string
           candidate_email: string | null
           status: CandidateStatus
+          action: CandidateAction | null
           remarks: string | null
           updated_by: string | null
           updated_at: string
@@ -98,6 +109,7 @@ export interface Database {
           candidate_name: string
           candidate_email?: string | null
           status?: CandidateStatus
+          action?: CandidateAction | null
           remarks?: string | null
           updated_by?: string | null
           updated_at?: string
@@ -108,6 +120,7 @@ export interface Database {
           candidate_name?: string
           candidate_email?: string | null
           status?: CandidateStatus
+          action?: CandidateAction | null
           remarks?: string | null
           updated_by?: string | null
           updated_at?: string

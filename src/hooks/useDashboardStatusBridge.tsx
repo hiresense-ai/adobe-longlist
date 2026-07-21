@@ -5,10 +5,13 @@ import { toast } from 'sonner'
 import { supabase } from '@/supabase/client'
 import {
   listStatusesForDashboard,
+  upsertCandidateAction,
   upsertCandidateStatus,
 } from '@/services/dashboardStatus.service'
 import { StatusBadge } from '@/components/status/StatusBadge'
+import { ActionBadge } from '@/components/status/ActionBadge'
 import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
+import { ACTION_LIST, serializeActionStyles } from '@/config/actionConfig'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import type { DashboardBridgeMessage, DashboardStatus } from '@/types'
@@ -51,6 +54,7 @@ export function useDashboardStatusBridge({
         statuses: list.map((s) => ({
           candidateName: s.candidate_name,
           status: s.status,
+          action: s.action,
         })),
       })
     }
@@ -79,6 +83,8 @@ export function useDashboardStatusBridge({
           type: 'longlist:init-config',
           statusOrder: STATUS_LIST.map((s) => s.value),
           statusStyles: serializeStatusStyles(),
+          actionOrder: ACTION_LIST.map((a) => a.value),
+          actionStyles: serializeActionStyles(),
         })
 
         const statuses = await queryClient.fetchQuery({
@@ -125,6 +131,44 @@ export function useDashboardStatusBridge({
             error: message,
           })
           toast.error(`Couldn't update ${payload.candidateName}'s status`, {
+            description: message,
+          })
+        }
+      }
+
+      if (data.type === 'longlist:action-update') {
+        const { payload } = data
+        if (payload.dashboardId !== id) return
+
+        try {
+          const updated = await upsertCandidateAction(payload)
+          queryClient.setQueryData<DashboardStatus[]>(queryKey, (prev) => {
+            const rest = (prev ?? []).filter((s) => s.id !== updated.id)
+            return [...rest, updated]
+          })
+          postToIframe({
+            type: 'longlist:action-ack',
+            success: true,
+            candidateName: payload.candidateName,
+          })
+          if (payload.action) {
+            toast.success(
+              <span className="flex items-center gap-1.5">
+                {payload.candidateName}
+                <span className="text-muted-foreground">→</span>
+                <ActionBadge action={payload.action} />
+              </span>,
+            )
+          }
+        } catch (error) {
+          const message = getErrorMessage(error, 'Failed to save action')
+          postToIframe({
+            type: 'longlist:action-ack',
+            success: false,
+            candidateName: payload.candidateName,
+            error: message,
+          })
+          toast.error(`Couldn't update ${payload.candidateName}'s action`, {
             description: message,
           })
         }
