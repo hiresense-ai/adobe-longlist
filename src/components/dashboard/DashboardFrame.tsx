@@ -41,7 +41,7 @@ export function DashboardFrame({
   return (
     <div
       ref={containerRef}
-      className="border-border bg-card shadow-soft relative flex h-[calc(100svh-9rem)] w-full flex-col overflow-hidden rounded-2xl border data-[fullscreen]:h-svh data-[fullscreen]:rounded-none"
+      className="relative flex h-full w-full flex-col overflow-hidden data-[fullscreen]:h-svh"
       data-fullscreen={isFullscreen || undefined}
     >
       <Button
@@ -49,7 +49,7 @@ export function DashboardFrame({
         size="icon"
         variant="secondary"
         aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-        className="shadow-soft absolute top-3 right-3 z-10"
+        className="bg-background/90 absolute top-4 right-4 z-10 shadow-lg backdrop-blur-sm transition-shadow hover:shadow-xl"
         onClick={toggleFullscreen}
       >
         {isFullscreen ? (

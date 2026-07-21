@@ -83,11 +83,18 @@ export function DashboardViewer() {
   }
 
   return (
-    <div className="flex h-full flex-col px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mb-4">
+    // Fixed to exactly the viewport height left over below the navbar (h-16
+    // = 4rem), split header/dashboard via flex rather than a hardcoded
+    // offset for the dashboard area — so the header can wrap to whatever
+    // height its own content needs (a long description, a wrapped badge)
+    // without ever pushing the page into a second, outer scrollbar. Only
+    // the iframe's own document scrolls internally if it's taller than the
+    // space it's given, the same way a BI tool's embedded report does.
+    <div className="from-background to-muted/20 flex h-[calc(100svh-4rem)] flex-col overflow-hidden bg-gradient-to-b">
+      <div className="shrink-0 px-4 pt-4 pb-2 sm:px-6 lg:px-8">
         <Link
           to={ROUTES.home}
-          className="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1.5 text-sm"
+          className="text-muted-foreground hover:text-foreground mb-2 inline-flex items-center gap-1.5 text-sm"
         >
           <ArrowLeft className="size-3.5" />
           Back to dashboards
@@ -110,37 +117,57 @@ export function DashboardViewer() {
         )}
       </div>
 
-      {isHtmlLoading && (
-        <div className="border-border bg-card shadow-soft flex h-[calc(100svh-14rem)] items-center justify-center rounded-2xl border">
-          <Loader2 className="text-primary size-8 animate-spin" />
-        </div>
-      )}
-
-      {!isHtmlLoading && htmlError && (
-        <ErrorState
-          title="Couldn't load this dashboard's content"
-          description={getErrorMessage(
-            htmlError,
-            'The file could not be downloaded from storage.',
+      {/* Breaks out of AppLayout's max-w-7xl content column so the
+          dashboard itself can span nearly the full browser width, without
+          touching that shared layout — the standard full-bleed technique:
+          100vw wide, then pulled back by the gap between the constrained
+          container's own 50% and the true viewport 50%. */}
+      <div
+        className="relative min-h-0 flex-1"
+        style={{
+          width: '100vw',
+          marginLeft: 'calc(50% - 50vw)',
+          marginRight: 'calc(50% - 50vw)',
+        }}
+      >
+        <div className="h-full px-0 sm:px-6 lg:px-10">
+          {isHtmlLoading && (
+            <div className="flex h-full items-center justify-center">
+              <Loader2 className="text-primary size-8 animate-spin" />
+            </div>
           )}
-        />
-      )}
 
-      {!isHtmlLoading && !htmlError && isEmpty && (
-        <EmptyState
-          icon={FileWarning}
-          title="This dashboard is empty"
-          description="The HTML file for this dashboard has no content."
-        />
-      )}
+          {!isHtmlLoading && htmlError && (
+            <div className="px-4 py-8 sm:px-0">
+              <ErrorState
+                title="Couldn't load this dashboard's content"
+                description={getErrorMessage(
+                  htmlError,
+                  'The file could not be downloaded from storage.',
+                )}
+              />
+            </div>
+          )}
 
-      {!isHtmlLoading && !htmlError && !isEmpty && blobUrl && (
-        <DashboardFrame
-          src={blobUrl}
-          title={dashboard.title}
-          iframeRef={iframeRef}
-        />
-      )}
+          {!isHtmlLoading && !htmlError && isEmpty && (
+            <div className="px-4 py-8 sm:px-0">
+              <EmptyState
+                icon={FileWarning}
+                title="This dashboard is empty"
+                description="The HTML file for this dashboard has no content."
+              />
+            </div>
+          )}
+
+          {!isHtmlLoading && !htmlError && !isEmpty && blobUrl && (
+            <DashboardFrame
+              src={blobUrl}
+              title={dashboard.title}
+              iframeRef={iframeRef}
+            />
+          )}
+        </div>
+      </div>
     </div>
   )
 }
