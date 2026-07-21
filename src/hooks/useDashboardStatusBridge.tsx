@@ -8,6 +8,7 @@ import {
   upsertCandidateStatus,
 } from '@/services/dashboardStatus.service'
 import { StatusBadge } from '@/components/status/StatusBadge'
+import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import type { DashboardBridgeMessage, DashboardStatus } from '@/types'
@@ -74,6 +75,12 @@ export function useDashboardStatusBridge({
       if (!data || typeof data !== 'object') return
 
       if (data.type === 'longlist:ready') {
+        postToIframe({
+          type: 'longlist:init-config',
+          statusOrder: STATUS_LIST.map((s) => s.value),
+          statusStyles: serializeStatusStyles(),
+        })
+
         const statuses = await queryClient.fetchQuery({
           queryKey,
           queryFn: () => listStatusesForDashboard(id),

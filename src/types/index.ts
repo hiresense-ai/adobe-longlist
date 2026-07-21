@@ -51,6 +51,11 @@ export type DashboardBridgeMessage =
 /** Messages sent from the host app down into the iframe. */
 export type DashboardHostMessage =
   | {
+      type: 'longlist:init-config'
+      statusOrder: import('./database.types').CandidateStatus[]
+      statusStyles: unknown
+    }
+  | {
       type: 'longlist:init-statuses'
       statuses: Array<{
         candidateName: string
