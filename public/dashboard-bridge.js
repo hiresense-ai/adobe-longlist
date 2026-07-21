@@ -62,10 +62,10 @@
       '] {' +
       'all: unset; box-sizing: border-box; display: inline-flex; align-items: center;' +
       'justify-content: space-between; gap: 8px;' +
-      'height: 40px; width: 250px;' +
-      'padding: 0 12px;' +
-      'border-radius: 10px; border: 1px solid transparent;' +
-      'font-weight: 500; font-size: 14px; font-family: inherit; line-height: 1;' +
+      'height: 35px; width: 200px;' +
+      'padding: 0 10px;' +
+      'border-radius: 8px; border: 1px solid transparent;' +
+      'font-weight: 500; font-size: 13px; font-family: inherit; line-height: 1;' +
       'cursor: pointer;' +
       'box-shadow: 0 1px 2px 0 rgba(0,0,0,0.04);' +
       'transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease;' +
@@ -212,9 +212,17 @@
   // <body>, so it's never a descendant of the row in the first place.
   // ---------------------------------------------------------------------
 
+  // Uploaded dashboards are static HTML documents with a fixed light
+  // design — they never change appearance when the host app's own theme
+  // toggle changes. Coloring the Action control from the app's theme (as
+  // the Status select does) previously produced a solid dark-navy fill
+  // whenever the app was in dark mode, clashing badly with the always-light
+  // table around it. So, unlike Status, Action always uses its light
+  // palette regardless of currentTheme.
   var UNSET_ACTION_PALETTE = {
-    light: { background: '#FFFFFF', text: '#6B7280', border: '#D1D5DB' },
-    dark: { background: '#1F2937', text: '#9CA3AF', border: '#374151' },
+    background: '#FFFFFF',
+    text: '#6B7280',
+    border: '#9CA3AF',
   }
 
   var actionUidCounter = 0
@@ -301,10 +309,7 @@
   function applyActionStyle(trigger) {
     var value = getActionValue(trigger)
     var styles = value ? ACTION_STYLES[value] : null
-    var palette =
-      (styles && (styles[currentTheme] || styles.light)) ||
-      UNSET_ACTION_PALETTE[currentTheme] ||
-      UNSET_ACTION_PALETTE.light
+    var palette = (styles && styles.light) || UNSET_ACTION_PALETTE
     trigger.style.backgroundColor = palette.background
     trigger.style.color = palette.text
     trigger.style.borderColor = palette.border
@@ -348,7 +353,6 @@
   function openActionPopup(trigger) {
     closeActionPopup()
 
-    var isDark = currentTheme === 'dark'
     var rect = trigger.getBoundingClientRect()
     var currentValue = getActionValue(trigger)
     var optionValues = [''].concat(ACTION_OPTIONS)
@@ -368,11 +372,11 @@
     popup.style.borderRadius = '10px'
     popup.style.outline = 'none'
     popup.style.fontFamily = 'inherit'
-    popup.style.background = isDark ? '#161B22' : '#FFFFFF'
-    popup.style.border = '1px solid ' + (isDark ? '#30363D' : '#E5E7EB')
+    popup.style.background = '#FFFFFF'
+    popup.style.border = '1px solid #E5E7EB'
     popup.style.boxShadow =
-      '0 10px 15px -3px rgba(0,0,0,0.2), 0 4px 6px -4px rgba(0,0,0,0.15)'
-    popup.style.setProperty('--ll-hover-bg', isDark ? '#21262D' : '#F3F4F6')
+      '0 8px 16px -4px rgba(0,0,0,0.12), 0 2px 4px -2px rgba(0,0,0,0.08)'
+    popup.style.setProperty('--ll-hover-bg', '#F3F4F6')
 
     var spaceBelow = window.innerHeight - rect.bottom
     if (spaceBelow < 220 && rect.top > spaceBelow) {
@@ -390,17 +394,11 @@
       opt.textContent = value || 'Select Action'
       opt.style.padding = '8px 10px'
       opt.style.borderRadius = '8px'
-      opt.style.fontSize = '14px'
+      opt.style.fontSize = '13px'
       opt.style.cursor = 'pointer'
       opt.style.whiteSpace = 'normal'
       opt.style.wordBreak = 'break-word'
-      opt.style.color = value
-        ? isDark
-          ? '#F8FAFC'
-          : '#111827'
-        : isDark
-          ? '#9CA3AF'
-          : '#6B7280'
+      opt.style.color = value ? '#111827' : '#6B7280'
       opt.setAttribute(
         'aria-selected',
         value === currentValue ? 'true' : 'false',
