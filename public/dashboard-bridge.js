@@ -747,23 +747,51 @@
   // ---------------------------------------------------------------------
   // Candidate Details modal — the real uploaded dashboards render this as
   // a pre-existing `<div id="detail" class="detail hidden">` overlay
-  // (position: fixed; inset: 0, its content flex-centered inside it),
+  // (position: fixed; inset: 0; display: flex; align-items: center;
+  // justify-content: center — its content flex-centered inside it),
   // toggled open/closed purely by adding/removing the `hidden` class —
   // never modified here, just watched.
   //
   // Now that this iframe is sized to its full content height rather than
   // a fixed viewport height (see height reporting above), position: fixed
   // inside it is fixed relative to the iframe's own — now much taller —
-  // internal viewport, not whatever part of the page the browser is
-  // currently scrolled to. Concretely: flex-centering inside a full-inset
-  // fixed overlay always centers at exactly half the IFRAME's total
-  // height, regardless of which row was clicked or where the outer page
-  // happens to be scrolled — so without this, the modal opens "centered"
-  // somewhere that's frequently off-screen. Reporting its rect lets the
-  // host scroll the *outer* page to bring that fixed-in-iframe-space
-  // location into view, without touching the dashboard's own modal
-  // markup or logic at all.
+  // internal viewport, not whatever part of the browser window the page
+  // is scrolled to. Concretely: flex-centering inside a full-inset fixed
+  // overlay always centers at exactly half the IFRAME's total height,
+  // regardless of which row was clicked or where the outer page happens
+  // to be scrolled.
+  //
+  // Rather than scrolling the outer page to chase that fixed point (which
+  // moves the page, and the ask here is specifically that it never does),
+  // the host instead continuously reports which slice of THIS iframe's
+  // own coordinate space is currently visible in the browser window (see
+  // longlist:viewport-slice below). On open, that slice is applied as
+  // this overlay's own inset — collapsing its `inset: 0` (the whole
+  // iframe) down to just the currently-visible rectangle — and the
+  // dashboard's own untouched flex-centering does the rest, centering the
+  // card within THAT rectangle instead of the whole iframe. The outer
+  // page's scroll position never changes; only this element's own inline
+  // style is touched, and only for as long as the modal is open.
   // ---------------------------------------------------------------------
+
+  var latestViewportSlice = null
+
+  function applyModalViewportSlice(modal) {
+    if (!latestViewportSlice) return
+    modal.style.top = latestViewportSlice.top + 'px'
+    modal.style.height = latestViewportSlice.height + 'px'
+    modal.style.left = '0px'
+    modal.style.right = '0px'
+    modal.style.bottom = 'auto'
+  }
+
+  function resetModalViewportSlice(modal) {
+    modal.style.top = ''
+    modal.style.height = ''
+    modal.style.left = ''
+    modal.style.right = ''
+    modal.style.bottom = ''
+  }
 
   function watchCandidateDetailModal() {
     var modal = document.getElementById('detail')
@@ -781,13 +809,10 @@
       wasOpen = open
 
       if (open) {
-        var card = modal.firstElementChild || modal
-        var rect = card.getBoundingClientRect()
-        window.parent.postMessage(
-          { type: 'longlist:modal-open', top: rect.top, height: rect.height },
-          '*',
-        )
+        applyModalViewportSlice(modal)
+        window.parent.postMessage({ type: 'longlist:modal-open' }, '*')
       } else {
+        resetModalViewportSlice(modal)
         window.parent.postMessage({ type: 'longlist:modal-close' }, '*')
       }
     }).observe(modal, { attributes: true, attributeFilter: ['class'] })
@@ -886,6 +911,18 @@
       ) {
         currentTheme = data.theme
         applyStylesToAll()
+      }
+
+      if (
+        data.type === 'longlist:viewport-slice' &&
+        typeof data.top === 'number' &&
+        typeof data.height === 'number'
+      ) {
+        latestViewportSlice = { top: data.top, height: data.height }
+        var openModal = document.getElementById('detail')
+        if (openModal && !openModal.classList.contains('hidden')) {
+          applyModalViewportSlice(openModal)
+        }
       }
     })
 

@@ -61,15 +61,7 @@ export type DashboardBridgeMessage =
       dashboardId: string | null
       height: number
     }
-  | {
-      type: 'longlist:modal-open'
-      /** The modal content's position/size relative to the iframe's own
-       * viewport (i.e. a plain getBoundingClientRect() read inside the
-       * iframe) — meaningful to the host only combined with the iframe
-       * element's own position in the outer document. */
-      top: number
-      height: number
-    }
+  | { type: 'longlist:modal-open' }
   | { type: 'longlist:modal-close' }
 
 /** Messages sent from the host app down into the iframe. */
@@ -104,3 +96,12 @@ export type DashboardHostMessage =
       error: string
     }
   | { type: 'longlist:theme-change'; theme: 'light' | 'dark' }
+  | {
+      type: 'longlist:viewport-slice'
+      /** The slice of the iframe's OWN coordinate space (its full content
+       * height, not the outer window) that's currently visible in the
+       * browser — lets the iframe reposition its fixed-position modal to
+       * match the actual viewport without the outer page ever scrolling. */
+      top: number
+      height: number
+    }

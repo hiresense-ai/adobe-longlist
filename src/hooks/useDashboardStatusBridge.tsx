@@ -40,7 +40,7 @@ export function useDashboardStatusBridge({
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
-  const scrollBeforeModalRef = useRef<number | null>(null)
+  const modalOpenRef = useRef(false)
   const bodyOverflowBeforeModalRef = useRef<string>('')
 
   // Resets the reported height when switching to a different dashboard, so
@@ -73,6 +73,38 @@ export function useDashboardStatusBridge({
           status: s.status,
           action: s.action,
         })),
+      })
+    }
+
+    // Tells the iframe which slice of ITS OWN (now full-content-height, see
+    // longlist:resize) coordinate space currently corresponds to what's
+    // actually visible in the browser window — the iframe element itself
+    // is same-origin, so its own rect is directly readable here, even
+    // though its *content* is opaque. The dashboard's Candidate Details
+    // modal is `position: fixed` inside the iframe, which is fixed to the
+    // iframe's own (very tall) viewport, not this page's — sending this
+    // is what lets the iframe reposition that modal to actually match the
+    // current viewport itself, entirely without moving this page's scroll.
+    function postViewportSlice() {
+      const iframe = iframeRef.current
+      if (!iframe) return
+      const rect = iframe.getBoundingClientRect()
+      const visibleTop = Math.max(0, -rect.top)
+      const visibleBottom = Math.min(rect.height, window.innerHeight - rect.top)
+      postToIframe({
+        type: 'longlist:viewport-slice',
+        top: visibleTop,
+        height: Math.max(0, visibleBottom - visibleTop),
+      })
+    }
+
+    let viewportSliceScheduled = false
+    function scheduleViewportSlice() {
+      if (viewportSliceScheduled) return
+      viewportSliceScheduled = true
+      window.requestAnimationFrame(() => {
+        viewportSliceScheduled = false
+        postViewportSlice()
       })
     }
 
@@ -114,6 +146,7 @@ export function useDashboardStatusBridge({
           type: 'longlist:theme-change',
           theme: resolvedTheme === 'dark' ? 'dark' : 'light',
         })
+        postViewportSlice()
         return
       }
 
@@ -159,48 +192,20 @@ export function useDashboardStatusBridge({
       }
 
       if (data.type === 'longlist:modal-open') {
-        const iframe = iframeRef.current
-        if (!iframe) return
-
-        // data.top/height are relative to the iframe's OWN viewport (a
-        // plain getBoundingClientRect() taken inside it) — since the
-        // iframe element itself lives in this document, its own rect is
-        // readable directly, so adding the two together converts that
-        // into a real position on this page.
-        const iframeTop = iframe.getBoundingClientRect().top + window.scrollY
-        const modalTop = iframeTop + data.top
-        const modalBottom = modalTop + data.height
-
-        const viewTop = window.scrollY
-        const viewBottom = viewTop + window.innerHeight
-        const alreadyVisible = modalTop >= viewTop && modalBottom <= viewBottom
-
-        scrollBeforeModalRef.current = window.scrollY
+        // Positioning the modal itself is entirely the iframe's own job now
+        // (it repositions its fixed overlay using the viewport slice this
+        // hook keeps sending — see postViewportSlice above): this page
+        // never moves, so there's nothing to compute or scroll to here.
+        // Only the background-scroll lock is this side's responsibility.
+        modalOpenRef.current = true
         bodyOverflowBeforeModalRef.current = document.body.style.overflow
         document.body.style.overflow = 'hidden'
-
-        if (!alreadyVisible) {
-          const target = Math.max(
-            0,
-            Math.min(
-              modalTop + data.height / 2 - window.innerHeight / 2,
-              document.documentElement.scrollHeight - window.innerHeight,
-            ),
-          )
-          window.scrollTo({ top: target, behavior: 'smooth' })
-        }
         return
       }
 
       if (data.type === 'longlist:modal-close') {
+        modalOpenRef.current = false
         document.body.style.overflow = bodyOverflowBeforeModalRef.current
-        if (scrollBeforeModalRef.current !== null) {
-          window.scrollTo({
-            top: scrollBeforeModalRef.current,
-            behavior: 'smooth',
-          })
-          scrollBeforeModalRef.current = null
-        }
         return
       }
 
@@ -244,6 +249,8 @@ export function useDashboardStatusBridge({
     }
 
     window.addEventListener('message', handleMessage)
+    window.addEventListener('scroll', scheduleViewportSlice, true)
+    window.addEventListener('resize', scheduleViewportSlice)
 
     const channel = supabase
       .channel(`dashboard-status-${id}`)
@@ -275,14 +282,16 @@ export function useDashboardStatusBridge({
 
     return () => {
       window.removeEventListener('message', handleMessage)
+      window.removeEventListener('scroll', scheduleViewportSlice, true)
+      window.removeEventListener('resize', scheduleViewportSlice)
       supabase.removeChannel(channel)
       // Don't leave the page permanently unscrollable if the user
       // navigates away (or the dashboard changes) while the modal is
       // still open — there's no longlist:modal-close coming once this
       // iframe is gone.
-      if (scrollBeforeModalRef.current !== null) {
+      if (modalOpenRef.current) {
         document.body.style.overflow = bodyOverflowBeforeModalRef.current
-        scrollBeforeModalRef.current = null
+        modalOpenRef.current = false
       }
     }
   }, [dashboardId, iframeRef, queryClient, resolvedTheme])
