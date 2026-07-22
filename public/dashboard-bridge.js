@@ -721,13 +721,71 @@
   // catches height changes that aren't caused by a DOM mutation at all —
   // e.g. the browser window narrowing and the table's own text wrapping
   // onto more lines.
+  //
+  // Three independent triggers feed the same scheduleReportHeight(), each
+  // covering a gap the others don't:
+  //  - MutationObserver (childList+subtree+attributes, set up in init()):
+  //    catches re-renders (filter/sort/search rewrite #tbody) and pure
+  //    visibility toggles (tab switches that only flip a class).
+  //  - ResizeObserver on document.documentElement: catches layout reflows
+  //    that aren't DOM mutations at all (window resize, text reflow).
+  //  - A low-frequency poll (below): the guaranteed fallback for anything
+  //    neither observer catches — a canvas redraw, a web component with a
+  //    closed shadow root, a font finishing load, or simply a future
+  //    change to the uploaded dashboard's own script that this bridge's
+  //    authors never anticipated. It only ever *posts* when the measured
+  //    height actually differs from what was last sent, so it costs one
+  //    cheap scrollHeight read per tick and never spams the host.
   // ---------------------------------------------------------------------
 
+  var lastReportedHeight = -1
+
+  // scrollHeight alone can be inflated by a min-height/height:100vh/height:
+  // 100% set anywhere in the ancestor chain (common in dashboard layouts
+  // originally built to fill one screen) — those properties make the box
+  // that tall even when it has no content down there, and scrollHeight
+  // reports that empty space as if it were real. This walks the rendered
+  // leaf elements (nothing with element children — a wrapper div's own box
+  // can be inflated by a min-height on itself or a descendant, but a leaf
+  // never is) and returns the lowest bottom edge among them, which is
+  // exactly where real content ends regardless of any such CSS above it.
+  function measureContentBottom() {
+    if (!document.body) return 0
+    var all = document.body.getElementsByTagName('*')
+    var maxBottom = 0
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i]
+      if (el.children.length > 0) continue
+      var tag = el.tagName
+      if (tag === 'SCRIPT' || tag === 'STYLE') continue
+      var rect = el.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) continue // display:none, detached
+      if (rect.bottom > maxBottom) maxBottom = rect.bottom
+    }
+    return maxBottom
+  }
+
+  function measureHeight() {
+    var scrollHeight = measureRawScrollHeight()
+    var contentBottom = measureContentBottom()
+    // Use whichever is tighter whenever the leaf-content measurement found
+    // something smaller — never larger, so this can only ever correct an
+    // inflated scrollHeight, never clip real content that scrollHeight
+    // itself would have reported. +24px is a small safety margin for
+    // trailing padding/margin below the last leaf that this measurement
+    // can't otherwise see (a leaf's own box excludes an ancestor's
+    // padding-bottom).
+    if (contentBottom > 0 && contentBottom + 24 < scrollHeight) {
+      return Math.ceil(contentBottom) + 24
+    }
+    return scrollHeight
+  }
+
   function reportHeight() {
-    var height = Math.max(
-      document.documentElement.scrollHeight,
-      document.body ? document.body.scrollHeight : 0,
-    )
+    var height = measureHeight()
+    if (height === lastReportedHeight) return
+    lastReportedHeight = height
+    lastPolledScrollHeight = measureRawScrollHeight()
     window.parent.postMessage(
       { type: 'longlist:resize', dashboardId: DASHBOARD_ID, height: height },
       '*',
@@ -743,6 +801,35 @@
       reportHeight()
     })
   }
+
+  // Guaranteed fallback: re-measure on a timer regardless of what triggered
+  // the change, for anything neither observer catches. The full measurement
+  // above (leaf-content walk across every element) is what makes this
+  // correct in the presence of an inflated scrollHeight, but it's too
+  // expensive to run unconditionally every 350ms for the life of the page —
+  // measured at ~55ms across ~2100 elements on a 100-row table, which would
+  // be a meaningful, continuous CPU cost on an otherwise idle page. Real
+  // filter/sort/tab changes never rely on this poll anyway: they're DOM
+  // mutations the MutationObserver already reacts to instantly, running the
+  // full measurement exactly once per interaction. So the poll only needs
+  // to catch changes that skip the DOM/resize path entirely (a canvas
+  // redraw, a closed-shadow-root web component) — for those, gating on a
+  // plain scrollHeight read (cheap: no full-tree walk) before paying for
+  // the expensive measurement is safe, and keeps the idle-page cost to one
+  // property read every 350ms instead of a full DOM walk.
+  var lastPolledScrollHeight = -1
+  function measureRawScrollHeight() {
+    return Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0,
+    )
+  }
+  window.setInterval(function () {
+    var scrollHeight = measureRawScrollHeight()
+    if (scrollHeight === lastPolledScrollHeight) return
+    lastPolledScrollHeight = scrollHeight
+    reportHeight()
+  }, 350)
 
   // ---------------------------------------------------------------------
   // Candidate Details modal — the real uploaded dashboards render this as
@@ -827,6 +914,16 @@
     // wiped when that happens. Re-run the (idempotent) sync on every DOM
     // change so the Action column survives those re-renders. Also close any
     // open popup, since the row it belongs to may no longer exist.
+    //
+    // attributes: true (scoped to class/style) matters just as much as
+    // childList here: switching tabs/sub-tabs in these dashboards is done by
+    // toggling a class like `.panel.on` on already-rendered panels, not by
+    // adding/removing DOM nodes — a childList-only observer never sees that,
+    // so a tab hidden/shown this way (after its first, lazy-init visit)
+    // never triggers a height re-report, leaving the iframe sized to
+    // whatever the previous tab happened to report. Filtering/sorting itself
+    // already rewrites #tbody's innerHTML (a childList change), so it was
+    // already covered — this closes the gap for pure visibility toggles.
     new MutationObserver(function () {
       // Only force-close the popup if the row it belongs to was actually
       // wiped out by a re-render — not on every mutation, since appending
@@ -840,6 +937,8 @@
     }).observe(document.body, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
     })
 
     if (typeof ResizeObserver !== 'undefined') {
