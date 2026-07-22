@@ -24,6 +24,7 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const ALLOWED_ORIGINS = new Set([
   'http://localhost:5173',
   'https://adobe-longlist.vercel.app',
+  'https://longlist.hiresense.ai',
 ])
 
 function corsHeadersFor(req: Request): Record<string, string> {
