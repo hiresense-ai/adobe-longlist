@@ -109,6 +109,107 @@
     )
   }
 
+  // ---------------------------------------------------------------------
+  // CSV export: inject the Action column.
+  //
+  // exportCSV() (private to the dashboard's own closure, in every uploaded
+  // template) builds its CSV from window.__ROWS with every field always
+  // double-quoted and internal quotes doubled to escape them — e.g.
+  //   const q = s => '"' + String(s==null?'':s).replace(/"/g,'""') + '"'
+  // — and has no idea the Action column (a HireSense feature layered on
+  // top, tracked here and in Supabase, never part of the dashboard's own
+  // data) exists at all. Since that function can't be reached or edited
+  // (closure-private, and baked into every already-uploaded file), the
+  // column is added here instead: parse the CSV text this same quoting
+  // convention produced, append an Action field to every row, and
+  // re-serialize with the identical convention so every pre-existing
+  // column round-trips byte-for-byte unchanged.
+  // ---------------------------------------------------------------------
+
+  function parseCsv(text) {
+    var rows = []
+    var row = []
+    var field = ''
+    var inQuotes = false
+    var i = 0
+    while (i < text.length) {
+      var ch = text[i]
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') {
+            field += '"'
+            i += 2
+            continue
+          }
+          inQuotes = false
+          i += 1
+          continue
+        }
+        field += ch
+        i += 1
+        continue
+      }
+      if (ch === '"') {
+        inQuotes = true
+        i += 1
+        continue
+      }
+      if (ch === ',') {
+        row.push(field)
+        field = ''
+        i += 1
+        continue
+      }
+      if (ch === '\r' || ch === '\n') {
+        row.push(field)
+        rows.push(row)
+        field = ''
+        row = []
+        i += ch === '\r' && text[i + 1] === '\n' ? 2 : 1
+        continue
+      }
+      field += ch
+      i += 1
+    }
+    // The dashboard's own export joins rows with no trailing separator, so
+    // the last row is only flushed here, not by hitting a newline above.
+    if (field !== '' || row.length > 0) {
+      row.push(field)
+      rows.push(row)
+    }
+    return rows
+  }
+
+  function formatCsvField(value) {
+    return '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"'
+  }
+
+  // Matches candidates the same way the Action column itself does
+  // everywhere else in this file: by name, lowercased, against
+  // actionValuesByName — no separate identity scheme for export.
+  function injectActionColumn(text) {
+    var rows = parseCsv(text)
+    if (rows.length === 0) return text
+    var header = rows[0]
+    var nameIdx = header.indexOf('name')
+    // Format doesn't match what exportCSV() is known to produce — leave
+    // the export exactly as the dashboard built it rather than guess.
+    if (nameIdx === -1) return text
+
+    var out = [header.concat(['Action'])]
+    for (var i = 1; i < rows.length; i++) {
+      var row = rows[i]
+      var name = row[nameIdx] || ''
+      var action = actionValuesByName[name.toLowerCase()] || ''
+      out.push(row.concat([action]))
+    }
+    return out
+      .map(function (r) {
+        return r.map(formatCsvField).join(',')
+      })
+      .join('\r\n')
+  }
+
   var origAnchorClick = HTMLAnchorElement.prototype.click
   HTMLAnchorElement.prototype.click = function () {
     var href = this.getAttribute('href') || ''
@@ -130,7 +231,24 @@
     }
 
     var mimeType = blob.type
-    if (blob.arrayBuffer) {
+    if (mimeType && /csv/i.test(mimeType) && blob.text) {
+      blob.text().then(function (text) {
+        var augmented
+        try {
+          augmented = injectActionColumn(text)
+        } catch (e) {
+          // Never let a parsing bug turn into a broken/missing export —
+          // fall back to sending the file exactly as the dashboard built
+          // it, same as before this feature existed.
+          augmented = text
+        }
+        // Blob.text() decodes via UTF-8 and drops a leading BOM in the
+        // process (see sendFileToParent below) — re-added here so the
+        // re-encoded bytes match what exportCSV() itself always emits.
+        var bytes = new TextEncoder().encode('﻿' + augmented).buffer
+        sendFileToParent(filename, bytes, mimeType)
+      })
+    } else if (blob.arrayBuffer) {
       blob.arrayBuffer().then(function (buffer) {
         sendFileToParent(filename, buffer, mimeType)
       })
