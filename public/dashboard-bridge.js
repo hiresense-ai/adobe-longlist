@@ -392,6 +392,7 @@
   var openPopupEl = null
   var openTriggerEl = null
   var closeOpenPopup = null
+  var repositionOpenPopup = null
 
   function getHeaderCells(table) {
     var head = table.querySelector('thead')
@@ -510,6 +511,7 @@
     openPopupEl = null
     openTriggerEl = null
     closeOpenPopup = null
+    repositionOpenPopup = null
     if (cleanup) cleanup()
     if (popup.parentNode) popup.parentNode.removeChild(popup)
     document
@@ -535,6 +537,15 @@
     popup.style.zIndex = '2147483000'
     popup.style.width = rect.width + 'px'
     popup.style.overflowY = 'auto'
+    popup.style.overflowX = 'hidden'
+    // Standard scroll-chaining containment: once the popup's own internal
+    // scroll hits its end, this keeps the scroll gesture from continuing on
+    // into whatever is behind it — the page must never scroll BECAUSE OF
+    // the popup, even though the page (and the dashboard's own scrollable
+    // containers) may still scroll for other reasons while the popup is
+    // open, which is exactly what the reposition-on-scroll logic below
+    // tracks rather than blocks.
+    popup.style.overscrollBehavior = 'contain'
     popup.style.boxSizing = 'border-box'
     popup.style.padding = '6px'
     popup.style.borderRadius = '10px'
@@ -545,31 +556,9 @@
     popup.style.boxShadow =
       '0 8px 16px -4px rgba(0,0,0,0.12), 0 2px 4px -2px rgba(0,0,0,0.08)'
     popup.style.setProperty('--ll-hover-bg', '#F3F4F6')
-
-    // window.innerHeight here is the iframe's OWN viewport — the true hard
-    // clip boundary, since content inside a sandboxed iframe can never
-    // render outside the iframe's own box no matter how it's positioned.
-    // Rather than a fixed maxHeight + binary flip, pick whichever side (up
-    // or down) has more room, then cap maxHeight to what that side actually
-    // has — otherwise a short iframe would clip part of the list with no
-    // way to scroll to it, since the clipping happens at the iframe edge,
-    // outside the popup's own overflow:auto box.
-    var GAP = 4
-    var EDGE_MARGIN = 8
-    var spaceBelow = window.innerHeight - rect.bottom - GAP - EDGE_MARGIN
-    var spaceAbove = rect.top - GAP - EDGE_MARGIN
-    var openUpward = spaceBelow < 160 && spaceAbove > spaceBelow
-    var maxHeight = Math.max(
-      120,
-      Math.min(320, openUpward ? spaceAbove : spaceBelow),
-    )
-    popup.style.maxHeight = maxHeight + 'px'
-    if (openUpward) {
-      popup.style.bottom = window.innerHeight - rect.top + GAP + 'px'
-    } else {
-      popup.style.top = rect.bottom + GAP + 'px'
-    }
-    popup.style.left = rect.left + 'px'
+    // No top/bottom/left/maxHeight yet — those depend on the popup's own
+    // real height, which isn't known until its content (built below)
+    // actually exists in the DOM to measure.
 
     var optionEls = optionValues.map(function (value, i) {
       var opt = document.createElement('div')
@@ -611,7 +600,114 @@
     var initialIndex = Math.max(0, optionValues.indexOf(currentValue))
     setActiveOption(initialIndex)
 
+    // Hidden while appended so the measure-then-position pass below never
+    // paints at its unpositioned (in-flow) location first — everything
+    // between this and clearing visibility runs synchronously, so nothing
+    // is ever actually shown on screen before it's correctly placed.
+    popup.style.visibility = 'hidden'
     document.body.appendChild(popup)
+
+    var GAP = 4
+    var EDGE_MARGIN = 8
+    var naturalHeight = 0
+
+    // "Available space" is measured against latestViewportSlice, not
+    // window.innerHeight, on the vertical axis. This iframe has no internal
+    // scrolling of its own — DashboardFrame sizes its CSS height to exactly
+    // match its full reported content height — so window.innerHeight inside
+    // it is the height of the ENTIRE page, not what's actually visible in
+    // the real browser window right now. The Candidate Details modal solved
+    // the same problem via longlist:viewport-slice; reused here for the
+    // same reason, falling back to the full iframe height only in the
+    // narrow window before the first slice has arrived. Horizontal space
+    // still reads window.innerWidth directly: nothing auto-resizes the
+    // iframe's width the way its height is auto-resized, so it already
+    // tracks the real visible width with no substitution needed.
+    function getVisibleRect() {
+      var visibleTop = latestViewportSlice ? latestViewportSlice.top : 0
+      var visibleBottom = latestViewportSlice
+        ? latestViewportSlice.top + latestViewportSlice.height
+        : window.innerHeight
+      return {
+        top: visibleTop,
+        bottom: visibleBottom,
+        left: 0,
+        right: window.innerWidth,
+      }
+    }
+
+    // The one placement routine used for every open, every row, every
+    // reposition — nothing here keys on which row this is, so there is
+    // nothing to special-case for "last row" or "near the bottom": the same
+    // measure-and-decide pass runs identically regardless of position.
+    //
+    // remeasure=true re-derives the popup's natural (unconstrained) height
+    // at the trigger's CURRENT width before placing it — needed on resize,
+    // since a narrower/wider trigger can re-wrap option text into a
+    // different number of lines, changing how tall the popup actually wants
+    // to be. Scroll-driven repositioning never changes the trigger's width,
+    // so it skips this (cheap: no forced layout, no visible jump) and
+    // reuses the last measured height.
+    function applyPlacement(remeasure) {
+      var r = trigger.getBoundingClientRect()
+      if (remeasure) {
+        popup.style.maxHeight = ''
+        popup.style.width = r.width + 'px'
+        naturalHeight = popup.offsetHeight
+      }
+      var visible = getVisibleRect()
+      var viewTop = visible.top + EDGE_MARGIN
+      var viewBottom = visible.bottom - EDGE_MARGIN
+      var viewLeft = visible.left + EDGE_MARGIN
+      var viewRight = visible.right - EDGE_MARGIN
+
+      // Pick a side: bottom-start if the full popup fits there; else
+      // top-start if it fits there; else whichever side has more room (its
+      // remainder stays reachable via the popup's own overflow-y:auto).
+      // This choice only decides which edge of the trigger to dock
+      // against — it is NOT what guarantees the popup stays on screen;
+      // the clamp below does that unconditionally, so an imperfect guess
+      // here (e.g. right after a resize, before the trigger's own
+      // position has caught up) still can't produce an overflow.
+      var spaceBelow = viewBottom - r.bottom - GAP
+      var spaceAbove = r.top - viewTop - GAP
+      var openUpward =
+        spaceBelow >= naturalHeight
+          ? false
+          : spaceAbove >= naturalHeight || spaceAbove > spaceBelow
+
+      // Height can never exceed the visible slice itself.
+      var maxHeight = Math.max(0, Math.min(naturalHeight, viewBottom - viewTop))
+
+      // Dock against the trigger on the chosen side, then slide (never
+      // shrink further — maxHeight is already guaranteed to fit) until
+      // fully inside [viewTop, viewBottom]. Sliding instead of trusting
+      // the trigger's raw position is what keeps this correct even when
+      // the trigger itself has scrolled outside the visible slice — e.g.
+      // immediately after the browser window gets shorter, before the
+      // trigger's own on-screen position reflects that.
+      var top = openUpward ? r.top - GAP - maxHeight : r.bottom + GAP
+      top = Math.min(top, viewBottom - maxHeight)
+      top = Math.max(top, viewTop)
+      popup.style.maxHeight = maxHeight + 'px'
+      popup.style.bottom = ''
+      popup.style.top = top + 'px'
+
+      // Horizontal: the Action column is `position:sticky; right:0`, so a
+      // trigger near the end of a wide table can sit at or past the right
+      // edge. Same dock-then-slide approach: prefer start-aligning to the
+      // trigger's left edge, then slide until fully inside the viewport
+      // regardless of where the trigger itself ended up.
+      var width = Math.min(r.width, Math.max(0, viewRight - viewLeft))
+      popup.style.width = width + 'px'
+      var left = r.left
+      left = Math.min(left, viewRight - width)
+      left = Math.max(left, viewLeft)
+      popup.style.left = left + 'px'
+    }
+
+    applyPlacement(true)
+    popup.style.visibility = ''
     // Keep the current selection visible without an animated jump, in case
     // it's scrolled out of the now-height-capped view.
     optionEls[initialIndex].scrollIntoView({ block: 'nearest' })
@@ -683,55 +779,54 @@
       document.addEventListener('click', onOutsideClick, true)
     }, 0)
 
-    // Closes the popup if some ANCESTOR of the trigger scrolls (which would
-    // move the trigger out from under this fixed-position popup) — but a
-    // capture-phase listener on window sees every scroll event in the
-    // document, including the popup's own internal list scrolling, so it
-    // must ignore scrolls that originated inside the popup itself. Getting
-    // this wrong closes the popup the instant it's scrolled at all — by
-    // wheel, trackpad, dragging the scrollbar, or the keyboard handlers'
-    // own scrollIntoView calls above — which looks exactly like "scrolling
-    // doesn't work."
-    function onScrollOrResize(e) {
-      if (e && e.type === 'scroll' && e.target && popup.contains(e.target)) {
-        return
-      }
-      closeActionPopup()
+    // Recompute placement on any scroll or resize while the popup stays
+    // open — standard adaptive-menu behavior (Material UI / Radix / Ant
+    // Design / Select2 all track the trigger this way) instead of
+    // dismissing the popup the instant anything moves. A capture-phase
+    // listener on window sees every scroll event in the document —
+    // including a horizontally-scrollable table wrapper ("the dashboard
+    // scrolls") — but must ignore the popup's OWN internal list scrolling,
+    // which isn't a reason to move the popup, just to scroll within it.
+    // rAF-batched so a burst of scroll events only recomputes once per
+    // frame; remeasure requests (from resize) are OR'd across whatever
+    // scroll/resize calls land in the same frame so none get dropped.
+    function onScroll(e) {
+      if (e && e.target && popup.contains(e.target)) return
+      scheduleReposition(false)
     }
-    window.addEventListener('scroll', onScrollOrResize, true)
-    window.addEventListener('resize', onScrollOrResize)
-
-    // While open, block wheel/touch scrolling of anything OUTSIDE the popup
-    // (the dashboard's own table/page) so the trigger never moves under an
-    // open popup — without this, the underlying table or page could still
-    // scroll via mouse wheel or a touchpad even though the popup itself
-    // isn't the target. Scrolling the popup's own content is unaffected,
-    // since events that target it (or land inside it) are left alone.
-    function blockOutsideScroll(e) {
-      if (popup.contains(e.target)) return
-      e.preventDefault()
+    function onResize() {
+      scheduleReposition(true)
     }
-    document.addEventListener('wheel', blockOutsideScroll, {
-      passive: false,
-      capture: true,
-    })
-    document.addEventListener('touchmove', blockOutsideScroll, {
-      passive: false,
-      capture: true,
-    })
+    var repositionScheduled = false
+    var pendingRemeasure = false
+    function scheduleReposition(remeasure) {
+      if (remeasure) pendingRemeasure = true
+      if (repositionScheduled) return
+      repositionScheduled = true
+      window.requestAnimationFrame(function () {
+        repositionScheduled = false
+        var remeasureNow = pendingRemeasure
+        pendingRemeasure = false
+        if (openPopupEl !== popup) return
+        applyPlacement(remeasureNow)
+      })
+    }
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onResize)
 
     openPopupEl = popup
     openTriggerEl = trigger
+    // "The page scrolls" (the OUTER browser window — a separate document
+    // this iframe never gets scroll events from directly) is covered here:
+    // the longlist:viewport-slice handler calls this on every new slice the
+    // host reports, which is exactly on outer scroll/resize/zoom.
+    repositionOpenPopup = function () {
+      scheduleReposition(false)
+    }
     closeOpenPopup = function () {
       document.removeEventListener('click', onOutsideClick, true)
-      window.removeEventListener('scroll', onScrollOrResize, true)
-      window.removeEventListener('resize', onScrollOrResize)
-      document.removeEventListener('wheel', blockOutsideScroll, {
-        capture: true,
-      })
-      document.removeEventListener('touchmove', blockOutsideScroll, {
-        capture: true,
-      })
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onResize)
       popup.removeEventListener('keydown', onKeydown)
     }
   }
@@ -1651,6 +1746,7 @@
         if (openModal && !openModal.classList.contains('hidden')) {
           applyModalViewportSlice(openModal)
         }
+        if (repositionOpenPopup) repositionOpenPopup()
       }
     })
 
