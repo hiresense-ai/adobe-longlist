@@ -61,6 +61,16 @@ export type DashboardBridgeMessage =
       dashboardId: string | null
       height: number
     }
+  | {
+      type: 'longlist:modal-open'
+      /** The modal content's position/size relative to the iframe's own
+       * viewport (i.e. a plain getBoundingClientRect() read inside the
+       * iframe) — meaningful to the host only combined with the iframe
+       * element's own position in the outer document. */
+      top: number
+      height: number
+    }
+  | { type: 'longlist:modal-close' }
 
 /** Messages sent from the host app down into the iframe. */
 export type DashboardHostMessage =

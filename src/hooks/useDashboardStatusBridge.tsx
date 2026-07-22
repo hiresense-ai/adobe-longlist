@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
@@ -40,6 +40,8 @@ export function useDashboardStatusBridge({
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
+  const scrollBeforeModalRef = useRef<number | null>(null)
+  const bodyOverflowBeforeModalRef = useRef<string>('')
 
   // Resets the reported height when switching to a different dashboard, so
   // it doesn't briefly render the new iframe at the previous one's height
@@ -156,6 +158,52 @@ export function useDashboardStatusBridge({
         return
       }
 
+      if (data.type === 'longlist:modal-open') {
+        const iframe = iframeRef.current
+        if (!iframe) return
+
+        // data.top/height are relative to the iframe's OWN viewport (a
+        // plain getBoundingClientRect() taken inside it) — since the
+        // iframe element itself lives in this document, its own rect is
+        // readable directly, so adding the two together converts that
+        // into a real position on this page.
+        const iframeTop = iframe.getBoundingClientRect().top + window.scrollY
+        const modalTop = iframeTop + data.top
+        const modalBottom = modalTop + data.height
+
+        const viewTop = window.scrollY
+        const viewBottom = viewTop + window.innerHeight
+        const alreadyVisible = modalTop >= viewTop && modalBottom <= viewBottom
+
+        scrollBeforeModalRef.current = window.scrollY
+        bodyOverflowBeforeModalRef.current = document.body.style.overflow
+        document.body.style.overflow = 'hidden'
+
+        if (!alreadyVisible) {
+          const target = Math.max(
+            0,
+            Math.min(
+              modalTop + data.height / 2 - window.innerHeight / 2,
+              document.documentElement.scrollHeight - window.innerHeight,
+            ),
+          )
+          window.scrollTo({ top: target, behavior: 'smooth' })
+        }
+        return
+      }
+
+      if (data.type === 'longlist:modal-close') {
+        document.body.style.overflow = bodyOverflowBeforeModalRef.current
+        if (scrollBeforeModalRef.current !== null) {
+          window.scrollTo({
+            top: scrollBeforeModalRef.current,
+            behavior: 'smooth',
+          })
+          scrollBeforeModalRef.current = null
+        }
+        return
+      }
+
       if (data.type === 'longlist:action-update') {
         const { payload } = data
         if (payload.dashboardId !== id) return
@@ -228,6 +276,14 @@ export function useDashboardStatusBridge({
     return () => {
       window.removeEventListener('message', handleMessage)
       supabase.removeChannel(channel)
+      // Don't leave the page permanently unscrollable if the user
+      // navigates away (or the dashboard changes) while the modal is
+      // still open — there's no longlist:modal-close coming once this
+      // iframe is gone.
+      if (scrollBeforeModalRef.current !== null) {
+        document.body.style.overflow = bodyOverflowBeforeModalRef.current
+        scrollBeforeModalRef.current = null
+      }
     }
   }, [dashboardId, iframeRef, queryClient, resolvedTheme])
 

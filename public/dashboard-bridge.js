@@ -744,8 +744,58 @@
     })
   }
 
+  // ---------------------------------------------------------------------
+  // Candidate Details modal — the real uploaded dashboards render this as
+  // a pre-existing `<div id="detail" class="detail hidden">` overlay
+  // (position: fixed; inset: 0, its content flex-centered inside it),
+  // toggled open/closed purely by adding/removing the `hidden` class —
+  // never modified here, just watched.
+  //
+  // Now that this iframe is sized to its full content height rather than
+  // a fixed viewport height (see height reporting above), position: fixed
+  // inside it is fixed relative to the iframe's own — now much taller —
+  // internal viewport, not whatever part of the page the browser is
+  // currently scrolled to. Concretely: flex-centering inside a full-inset
+  // fixed overlay always centers at exactly half the IFRAME's total
+  // height, regardless of which row was clicked or where the outer page
+  // happens to be scrolled — so without this, the modal opens "centered"
+  // somewhere that's frequently off-screen. Reporting its rect lets the
+  // host scroll the *outer* page to bring that fixed-in-iframe-space
+  // location into view, without touching the dashboard's own modal
+  // markup or logic at all.
+  // ---------------------------------------------------------------------
+
+  function watchCandidateDetailModal() {
+    var modal = document.getElementById('detail')
+    if (!modal || !modal.classList.contains('detail')) return
+
+    function isOpen() {
+      return !modal.classList.contains('hidden')
+    }
+
+    var wasOpen = isOpen()
+
+    new MutationObserver(function () {
+      var open = isOpen()
+      if (open === wasOpen) return
+      wasOpen = open
+
+      if (open) {
+        var card = modal.firstElementChild || modal
+        var rect = card.getBoundingClientRect()
+        window.parent.postMessage(
+          { type: 'longlist:modal-open', top: rect.top, height: rect.height },
+          '*',
+        )
+      } else {
+        window.parent.postMessage({ type: 'longlist:modal-close' }, '*')
+      }
+    }).observe(modal, { attributes: true, attributeFilter: ['class'] })
+  }
+
   function init() {
     injectBaseStyles()
+    watchCandidateDetailModal()
 
     // Some uploaded dashboards render/re-render their whole table body from
     // their own script (filters, sorting, search) — anything we inject gets
