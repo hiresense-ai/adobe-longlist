@@ -138,6 +138,26 @@
   }
 }
 
+/**
+ * Shared page container for the app chrome (navbar + routed pages).
+ *
+ * Replaces a hard `max-w-7xl` (1280px), which pinned every page to that
+ * width no matter how large the display — the wider the monitor, the
+ * larger the empty gutters. This scales with the viewport instead:
+ * ~92vw once past 1280px, so a 1920/2560 screen is actually used, while
+ * the upper bound keeps line lengths readable rather than letting text
+ * run edge-to-edge across a 4K panel.
+ *
+ * clamp()'s lower bound only ever applies as a *max-width*, so on small
+ * screens `width: 100%` still wins and nothing overflows — the element
+ * is simply as wide as the viewport allows.
+ */
+.app-container {
+  width: 100%;
+  margin-inline: auto;
+  max-width: clamp(80rem, 92vw, 150rem);
+}
+
 ::selection {
   background-color: var(--primary);
   color: var(--primary-foreground);
