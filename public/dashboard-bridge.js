@@ -206,7 +206,35 @@
       '][aria-expanded="true"] [' +
       ACTION_CHEVRON_ATTR +
       '] { transform: rotate(180deg); }' +
-      '.ll-action-option:hover, .ll-action-option[data-active="true"] { background: var(--ll-hover-bg, rgba(0,0,0,0.05)); }'
+      '.ll-action-option:hover, .ll-action-option[data-active="true"] { background: var(--ll-hover-bg, rgba(0,0,0,0.05)); }' +
+      // -----------------------------------------------------------------
+      // Full-width layout on large displays.
+      //
+      // The uploaded dashboards cap their three structural containers at
+      // `max-width: 1400px; margin: 0 auto`, from back when they were
+      // standalone files opened directly in a browser tab. Inside this
+      // app the iframe already spans the full viewport width at every
+      // resolution (100vw full-bleed wrapper -> w-full container ->
+      // size-full iframe, no fixed widths anywhere), so that 1400px cap
+      // is the only thing left constraining the layout: at 1366px the
+      // viewport is narrower than the cap and the dashboard appears to
+      // fill the screen, while at 1920/2560/4K it stays 1400px wide and
+      // centered, with the extra space showing as empty gutters.
+      //
+      // Overriding it here rather than in the uploaded HTML keeps those
+      // files untouched and fixes every dashboard already in Storage
+      // without re-uploading any of them.
+      //
+      // Deliberately scoped to those layout containers only. Two other
+      // max-widths in the same stylesheet are intentional and left
+      // alone: `.dcard` (660px) keeps the Candidate Details modal a
+      // readable card instead of stretching it across a 4K screen, and
+      // `.sec-sub` (85ch) keeps prose at a readable measure.
+      '.hz, .tabs, .main { max-width: 100% !important; }' +
+      // The template's own padding is tuned for a 1400px column; on a
+      // very wide screen a little more breathing room keeps content off
+      // the bezel without reintroducing a hard cap.
+      '@media (min-width: 1600px) { .hz, .main { padding-left: 48px !important; padding-right: 48px !important; } .tabs { padding-left: 36px !important; padding-right: 36px !important; } }'
     document.head.appendChild(style)
   }
 
