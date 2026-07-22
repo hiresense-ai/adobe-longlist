@@ -35,6 +35,13 @@ export const MAX_THUMBNAIL_SIZE_BYTES = 5 * 1024 * 1024
 export const ALLOWED_HTML_MIME_TYPES = ['text/html'] as const
 export const MAX_HTML_SIZE_BYTES = 10 * 1024 * 1024
 
+export const ALLOWED_CSV_MIME_TYPES = [
+  'text/csv',
+  'application/vnd.ms-excel',
+  'text/plain',
+] as const
+export const MAX_CSV_SIZE_BYTES = 10 * 1024 * 1024
+
 export const APP_NAME = 'Adobe Longlist'
 export const APP_DESCRIPTION =
   'Secure dashboard portal for tracking and updating candidate status across hiring dashboards.'

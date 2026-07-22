@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { LayoutGrid, SearchX, Upload } from 'lucide-react'
+import { LayoutGrid, RefreshCw, SearchX, Upload } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useDashboards } from '@/hooks/useDashboards'
@@ -9,6 +9,7 @@ import { filterDashboards } from '@/services/dashboards.service'
 import { DashboardCard } from '@/components/dashboard/DashboardCard'
 import { DashboardCardSkeleton } from '@/components/dashboard/DashboardCardSkeleton'
 import { UploadDashboardDialog } from '@/components/dashboard/UploadDashboardDialog'
+import { UpdateCandidatesDialog } from '@/components/dashboard/UpdateCandidatesDialog'
 import { DashboardBackground } from '@/components/dashboard/DashboardBackground'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
@@ -20,6 +21,7 @@ export function Dashboard() {
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const [isUploadOpen, setIsUploadOpen] = useState(false)
+  const [isUpdateCandidatesOpen, setIsUpdateCandidatesOpen] = useState(false)
   const {
     data: dashboards,
     isLoading,
@@ -47,18 +49,33 @@ export function Dashboard() {
             </p>
           </div>
           {isAdmin && (
-            <Button onClick={() => setIsUploadOpen(true)}>
-              <Upload className="size-4" />
-              Upload dashboard
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setIsUpdateCandidatesOpen(true)}
+              >
+                <RefreshCw className="size-4" />
+                Update Candidates
+              </Button>
+              <Button onClick={() => setIsUploadOpen(true)}>
+                <Upload className="size-4" />
+                Upload dashboard
+              </Button>
+            </div>
           )}
         </div>
 
         {isAdmin && (
-          <UploadDashboardDialog
-            open={isUploadOpen}
-            onOpenChange={setIsUploadOpen}
-          />
+          <>
+            <UploadDashboardDialog
+              open={isUploadOpen}
+              onOpenChange={setIsUploadOpen}
+            />
+            <UpdateCandidatesDialog
+              open={isUpdateCandidatesOpen}
+              onOpenChange={setIsUpdateCandidatesOpen}
+            />
+          </>
         )}
 
         {isLoading && (
