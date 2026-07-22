@@ -234,7 +234,23 @@
       // The template's own padding is tuned for a 1400px column; on a
       // very wide screen a little more breathing room keeps content off
       // the bezel without reintroducing a hard cap.
-      '@media (min-width: 1600px) { .hz, .main { padding-left: 48px !important; padding-right: 48px !important; } .tabs { padding-left: 36px !important; padding-right: 36px !important; } }'
+      '@media (min-width: 1600px) { .hz, .main { padding-left: 48px !important; padding-right: 48px !important; } .tabs { padding-left: 36px !important; padding-right: 36px !important; } }' +
+      // Candidate Explorer pagination bar — appended after the table by
+      // syncTablePagination() below. Styled to match the dashboard's own
+      // design tokens (--accent/--gray/--gb/--ink) rather than this
+      // bridge's own palette, so it reads as native to the dashboard.
+      '.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px 4px; font-size: 13px; color: var(--gray); }' +
+      '.pg-lbl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }' +
+      '.pg-lbl select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--gb); border-radius: 8px; background: #fff; color: var(--ink); cursor: pointer; }' +
+      '.pg-mid { font-weight: 600; color: var(--ink); }' +
+      '.pg-right { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }' +
+      '.pg-nav, .pg-num { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--gb); background: #fff; color: var(--ink); border-radius: 8px; cursor: pointer; transition: border-color .15s ease, color .15s ease; }' +
+      '.pg-num { min-width: 34px; }' +
+      '.pg-nav[disabled] { opacity: .45; cursor: default; }' +
+      '.pg-num.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }' +
+      '.pg-num:hover:not(.on), .pg-nav:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }' +
+      '.pg-gap { padding: 0 2px; color: var(--gray); }' +
+      '@media (max-width: 820px) { .pager { justify-content: center; text-align: center; } }'
     document.head.appendChild(style)
   }
 
@@ -861,6 +877,467 @@
   }
 
   // ---------------------------------------------------------------------
+  // Candidate Explorer pagination.
+  //
+  // The dashboard's own render() hard-caps at view.slice(0,300) and prints
+  // a static "Showing first 300 of X" notice — rows past 300 are simply
+  // never in the DOM. window.__ROWS is the SAME array apply() assigns
+  // right before calling render() (`window.__ROWS=view; render(); ...`):
+  // the complete, already-filtered-and-sorted result set. That's the only
+  // thing read here. Filtering, searching and sorting live entirely
+  // inside apply()/view/F/sortK, which are never called, read, or
+  // reimplemented — this only ever reads the array apply() already
+  // produced, never window.__ROWS's contents in a way that could get out
+  // of sync with them.
+  //
+  // render() itself, and the private per-cell helpers it uses
+  // (lvlCell/bestTag/badge/liHref/escH), live inside the dashboard's own
+  // closure — a separate <script> tag, not a shared scope, so none of
+  // them can be called from here. The cell markup below is reconstructed
+  // rather than duplicated: every value it displays comes from
+  // window.__ROWS itself, and the two small lookup tables it needs
+  // (level names, seniority labels) are pulled out of the dashboard's own
+  // inline script by regex rather than hardcoded, so they can never drift
+  // from what the dashboard actually defines. Persona colors are
+  // harvested from the dashboard's own already-rendered .persona-tag
+  // elements the first time this runs (before this ever touches #tbody),
+  // so they're read from its real output, not re-derived. All of this
+  // was verified cell-by-cell against the live dashboard, not assumed.
+  //
+  // Reset-to-page-1 is driven purely by window.__ROWS's identity:
+  // apply() assigns a brand-new array to it every time filtering, search,
+  // or sort runs, so `rows !== state.lastRows` is true exactly when the
+  // result set changed — no need to know *why* it changed, so filtering/
+  // searching/sorting are only ever observed by reference, never touched.
+  // ---------------------------------------------------------------------
+
+  var PG_SIZES = [25, 50, 75, 100, 'all']
+  var PG_DEFAULT_SIZE = 25
+  var PG_ROW_ATTR = 'data-longlist-pg-row'
+  var PG_PAGER_ATTR = 'data-longlist-pager'
+
+  var pgStateByTable = new WeakMap()
+
+  function getPgState(table) {
+    var state = pgStateByTable.get(table)
+    if (!state) {
+      state = {
+        page: 1,
+        size: PG_DEFAULT_SIZE,
+        lastRows: null,
+        lookups: null,
+        dirty: true,
+      }
+      pgStateByTable.set(table, state)
+    }
+    return state
+  }
+
+  // Gated on both the table's headers AND the actual shape of
+  // window.__ROWS's own data — this table's row template is specific to
+  // this dashboard generator's candidate fields (rank/name/tag/
+  // best_persona), so it must never activate against some other table
+  // that merely happens to have Name/Status-looking headers.
+  function isExplorerTable(table) {
+    var headerCells = getHeaderCells(table)
+    if (!headerCells.length) return false
+    if (findColumnIndex(headerCells, isNameHeader) === -1) return false
+    if (findColumnIndex(headerCells, isStatusHeader) === -1) return false
+    var rows = window.__ROWS
+    if (!Array.isArray(rows)) return false
+    // An empty result set (0 candidates, from a filter/search that
+    // matched nothing) is a legitimate state to paginate, not a reason to
+    // bail — there's just no sample row available to shape-check, so the
+    // header match above is what this table's identity rests on here.
+    if (!rows.length) return true
+    var sample = rows[0]
+    return (
+      typeof sample.rank !== 'undefined' &&
+      typeof sample.name === 'string' &&
+      typeof sample.tag === 'string' &&
+      typeof sample.best_persona !== 'undefined'
+    )
+  }
+
+  function findInlineScriptContaining(needle) {
+    var scripts = document.querySelectorAll('script:not([src])')
+    for (var i = 0; i < scripts.length; i++) {
+      if (scripts[i].textContent.indexOf(needle) !== -1)
+        return scripts[i].textContent
+    }
+    return ''
+  }
+
+  // Pulls a small literal object (e.g. `const LVLN={0:'Intern',...}`) out
+  // of the dashboard's own script text instead of hardcoding its values
+  // here, so a future change to these labels in the generator is picked
+  // up automatically rather than silently going stale.
+  function extractLiteralObject(source, varName) {
+    var match = new RegExp(
+      '(?:const|var|let)\\s+' + varName + '\\s*=\\s*(\\{[^{}]*\\})',
+    ).exec(source)
+    if (!match) return null
+    try {
+      // Parses a small literal object out of the dashboard's own script
+      // text — code already trusted enough to be executing in this
+      // sandboxed iframe; nothing new is being trusted here.
+      return new Function('return (' + match[1] + ')')()
+    } catch (e) {
+      return null
+    }
+  }
+
+  // Valid only against the dashboard's OWN native render (view.slice(0,300)):
+  // the Nth <tr> there corresponds exactly to window.__ROWS[N]. Must run
+  // before this file ever writes to #tbody itself, which is why
+  // ensurePgLookups() only calls this on a table's very first sync.
+  function harvestPersonaColors(table) {
+    var colors = {}
+    var rows = table.querySelectorAll('tbody tr')
+    var data = window.__ROWS
+    if (!data) return colors
+    for (var i = 0; i < rows.length && i < data.length; i++) {
+      var tagEl = rows[i].querySelector('.persona-tag')
+      var persona = data[i] && data[i].best_persona
+      if (tagEl && persona && !colors[persona] && tagEl.style.color) {
+        colors[persona] = tagEl.style.color
+      }
+    }
+    return colors
+  }
+
+  function ensurePgLookups(table, state) {
+    if (state.lookups) return state.lookups
+    var source = findInlineScriptContaining('function lvlCell')
+    state.lookups = {
+      levelNames: extractLiteralObject(source, 'LVLN') || {},
+      seniorityLabels: extractLiteralObject(source, 'dl') || {},
+      personaColors: harvestPersonaColors(table),
+    }
+    return state.lookups
+  }
+
+  function pgEscapeHtml(value) {
+    return String(value == null ? '' : value).replace(
+      /[&<>"']/g,
+      function (ch) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;',
+        }[ch]
+      },
+    )
+  }
+
+  function pgLinkedInHref(c) {
+    if (c.li_url) return c.li_url
+    return (
+      'https://www.linkedin.com/search/results/people/?keywords=' +
+      encodeURIComponent((c.name || '') + ' ' + (c.company || ''))
+    )
+  }
+
+  function pgLevelCellHtml(c, lookups) {
+    var levelName = lookups.levelNames[c.level]
+    var seniorityLabel = lookups.seniorityLabels[c.sen_dir] || ''
+    return (
+      '<span class="lvl">' +
+      pgEscapeHtml(levelName != null ? levelName : '?') +
+      '<span class="d d-' +
+      pgEscapeHtml(c.sen_dir || '') +
+      '">' +
+      pgEscapeHtml(seniorityLabel) +
+      '</span></span>'
+    )
+  }
+
+  function pgBestFitCellHtml(c, lookups) {
+    var color = lookups.personaColors[c.best_persona] || '#6B7280'
+    return (
+      '<span class="persona-tag" style="background:' +
+      color +
+      '22;color:' +
+      color +
+      '">' +
+      pgEscapeHtml(c.best_persona) +
+      ' · ' +
+      pgEscapeHtml(c.best_persona_name || '') +
+      '</span>'
+    )
+  }
+
+  function pgRowHtml(c, lookups) {
+    var flags =
+      (c.product
+        ? ' <span class="fitpill fit-Medium" title="Product company">P</span>'
+        : '') +
+      (c.premier
+        ? ' <span class="fitpill fit-High" title="Premier institute">★</span>'
+        : '')
+    return (
+      '<tr class="row" data-r="' +
+      pgEscapeHtml(c.rank) +
+      '" ' +
+      PG_ROW_ATTR +
+      '>' +
+      '<td>' +
+      pgEscapeHtml(c.rank) +
+      '</td>' +
+      '<td class="nm"><a href="' +
+      pgEscapeHtml(pgLinkedInHref(c)) +
+      '" target="_blank" rel="noopener">' +
+      pgEscapeHtml(c.name) +
+      '</a></td>' +
+      '<td><b>' +
+      pgEscapeHtml((c.headline || '–').slice(0, 44)) +
+      '</b><br><span style="color:var(--gray)">' +
+      pgEscapeHtml(c.company || '') +
+      flags +
+      '</span></td>' +
+      '<td>' +
+      pgEscapeHtml(c.loc || '–') +
+      '</td>' +
+      '<td>' +
+      (c.yrs == null ? '–' : pgEscapeHtml(c.yrs)) +
+      '</td>' +
+      '<td>' +
+      pgLevelCellHtml(c, lookups) +
+      '</td>' +
+      '<td><span class="badge b-' +
+      pgEscapeHtml(c.tag) +
+      '">' +
+      pgEscapeHtml(c.tag) +
+      '</span></td>' +
+      '<td>' +
+      pgBestFitCellHtml(c, lookups) +
+      '</td>' +
+      '</tr>'
+    )
+  }
+
+  // The single function every page calculation goes through, so the row
+  // slice, the footer text, and the nav controls can never disagree.
+  // Clamps page as a side effect: the result set can shrink under
+  // filtering, and the previously-current page may no longer exist.
+  function pgCalc(total, page, size) {
+    var all = size === 'all'
+    var effectiveSize = all ? total || 1 : size
+    var pages = Math.max(1, Math.ceil(total / effectiveSize))
+    var clampedPage = Math.min(Math.max(1, page), pages)
+    var start = total === 0 ? 0 : (clampedPage - 1) * effectiveSize
+    var end = all ? total : Math.min(start + effectiveSize, total)
+    return {
+      total: total,
+      all: all,
+      pages: pages,
+      page: clampedPage,
+      start: start,
+      end: end,
+    }
+  }
+
+  // First/last always shown, current +/-1 around it, gaps elided.
+  function pgPageNumbers(page, pages) {
+    if (pages <= 7) {
+      var seq = []
+      for (var i = 1; i <= pages; i++) seq.push(i)
+      return seq
+    }
+    var out = [1]
+    var lo = Math.max(2, page - 1)
+    var hi = Math.min(pages - 1, page + 1)
+    if (lo > 2) out.push('…')
+    for (var j = lo; j <= hi; j++) out.push(j)
+    if (hi < pages - 1) out.push('…')
+    out.push(pages)
+    return out
+  }
+
+  function pgFooterMessage(calc) {
+    var fmt = function (n) {
+      return n.toLocaleString()
+    }
+    var noun = calc.total === 1 ? 'candidate' : 'candidates'
+    if (calc.total === 0) return 'No candidates match the current filters'
+    if (calc.all) {
+      return 'Showing all ' + fmt(calc.total) + ' ' + noun
+    }
+    return (
+      'Showing ' +
+      fmt(calc.start + 1) +
+      '–' +
+      fmt(calc.end) +
+      ' of ' +
+      fmt(calc.total) +
+      ' ' +
+      noun
+    )
+  }
+
+  function pgRenderPager(container, table, state, calc) {
+    var nums =
+      calc.total === 0
+        ? ''
+        : pgPageNumbers(calc.page, calc.pages)
+            .map(function (n) {
+              if (n === '…') return '<span class="pg-gap">…</span>'
+              return (
+                '<button type="button" class="pg-num' +
+                (n === calc.page ? ' on' : '') +
+                '" data-pg-page="' +
+                n +
+                '"' +
+                (n === calc.page ? ' aria-current="page"' : '') +
+                '>' +
+                n +
+                '</button>'
+              )
+            })
+            .join('')
+
+    container.innerHTML =
+      '<div class="pg-left"><label class="pg-lbl">Rows per page ' +
+      '<select data-pg-size aria-label="Rows per page">' +
+      PG_SIZES.map(function (s) {
+        return (
+          '<option value="' +
+          s +
+          '"' +
+          (String(s) === String(state.size) ? ' selected' : '') +
+          '>' +
+          (s === 'all' ? 'All' : s) +
+          '</option>'
+        )
+      }).join('') +
+      '</select></label></div>' +
+      '<div class="pg-mid" role="status">' +
+      pgEscapeHtml(pgFooterMessage(calc)) +
+      '</div>' +
+      '<div class="pg-right">' +
+      '<button type="button" class="pg-nav" data-pg-nav="prev"' +
+      (calc.page <= 1 || calc.total === 0 ? ' disabled' : '') +
+      '>‹ Previous</button>' +
+      nums +
+      '<button type="button" class="pg-nav" data-pg-nav="next"' +
+      (calc.page >= calc.pages || calc.total === 0 ? ' disabled' : '') +
+      '>Next ›</button>' +
+      '</div>'
+
+    container.__pgTable = table
+  }
+
+  function ensurePagerContainer(table) {
+    if (table.__pgPagerEl && table.__pgPagerEl.isConnected)
+      return table.__pgPagerEl
+    var el = document.createElement('div')
+    el.className = 'pager'
+    el.setAttribute(PG_PAGER_ATTR, '')
+    table.parentNode.insertBefore(el, table.nextSibling)
+    table.__pgPagerEl = el
+    return el
+  }
+
+  function syncTablePagination(table) {
+    if (!isExplorerTable(table)) return
+    var rows = window.__ROWS
+    if (!Array.isArray(rows)) return
+
+    var state = getPgState(table)
+    if (rows !== state.lastRows) {
+      state.lastRows = rows
+      state.page = 1
+      state.dirty = true
+    }
+    if (!state.dirty) return
+
+    var lookups = ensurePgLookups(table, state)
+    var calc = pgCalc(rows.length, state.page, state.size)
+    state.page = calc.page
+
+    var tbody = table.querySelector('tbody')
+    if (!tbody) return
+
+    tbody.innerHTML = calc.total
+      ? rows
+          .slice(calc.start, calc.end)
+          .map(function (c) {
+            return pgRowHtml(c, lookups)
+          })
+          .join('')
+      : '<tr><td colspan="8" style="text-align:center;color:#9CA3AF;padding:14px">No candidates match the current filters.</td></tr>'
+
+    pgRenderPager(ensurePagerContainer(table), table, state, calc)
+    state.dirty = false
+
+    // Deterministic ordering: syncActionColumns() is idempotent and cheap
+    // when there's nothing new to do, so calling it here — right after
+    // these rows exist — guarantees every freshly rendered row gets its
+    // Action cell in the same tick, rather than waiting on the
+    // MutationObserver's own independently-scheduled pass to catch up.
+    syncActionColumns()
+  }
+
+  function syncExplorerPagination() {
+    document.querySelectorAll('table').forEach(syncTablePagination)
+  }
+
+  var pgSyncScheduled = false
+  function schedulePaginationSync() {
+    if (pgSyncScheduled) return
+    pgSyncScheduled = true
+    window.requestAnimationFrame(function () {
+      pgSyncScheduled = false
+      syncExplorerPagination()
+    })
+  }
+
+  // Delegated once, globally: the pager's own controls are recreated on
+  // every render, so binding here means they never need re-binding.
+  document.addEventListener('click', function (e) {
+    var btn =
+      e.target && e.target.closest
+        ? e.target.closest('[data-pg-nav],[data-pg-page]')
+        : null
+    if (!btn) return
+    var pager = btn.closest('[' + PG_PAGER_ATTR + ']')
+    var table = pager && pager.__pgTable
+    if (!table) return
+    var state = getPgState(table)
+    var calc = pgCalc((window.__ROWS || []).length, state.page, state.size)
+    if (btn.hasAttribute('data-pg-nav')) {
+      if (btn.disabled) return
+      state.page =
+        btn.getAttribute('data-pg-nav') === 'prev'
+          ? Math.max(1, calc.page - 1)
+          : Math.min(calc.pages, calc.page + 1)
+    } else {
+      state.page = parseInt(btn.getAttribute('data-pg-page'), 10) || 1
+    }
+    state.dirty = true
+    syncTablePagination(table)
+  })
+
+  document.addEventListener('change', function (e) {
+    var select = e.target
+    if (!select || !select.hasAttribute || !select.hasAttribute('data-pg-size'))
+      return
+    var pager = select.closest('[' + PG_PAGER_ATTR + ']')
+    var table = pager && pager.__pgTable
+    if (!table) return
+    var state = getPgState(table)
+    state.size =
+      select.value === 'all'
+        ? 'all'
+        : parseInt(select.value, 10) || PG_DEFAULT_SIZE
+    state.page = 1
+    state.dirty = true
+    syncTablePagination(table)
+  })
+
+  // ---------------------------------------------------------------------
   // Height reporting — lets the host size the iframe to the dashboard's
   // own natural content height instead of giving it a fixed viewport
   // height and letting it scroll internally. Uses ResizeObserver rather
@@ -1079,6 +1556,11 @@
       if (openTriggerEl && !document.body.contains(openTriggerEl)) {
         closeActionPopup()
       }
+      // Pagination first: if it rebuilds #tbody (window.__ROWS changed —
+      // a filter/search/sort just ran), the Action column sync right
+      // after it then attaches to the freshly rendered rows in the same
+      // pass instead of the stale ones.
+      schedulePaginationSync()
       scheduleSyncActionColumns()
       scheduleReportHeight()
     }).observe(document.body, {
@@ -1176,6 +1658,11 @@
       { type: 'longlist:ready', dashboardId: DASHBOARD_ID },
       '*',
     )
+    // Explorer data is populated by the dashboard's own script during its
+    // synchronous init, which has already run by the time this executes
+    // (this script tag loads last, right before </body>) — so pagination
+    // can activate immediately, without waiting for a DOM mutation.
+    schedulePaginationSync()
     scheduleReportHeight()
   }
 
