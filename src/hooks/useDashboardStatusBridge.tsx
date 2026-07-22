@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from 'react'
+import { useEffect, useState, type RefObject } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
@@ -29,6 +29,9 @@ interface UseDashboardStatusBridgeOptions {
  * - tells the iframe which theme is active so it can color its native
  *   status selects from the same statusConfig this app uses (colors are
  *   computed here, in React — the iframe only ever applies what it's told)
+ * - tracks the dashboard's own reported content height (longlist:resize),
+ *   so the host can size the iframe to fit it instead of giving it a fixed
+ *   height and letting it scroll internally
  */
 export function useDashboardStatusBridge({
   dashboardId,
@@ -36,6 +39,18 @@ export function useDashboardStatusBridge({
 }: UseDashboardStatusBridgeOptions) {
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
+  const [iframeHeight, setIframeHeight] = useState<number | null>(null)
+
+  // Resets the reported height when switching to a different dashboard, so
+  // it doesn't briefly render the new iframe at the previous one's height
+  // before it reports its own. Adjusting state during render (React's
+  // sanctioned pattern for "reset state when a prop changes") rather than
+  // in an effect, which would cause an extra, avoidable re-render.
+  const [heightForId, setHeightForId] = useState(dashboardId)
+  if (dashboardId !== heightForId) {
+    setHeightForId(dashboardId)
+    setIframeHeight(null)
+  }
 
   useEffect(() => {
     if (!dashboardId) return
@@ -136,6 +151,11 @@ export function useDashboardStatusBridge({
         }
       }
 
+      if (data.type === 'longlist:resize') {
+        setIframeHeight(data.height)
+        return
+      }
+
       if (data.type === 'longlist:action-update') {
         const { payload } = data
         if (payload.dashboardId !== id) return
@@ -224,4 +244,6 @@ export function useDashboardStatusBridge({
       '*',
     )
   }, [resolvedTheme, dashboardId, iframeRef])
+
+  return { iframeHeight }
 }

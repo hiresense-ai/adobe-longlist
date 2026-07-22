@@ -34,7 +34,7 @@ export function DashboardViewer() {
     hasHireSenseBranding,
   } = useDashboardHtml(dashboard?.storage_path, dashboard?.id)
 
-  useDashboardStatusBridge({
+  const { iframeHeight } = useDashboardStatusBridge({
     dashboardId: dashboard?.id,
     iframeRef,
   })
@@ -83,15 +83,12 @@ export function DashboardViewer() {
   }
 
   return (
-    // Fixed to exactly the viewport height left over below the navbar (h-16
-    // = 4rem), split header/dashboard via flex rather than a hardcoded
-    // offset for the dashboard area — so the header can wrap to whatever
-    // height its own content needs (a long description, a wrapped badge)
-    // without ever pushing the page into a second, outer scrollbar. Only
-    // the iframe's own document scrolls internally if it's taller than the
-    // space it's given, the same way a BI tool's embedded report does.
-    <div className="from-background to-muted/20 flex h-[calc(100svh-4rem)] flex-col overflow-hidden bg-gradient-to-b">
-      <div className="shrink-0 px-4 pt-4 pb-2 sm:px-6 lg:px-8">
+    // Normal document flow, not a fixed viewport-height box: the browser
+    // page itself owns scrolling, growing to whatever height the dashboard
+    // actually needs. min-h (not h) just keeps a short dashboard from
+    // leaving a jarringly small page — it never caps how tall this can get.
+    <div className="from-background to-muted/20 min-h-[calc(100svh-4rem)] bg-gradient-to-b">
+      <div className="px-4 pt-4 pb-2 sm:px-6 lg:px-8">
         <Link
           to={ROUTES.home}
           className="text-muted-foreground hover:text-foreground mb-2 inline-flex items-center gap-1.5 text-sm"
@@ -123,22 +120,22 @@ export function DashboardViewer() {
           100vw wide, then pulled back by the gap between the constrained
           container's own 50% and the true viewport 50%. */}
       <div
-        className="relative min-h-0 flex-1"
+        className="relative"
         style={{
           width: '100vw',
           marginLeft: 'calc(50% - 50vw)',
           marginRight: 'calc(50% - 50vw)',
         }}
       >
-        <div className="h-full px-0 sm:px-6 lg:px-10">
+        <div className="px-6 lg:px-8">
           {isHtmlLoading && (
-            <div className="flex h-full items-center justify-center">
+            <div className="flex min-h-[400px] items-center justify-center">
               <Loader2 className="text-primary size-8 animate-spin" />
             </div>
           )}
 
           {!isHtmlLoading && htmlError && (
-            <div className="px-4 py-8 sm:px-0">
+            <div className="py-8">
               <ErrorState
                 title="Couldn't load this dashboard's content"
                 description={getErrorMessage(
@@ -150,7 +147,7 @@ export function DashboardViewer() {
           )}
 
           {!isHtmlLoading && !htmlError && isEmpty && (
-            <div className="px-4 py-8 sm:px-0">
+            <div className="py-8">
               <EmptyState
                 icon={FileWarning}
                 title="This dashboard is empty"
@@ -164,6 +161,7 @@ export function DashboardViewer() {
               src={blobUrl}
               title={dashboard.title}
               iframeRef={iframeRef}
+              height={iframeHeight}
             />
           )}
         </div>

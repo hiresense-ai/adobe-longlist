@@ -713,6 +713,37 @@
     })
   }
 
+  // ---------------------------------------------------------------------
+  // Height reporting — lets the host size the iframe to the dashboard's
+  // own natural content height instead of giving it a fixed viewport
+  // height and letting it scroll internally. Uses ResizeObserver rather
+  // than only re-measuring from the MutationObserver above, since it also
+  // catches height changes that aren't caused by a DOM mutation at all —
+  // e.g. the browser window narrowing and the table's own text wrapping
+  // onto more lines.
+  // ---------------------------------------------------------------------
+
+  function reportHeight() {
+    var height = Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0,
+    )
+    window.parent.postMessage(
+      { type: 'longlist:resize', dashboardId: DASHBOARD_ID, height: height },
+      '*',
+    )
+  }
+
+  var heightReportScheduled = false
+  function scheduleReportHeight() {
+    if (heightReportScheduled) return
+    heightReportScheduled = true
+    window.requestAnimationFrame(function () {
+      heightReportScheduled = false
+      reportHeight()
+    })
+  }
+
   function init() {
     injectBaseStyles()
 
@@ -730,10 +761,17 @@
         closeActionPopup()
       }
       scheduleSyncActionColumns()
+      scheduleReportHeight()
     }).observe(document.body, {
       childList: true,
       subtree: true,
     })
+
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(scheduleReportHeight).observe(document.documentElement)
+    } else {
+      window.addEventListener('resize', scheduleReportHeight)
+    }
 
     window.addEventListener('message', function (event) {
       var data = event.data
@@ -805,6 +843,7 @@
       { type: 'longlist:ready', dashboardId: DASHBOARD_ID },
       '*',
     )
+    scheduleReportHeight()
   }
 
   if (document.readyState === 'loading') {

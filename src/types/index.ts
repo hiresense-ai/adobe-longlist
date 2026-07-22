@@ -56,6 +56,11 @@ export type DashboardBridgeMessage =
       }
     }
   | { type: 'longlist:ready' }
+  | {
+      type: 'longlist:resize'
+      dashboardId: string | null
+      height: number
+    }
 
 /** Messages sent from the host app down into the iframe. */
 export type DashboardHostMessage =

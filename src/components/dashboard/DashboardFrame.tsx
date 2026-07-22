@@ -6,13 +6,22 @@ interface DashboardFrameProps {
   src: string
   title: string
   iframeRef: RefObject<HTMLIFrameElement | null>
+  /** The dashboard's own reported content height (px), or null before its
+   * first report has arrived. */
+  height: number | null
   onLoad?: () => void
 }
+
+// Shown only for the brief window between the iframe mounting and the
+// dashboard's bridge script reporting its real height — avoids a 0-height
+// flash without pretending to know the real size in advance.
+const FALLBACK_HEIGHT = 600
 
 export function DashboardFrame({
   src,
   title,
   iframeRef,
+  height,
   onLoad,
 }: DashboardFrameProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -41,8 +50,18 @@ export function DashboardFrame({
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full flex-col overflow-hidden data-[fullscreen]:h-svh"
+      className="relative w-full overflow-hidden data-[fullscreen]:h-svh"
       data-fullscreen={isFullscreen || undefined}
+      // Natural height, not a fixed viewport slice: matches the dashboard's
+      // own reported content size so the browser page scrolls it, rather
+      // than boxing it into a fixed height with its own internal scrollbar.
+      // Fullscreen overrides this via the Tailwind class above, since that
+      // mode should always fill the whole screen regardless of content size.
+      style={
+        isFullscreen
+          ? undefined
+          : { height: (height ?? FALLBACK_HEIGHT) + 'px' }
+      }
     >
       <Button
         type="button"
@@ -72,7 +91,7 @@ export function DashboardFrame({
         // either. No `allow-popups` — none of the dashboard templates open
         // popups, so it's dropped rather than left as unused attack surface.
         sandbox="allow-scripts allow-forms allow-modals"
-        className="size-full flex-1 border-0 bg-white"
+        className="size-full border-0 bg-white"
       />
     </div>
   )
