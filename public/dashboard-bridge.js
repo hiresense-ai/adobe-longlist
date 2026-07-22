@@ -29,6 +29,125 @@
   var meta = document.querySelector('meta[name="longlist-dashboard-id"]')
   var DASHBOARD_ID = meta ? meta.getAttribute('content') : null
 
+  // =====================================================================
+  // File download bridge.
+  //
+  // This iframe is sandboxed without allow-same-origin (deliberately —
+  // see DashboardFrame.tsx), so its document has an opaque origin. Any
+  // URL.createObjectURL() call made in here therefore returns a
+  // `blob:null/<uuid>` URL rather than `blob:<origin>/<uuid>`, and the
+  // browser will not resolve an opaque-origin blob as a download target.
+  // The dashboard's own export code runs to completion and throws
+  // nothing — the file simply never arrives. Confirmed by instrumenting
+  // the running app: the click reaches the button, the CSV string and
+  // Blob are built correctly, createObjectURL returns blob:null/..., and
+  // anchor.click() returns without an exception, with no download.
+  //
+  // Rather than weakening the sandbox (allow-same-origin plus the
+  // already-present allow-scripts would let untrusted uploaded HTML
+  // reach this app's own session), the download is re-routed through the
+  // parent, which has a real origin: intercept the anchor click here,
+  // hand the file's bytes up over the existing postMessage bridge, and
+  // let the parent mint the object URL and save the file.
+  //
+  // This works by DOM/prototype observation only, so it needs no
+  // cooperation from — and no edit to — any uploaded dashboard's own
+  // script (whose functions are private to its own closure and
+  // unreachable from here). Every dashboard already in Storage is fixed
+  // by this without being re-uploaded. Dashboards that would rather send
+  // the export explicitly can post a longlist:export-file message
+  // themselves instead; both paths land in the same parent handler.
+  // =====================================================================
+
+  // Remembers the Blob behind each object URL this document mints, so an
+  // intercepted download can recover the actual bytes. Bounded: the
+  // dashboard never revokes its export URLs, so without a cap this would
+  // pin every exported CSV in memory for the life of the page.
+  var MAX_TRACKED_BLOBS = 8
+  var trackedBlobUrls = []
+  var blobsByUrl = Object.create(null)
+
+  var origCreateObjectURL = URL.createObjectURL
+  URL.createObjectURL = function (obj) {
+    var url = origCreateObjectURL.call(URL, obj)
+    if (typeof Blob !== 'undefined' && obj instanceof Blob) {
+      blobsByUrl[url] = obj
+      trackedBlobUrls.push(url)
+      while (trackedBlobUrls.length > MAX_TRACKED_BLOBS) {
+        delete blobsByUrl[trackedBlobUrls.shift()]
+      }
+    }
+    return url
+  }
+
+  var origRevokeObjectURL = URL.revokeObjectURL
+  URL.revokeObjectURL = function (url) {
+    if (blobsByUrl[url]) {
+      delete blobsByUrl[url]
+      var i = trackedBlobUrls.indexOf(url)
+      if (i !== -1) trackedBlobUrls.splice(i, 1)
+    }
+    return origRevokeObjectURL.call(URL, url)
+  }
+
+  // Sends the file's RAW BYTES, never a decoded string. Decoding to text
+  // would silently strip a leading UTF-8 BOM (TextDecoder/Blob.text()
+  // consume it by default), and these exports lead with one precisely so
+  // Excel detects UTF-8 and renders non-ASCII candidate names correctly.
+  // Passing the ArrayBuffer through keeps the saved file byte-identical
+  // to what the dashboard built, whatever its encoding or content type.
+  function sendFileToParent(filename, bytes, mimeType) {
+    window.parent.postMessage(
+      {
+        type: 'longlist:export-file',
+        dashboardId: DASHBOARD_ID,
+        filename: filename,
+        bytes: bytes,
+        mimeType: mimeType || 'text/csv;charset=utf-8;',
+      },
+      '*',
+    )
+  }
+
+  var origAnchorClick = HTMLAnchorElement.prototype.click
+  HTMLAnchorElement.prototype.click = function () {
+    var href = this.getAttribute('href') || ''
+    // Only download-intent clicks on this document's own blobs are
+    // re-routed. Ordinary links (the dashboard's LinkedIn/GitHub anchors,
+    // in-page anchors, http(s) downloads) keep their native behavior.
+    if (!this.hasAttribute('download') || href.indexOf('blob:') !== 0) {
+      return origAnchorClick.call(this)
+    }
+
+    var blob = blobsByUrl[this.href] || blobsByUrl[href]
+    var filename = this.getAttribute('download') || 'download.csv'
+
+    if (!blob) {
+      // URL wasn't minted in this document (or was already evicted) —
+      // nothing to forward, so let the browser do whatever it would
+      // have done rather than silently swallowing the click.
+      return origAnchorClick.call(this)
+    }
+
+    var mimeType = blob.type
+    if (blob.arrayBuffer) {
+      blob.arrayBuffer().then(function (buffer) {
+        sendFileToParent(filename, buffer, mimeType)
+      })
+    } else {
+      var reader = new FileReader()
+      reader.onload = function () {
+        sendFileToParent(filename, reader.result, mimeType)
+      }
+      reader.readAsArrayBuffer(blob)
+    }
+
+    // Deliberately does NOT call through: the native click is what
+    // silently fails here, and letting it run would risk a duplicate
+    // (or partial) download in any browser where it does something.
+    return undefined
+  }
+
   var STATUS_OPTIONS = []
   var STATUS_STYLES = {}
   var ACTION_OPTIONS = []

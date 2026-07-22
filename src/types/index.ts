@@ -63,6 +63,26 @@ export type DashboardBridgeMessage =
     }
   | { type: 'longlist:modal-open' }
   | { type: 'longlist:modal-close' }
+  /**
+   * A file the dashboard wants saved. The iframe can't do this itself:
+   * sandboxed without allow-same-origin, its object URLs are
+   * `blob:null/...`, which the browser won't resolve as a download. The
+   * host has a real origin, so it mints the URL and saves the file.
+   */
+  | {
+      type: 'longlist:export-file'
+      dashboardId: string | null
+      filename: string
+      /**
+       * Raw file bytes. Preferred over `csv`: decoding to a string strips
+       * a leading UTF-8 BOM, which these exports rely on for Excel to
+       * detect the encoding. Sending bytes keeps the file byte-identical.
+       */
+      bytes?: ArrayBuffer
+      /** Plain-text fallback, for a dashboard that posts its own export. */
+      csv?: string
+      mimeType?: string
+    }
 
 /** Messages sent from the host app down into the iframe. */
 export type DashboardHostMessage =

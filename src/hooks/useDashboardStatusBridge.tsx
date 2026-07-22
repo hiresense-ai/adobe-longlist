@@ -127,6 +127,50 @@ export function useDashboardStatusBridge({
       const data = event.data as DashboardBridgeMessage | undefined
       if (!data || typeof data !== 'object') return
 
+      // Saves a file on the dashboard's behalf. The iframe is sandboxed
+      // without allow-same-origin, so object URLs it creates are
+      // `blob:null/...` and the browser silently refuses to download
+      // them — its own export code runs to completion and no file ever
+      // arrives. This window has a real origin, so the same blob saves
+      // normally from here. The event.source check above already
+      // guarantees this came from this dashboard's own iframe.
+      if (data.type === 'longlist:export-file') {
+        if (data.dashboardId !== id) return
+        if (!data.filename) return
+        const hasBytes = data.bytes instanceof ArrayBuffer
+        if (!hasBytes && typeof data.csv !== 'string') return
+
+        // The iframe's HTML is untrusted, so its filename is too: keep
+        // only the basename, drop anything that could steer where the
+        // file lands or hide its real extension.
+        const safeName =
+          data.filename
+            .replace(/[\\/]/g, '_')
+            // eslint-disable-next-line no-control-regex
+            .replace(/[\u0000-\u001F\u007F]/g, '')
+            .replace(/^\.+/, '')
+            .trim()
+            .slice(0, 120) || 'export.csv'
+
+        // Bytes when available (byte-identical to what the dashboard
+        // built, BOM intact); the string path only serves a dashboard
+        // that posts its own export text directly.
+        const blob = new Blob([hasBytes ? data.bytes! : data.csv!], {
+          type: data.mimeType || 'text/csv;charset=utf-8;',
+        })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = safeName
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        URL.revokeObjectURL(url)
+
+        toast.success(`Downloaded ${safeName}`)
+        return
+      }
+
       if (data.type === 'longlist:ready') {
         postToIframe({
           type: 'longlist:init-config',
