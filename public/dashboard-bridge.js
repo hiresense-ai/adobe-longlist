@@ -1666,10 +1666,29 @@
   // the expensive measurement is safe, and keeps the idle-page cost to one
   // property read every 350ms instead of a full DOM walk.
   var lastPolledScrollHeight = -1
+  // Deliberately does NOT read documentElement.scrollHeight. That value is
+  // clamped to never be smaller than the iframe's own viewport height —
+  // which, because DashboardFrame sizes the iframe element to the LAST
+  // reported height, is stale for the whole round-trip after the content
+  // shrinks (change page size 100→25, close a tall view, etc.). During that
+  // window documentElement.scrollHeight still reports the OLD tall height
+  // while the real content is already short, and Math.max() lets that stale
+  // value win — which then trips measureHeight()'s inflated-scrollHeight
+  // branch and makes it report a too-short (leaf+24) height, so the iframe
+  // shrinks past the real content and then springs back up to it on the next
+  // measurement: a two-step resize the user sees as the table shaking.
+  //
+  // offsetHeight (the element's own laid-out border-box) and body.scrollHeight
+  // both reflect the true content height immediately, with no viewport clamp,
+  // so the height is reported once and correctly. Real min-height:100vh-style
+  // inflation still shows up in offsetHeight, so measureContentBottom()'s
+  // leaf-walk correction in measureHeight() keeps working exactly as before.
   function measureRawScrollHeight() {
+    var body = document.body
     return Math.max(
-      document.documentElement.scrollHeight,
-      document.body ? document.body.scrollHeight : 0,
+      document.documentElement.offsetHeight,
+      body ? body.scrollHeight : 0,
+      body ? body.offsetHeight : 0,
     )
   }
   window.setInterval(function () {

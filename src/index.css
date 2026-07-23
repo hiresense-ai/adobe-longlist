@@ -135,6 +135,13 @@
   }
   html {
     @apply scroll-smooth font-sans;
+    /* Always reserve the vertical scrollbar's gutter. Opening a dashboard's
+       Candidate Details modal locks the page scroll (body overflow:hidden),
+       which would otherwise remove the scrollbar and widen the viewport by
+       its width — shifting the centered content sideways, then back on close
+       (a visible horizontal "shake"). Reserving the gutter keeps the layout
+       width constant whether or not the scrollbar is showing. */
+    scrollbar-gutter: stable;
   }
 }
 
