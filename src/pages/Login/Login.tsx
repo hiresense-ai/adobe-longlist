@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Link, useLocation, useNavigate, type Location } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Loader2, Lock, Mail } from 'lucide-react'
 
@@ -41,7 +41,6 @@ type LoginFormValues = z.infer<typeof loginSchema>
 export function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const location = useLocation()
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const form = useForm<LoginFormValues>({
@@ -49,15 +48,15 @@ export function Login() {
     defaultValues: { email: '', password: '' },
   })
 
-  const redirectTo =
-    (location.state as { from?: Location })?.from?.pathname ?? ROUTES.home
-
   async function onSubmit(values: LoginFormValues) {
     setIsSubmitting(true)
     try {
       await login(values.email, values.password)
       toast.success('Welcome back!')
-      navigate(redirectTo, { replace: true })
+      // Always land on the Dashboard after login — never restore whatever
+      // page ProtectedRoute's redirect-with-state happened to carry along
+      // (e.g. a page open before a session expired or before logging out).
+      navigate(ROUTES.home, { replace: true })
     } catch (error) {
       toast.error(getErrorMessage(error, 'Unable to sign in'))
     } finally {

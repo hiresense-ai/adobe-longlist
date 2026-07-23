@@ -1,11 +1,10 @@
-import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { Loader2 } from 'lucide-react'
 
 export function ProtectedRoute() {
   const { session, isLoading } = useAuth()
-  const location = useLocation()
 
   if (isLoading) {
     return (
@@ -15,8 +14,10 @@ export function ProtectedRoute() {
     )
   }
 
+  // Deliberately no `state={{ from: location }}`: login always lands on the
+  // Dashboard (see Login.tsx), so there's no redirect-back consumer for it.
   if (!session) {
-    return <Navigate to={ROUTES.login} state={{ from: location }} replace />
+    return <Navigate to={ROUTES.login} replace />
   }
 
   return <Outlet />
