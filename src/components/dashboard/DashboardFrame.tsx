@@ -9,6 +9,11 @@ interface DashboardFrameProps {
   /** The dashboard's own reported content height (px), or null before its
    * first report has arrived. */
   height: number | null
+  /** Viewport space remaining below the page header (px). The frame renders
+   * at max(content height, this), so a short dashboard fills the rest of
+   * the screen instead of leaving page background below it; a taller
+   * dashboard is unaffected. */
+  minHeight?: number
   onLoad?: () => void
 }
 
@@ -22,6 +27,7 @@ export function DashboardFrame({
   title,
   iframeRef,
   height,
+  minHeight = 0,
   onLoad,
 }: DashboardFrameProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -47,21 +53,21 @@ export function DashboardFrame({
     }
   }
 
+  // Product sizing policy: fill the viewport below the header when the
+  // dashboard's own content is shorter than that, otherwise grow to the
+  // content. The iframe's own document never scrolls internally (the bridge
+  // sizes it to its exact content height), so raising the box to minHeight
+  // only ever reveals more of the iframe's own background below the
+  // content — never a second scrollbar, never clipping. Fullscreen keeps
+  // filling the whole screen regardless.
+  const resolvedHeight = Math.max(height ?? FALLBACK_HEIGHT, minHeight)
+
   return (
     <div
       ref={containerRef}
       className="relative w-full overflow-hidden data-[fullscreen]:h-svh"
       data-fullscreen={isFullscreen || undefined}
-      // Natural height, not a fixed viewport slice: matches the dashboard's
-      // own reported content size so the browser page scrolls it, rather
-      // than boxing it into a fixed height with its own internal scrollbar.
-      // Fullscreen overrides this via the Tailwind class above, since that
-      // mode should always fill the whole screen regardless of content size.
-      style={
-        isFullscreen
-          ? undefined
-          : { height: (height ?? FALLBACK_HEIGHT) + 'px' }
-      }
+      style={isFullscreen ? undefined : { height: resolvedHeight + 'px' }}
     >
       <Button
         type="button"

@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, FileWarning, Loader2 } from 'lucide-react'
 
@@ -17,6 +17,8 @@ import { getErrorMessage } from '@/lib/errors'
 export function DashboardViewer() {
   const { id } = useParams<{ id: string }>()
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const fullBleedRef = useRef<HTMLDivElement>(null)
+  const [minAvailableHeight, setMinAvailableHeight] = useState(0)
 
   const {
     data: dashboard,
@@ -38,6 +40,35 @@ export function DashboardViewer() {
     dashboardId: dashboard?.id,
     iframeRef,
   })
+
+  // Sizing policy (a product decision, not a workaround): a short dashboard
+  // should fill the rest of the viewport below the navbar and this page's
+  // own breadcrumb/title block, rather than leaving that space as plain
+  // page background — DashboardFrame takes the max() of this and the
+  // dashboard's own reported content height, so a long dashboard is
+  // completely unaffected. Measured live rather than a hardcoded
+  // viewport-minus-navbar constant because the title block's own height
+  // varies with the title/description/category badge — a fixed calc()
+  // would over- or under-reserve depending on what a given dashboard's
+  // title happens to wrap to.
+  useLayoutEffect(() => {
+    function measure() {
+      if (!fullBleedRef.current) return
+      const top = fullBleedRef.current.getBoundingClientRect().top
+      setMinAvailableHeight(Math.max(0, window.innerHeight - top))
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [
+    dashboard?.title,
+    dashboard?.description,
+    dashboard?.category,
+    isHtmlLoading,
+    htmlError,
+    isEmpty,
+    hasHireSenseBranding,
+  ])
 
   if (isDashboardLoading) {
     return (
@@ -85,9 +116,12 @@ export function DashboardViewer() {
   return (
     // Normal document flow, not a fixed viewport-height box: the browser
     // page itself owns scrolling, growing to whatever height the dashboard
-    // actually needs. min-h (not h) just keeps a short dashboard from
-    // leaving a jarringly small page — it never caps how tall this can get.
-    <div className="from-background to-muted/20 min-h-[calc(100svh-4rem)] bg-gradient-to-b">
+    // actually needs — no min-height here, deliberately: AppLayout omits
+    // its own min-h-svh for this route specifically so a short dashboard's
+    // page can end right after its content instead of always reserving a
+    // near-full-viewport floor (see AppLayout.tsx). A min-height here alone
+    // would silently reintroduce the same gap AppLayout is opting out of.
+    <div className="from-background to-muted/20 bg-gradient-to-b">
       <div className="px-4 pt-4 pb-2 sm:px-6 lg:px-8">
         <Link
           to={ROUTES.home}
@@ -120,6 +154,7 @@ export function DashboardViewer() {
           100vw wide, then pulled back by the gap between the constrained
           container's own 50% and the true viewport 50%. */}
       <div
+        ref={fullBleedRef}
         className="relative"
         style={{
           width: '100vw',
@@ -162,6 +197,7 @@ export function DashboardViewer() {
               title={dashboard.title}
               iframeRef={iframeRef}
               height={iframeHeight}
+              minHeight={minAvailableHeight}
             />
           )}
         </div>
