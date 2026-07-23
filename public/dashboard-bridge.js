@@ -1602,17 +1602,28 @@
     return maxBottom
   }
 
+  // Below this, a gap between the leaf-content bottom and scrollHeight is
+  // treated as ordinary trailing padding/margin (every template in this
+  // codebase uses something in the 20-70px range as deliberate bottom
+  // breathing room) rather than genuine min-height/height:100vh inflation.
+  // Real inflation from a stray full-viewport-height ancestor runs into the
+  // hundreds or thousands of pixels — nowhere near this range — so this
+  // still catches exactly the case measureContentBottom() exists for,
+  // without misfiring on a template's own intentional spacing. Getting
+  // this wrong in the other direction (correcting too eagerly) sets the
+  // iframe's box shorter than its own document actually is, and the iframe
+  // then falls back to showing its OWN internal scrollbar for the
+  // leftover — a second, visually-adjacent scrollbar right next to the
+  // real page scrollbar, since the iframe spans nearly the full page width.
+  var INFLATION_THRESHOLD = 200
+
   function measureHeight() {
     var scrollHeight = measureRawScrollHeight()
     var contentBottom = measureContentBottom()
-    // Use whichever is tighter whenever the leaf-content measurement found
-    // something smaller — never larger, so this can only ever correct an
-    // inflated scrollHeight, never clip real content that scrollHeight
-    // itself would have reported. +24px is a small safety margin for
-    // trailing padding/margin below the last leaf that this measurement
-    // can't otherwise see (a leaf's own box excludes an ancestor's
-    // padding-bottom).
-    if (contentBottom > 0 && contentBottom + 24 < scrollHeight) {
+    if (
+      contentBottom > 0 &&
+      scrollHeight - contentBottom > INFLATION_THRESHOLD
+    ) {
       return Math.ceil(contentBottom) + 24
     }
     return scrollHeight
