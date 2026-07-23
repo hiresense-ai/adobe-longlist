@@ -17,7 +17,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { useAuth } from '@/hooks/useAuth'
-import { ROUTES, APP_NAME } from '@/constants'
+import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import loginHeroBg from '@/assets/login-hero-bg.jpg'
 import hireSenseLogo from '@/assets/hiresense-logo.png'
@@ -69,8 +69,8 @@ export function Login() {
       {/* Hero — the reference design's own artwork (Adobe mark, headline,
           tagline, and decorative chart previews are all baked into this
           image), used exactly as provided rather than recreated. Purely
-          decorative/hidden below 1024px: the real accessible "Adobe
-          Longlist" heading lives in the card on the right. */}
+          decorative/hidden below 1024px — the card on the right carries no
+          duplicate branding, just the sign-in form itself. */}
       <div
         aria-hidden="true"
         className="animate-in fade-in hidden bg-cover bg-center bg-no-repeat duration-700 motion-reduce:animate-none lg:block lg:w-[58%] lg:shrink-0"
@@ -80,17 +80,9 @@ export function Login() {
       {/* Login card */}
       <div className="flex flex-1 items-center justify-center px-4 py-12 sm:px-6">
         <div className="animate-in fade-in slide-in-from-bottom-2 w-full max-w-[440px] duration-500 motion-reduce:animate-none">
-          <div className="mb-8 flex flex-col items-center gap-3 text-center">
-            <div className="bg-primary shadow-soft flex size-12 items-center justify-center rounded-2xl text-2xl font-bold text-white">
-              A
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-white">{APP_NAME}</h1>
-              <p className="mt-1 text-sm text-white/60">
-                Sign in to access your hiring dashboards
-              </p>
-            </div>
-          </div>
+          <p className="mb-6 text-center text-sm text-white/60">
+            Sign in to access your hiring dashboards
+          </p>
 
           <div className="rounded-[22px] border border-white/10 bg-white/[0.04] p-6 shadow-2xl backdrop-blur-xl sm:p-8">
             <Form {...form}>
