@@ -97,7 +97,7 @@ export function DashboardFrame({
         // either. No `allow-popups` — none of the dashboard templates open
         // popups, so it's dropped rather than left as unused attack surface.
         sandbox="allow-scripts allow-forms allow-modals"
-        className="size-full border-0 bg-white"
+        className="bg-background size-full border-0"
       />
     </div>
   )

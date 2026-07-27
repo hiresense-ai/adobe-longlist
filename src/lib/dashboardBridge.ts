@@ -26,6 +26,25 @@ export const BRIDGE_ATTRS = {
 } as const
 
 /**
+ * Hides the entire embedded "HireSense.ai / Talent Intelligence · <role> /
+ * Prepared for Adobe ..." header block that uploaded dashboards render in
+ * their own document — including that header's own Day/Night toggle, since
+ * Adobe Longlist's own navbar theme control is now the single source of
+ * truth (see applyHostTheme() in dashboard-bridge.js, which drives the
+ * dashboard's theme directly instead). Presentation-only: a plain CSS rule,
+ * not a DOM edit, targeting only the two verified header container classes
+ * seen across real uploaded dashboards so far — `.header` (newer format,
+ * flex row: brand + title + its own toggle) and `.hz` (older format,
+ * flex row: logo + title + co-brand). Neither swallows the tab bar below
+ * it: in both formats the tabs live in a separate sibling element
+ * (`.tab-bar`/`.tabbar`), so hiding the header never touches dashboard
+ * navigation. A dashboard using neither class is simply unaffected, never
+ * guessed at.
+ */
+const HIDE_EMBEDDED_HEADER_CSS =
+  '<style>.header,.hz{display:none!important}</style>'
+
+/**
  * Injects a reference to the static /dashboard-bridge.js bootstrap script
  * (served from this app's own origin) plus the current dashboard's ID.
  *
@@ -37,7 +56,9 @@ export const BRIDGE_ATTRS = {
  * same-origin script src is unaffected by either restriction.
  */
 export function injectBridgeScript(html: string, dashboardId: string): string {
-  const meta = `<meta name="longlist-dashboard-id" content="${dashboardId}">`
+  const meta =
+    `<meta name="longlist-dashboard-id" content="${dashboardId}">` +
+    HIDE_EMBEDDED_HEADER_CSS
   const script = `<script src="${window.location.origin}/dashboard-bridge.js"></script>`
 
   let result = /<\/head>/i.test(html)

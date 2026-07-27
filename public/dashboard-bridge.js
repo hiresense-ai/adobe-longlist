@@ -353,23 +353,96 @@
       // very wide screen a little more breathing room keeps content off
       // the bezel without reintroducing a hard cap.
       '@media (min-width: 1600px) { .hz, .main { padding-left: 48px !important; padding-right: 48px !important; } .tabs { padding-left: 36px !important; padding-right: 36px !important; } }' +
+      // Bridge-owned design tokens, mirroring this app's own light/dark
+      // palette (src/index.css) exactly — not the uploaded HTML's own
+      // variable names, which vary per dashboard generator/version (the
+      // one verified NEW format uses --bg/--surface/--text/..., an older
+      // family used --gb/--ink/--gray/... entirely different names). Every
+      // bridge-owned control below (pagination, rows-per-page) reads only
+      // these, so its appearance is identical regardless of what the
+      // uploaded HTML happens to call its own colors — and applyHostTheme()
+      // sets data-longlist-theme, so these always reflect the HOST theme,
+      // never a dashboard's own independent one.
+      ':root {' +
+      '--ll-bg: oklch(1 0 0); --ll-fg: oklch(0.17 0.005 285);' +
+      '--ll-card: oklch(1 0 0); --ll-muted: oklch(0.97 0.002 285); --ll-muted-fg: oklch(0.5 0.01 285);' +
+      '--ll-border: oklch(0.92 0.004 285);' +
+      '--ll-primary: oklch(0.57 0.235 27); --ll-primary-fg: oklch(0.99 0 0);' +
+      '--ll-accent: oklch(0.96 0.03 25); --ll-ring: oklch(0.57 0.235 27 / 0.5);' +
+      '}' +
+      'html[data-longlist-theme="dark"] {' +
+      '--ll-bg: #0f1117; --ll-fg: #f8fafc;' +
+      '--ll-card: #161b22; --ll-muted: #1f2937; --ll-muted-fg: #94a3b8;' +
+      '--ll-border: #30363d;' +
+      '--ll-primary: oklch(0.64 0.22 27); --ll-primary-fg: oklch(0.99 0 0);' +
+      '--ll-accent: #21262d; --ll-ring: oklch(0.64 0.22 27 / 0.6);' +
+      '}' +
+      // Overrides the uploaded HTML's OWN structural palette to point at
+      // the tokens above, so its own body/tabs/filter-rail/table (none of
+      // which this bridge builds — this only repoints their existing
+      // var() references) render in the exact same colors as the host app
+      // instead of their own independently-designed dark theme. `html:root`
+      // (specificity 0,1,1) deliberately outranks the uploaded HTML's own
+      // `:root{}`/`[data-theme=dark]{}` blocks (0,1,0 each) so this wins
+      // regardless of injection order, without needing !important. Scoped
+      // to the structural/neutral roles only — brand red, status colors,
+      // and persona/fit colors are deliberately left untouched (the
+      // uploaded HTML's own brand red is already Adobe red, effectively
+      // already unified with this app's --primary without remapping it).
+      'html:root { --bg: var(--ll-bg); --surface: var(--ll-card); --surface-2: var(--ll-muted); --border: var(--ll-border); --text: var(--ll-fg); --muted: var(--ll-muted-fg); }' +
       // Candidate Explorer pagination bar — appended after the table by
-      // syncTablePagination() below. Styled to match the dashboard's own
-      // design tokens (--accent/--gray/--gb/--ink) rather than this
-      // bridge's own palette, so it reads as native to the dashboard.
-      '.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px 4px; font-size: 13px; color: var(--gray); }' +
-      '.pg-lbl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }' +
-      '.pg-lbl select { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--gb); border-radius: 8px; background: #fff; color: var(--ink); cursor: pointer; }' +
-      '.pg-mid { font-weight: 600; color: var(--ink); }' +
-      '.pg-right { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }' +
-      '.pg-nav, .pg-num { font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--gb); background: #fff; color: var(--ink); border-radius: 8px; cursor: pointer; transition: border-color .15s ease, color .15s ease; }' +
-      '.pg-num { min-width: 34px; }' +
+      // syncTablePagination() below.
+      // justify-content: flex-start (not space-between) because .pager
+      // wraps onto multiple lines on narrow widths, and space-between
+      // distributes EACH wrapped line's items independently — a line left
+      // with only one group (typically "Rows per page") then gets stranded
+      // with a large empty gap beside it instead of sitting flush, reading
+      // as visually detached from the rest of the footer. flex-start keeps
+      // every wrapped line a clean, normally-flowing left-aligned stack;
+      // .pg-right's own margin-left: auto below still pushes it to the far
+      // right on wide screens where everything fits on one line.
+      '.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px; padding: 14px 2px 4px; font-size: 13px; color: var(--ll-muted-fg); }' +
+      '.pg-lbl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--ll-muted-fg); }' +
+      // Native <select>: fully stylable in its closed state (all of this),
+      // but its OPEN dropdown popup is OS/browser-native-rendered with very
+      // limited CSS reach in most browsers — the option background/color
+      // below is best-effort (Chromium honors it reasonably well; other
+      // engines may not). This is exactly why the Action control elsewhere
+      // in this file is a custom listbox instead of a <select> — not an
+      // oversight here, a real platform constraint for this specific
+      // control that a custom listbox rewrite was out of scope for.
+      ".pg-lbl select { font: inherit; font-size: 13px; height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--ll-border); border-radius: 8px; background-color: var(--ll-card); color: var(--ll-fg); cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 8px center; transition: border-color .15s ease, box-shadow .15s ease; }" +
+      '.pg-lbl select:hover { border-color: var(--ll-primary); }' +
+      '.pg-lbl select:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 3px var(--ll-ring); }' +
+      '.pg-lbl select option { background-color: var(--ll-card); color: var(--ll-fg); }' +
+      '.pg-mid { font-weight: 600; color: var(--ll-fg); }' +
+      '.pg-right { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }' +
+      '.pg-nav, .pg-num { font: inherit; font-size: 13px; height: 34px; min-width: 34px; padding: 0 10px; border: 1px solid var(--ll-border); background-color: var(--ll-card); color: var(--ll-fg); border-radius: 8px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background-color .15s ease; }' +
       '.pg-nav[disabled] { opacity: .45; cursor: default; }' +
-      '.pg-num.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }' +
-      '.pg-num:hover:not(.on), .pg-nav:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }' +
-      '.pg-gap { padding: 0 2px; color: var(--gray); }' +
-      '@media (max-width: 820px) { .pager { justify-content: center; text-align: center; } }'
+      '.pg-num.on { background-color: var(--ll-primary); border-color: var(--ll-primary); color: var(--ll-primary-fg); font-weight: 700; }' +
+      '.pg-num:hover:not(.on), .pg-nav:hover:not([disabled]) { border-color: var(--ll-primary); color: var(--ll-primary); background-color: var(--ll-accent); }' +
+      '.pg-gap { padding: 0 2px; color: var(--ll-muted-fg); }'
     document.head.appendChild(style)
+  }
+
+  // Delegates the host's theme to whatever mechanism the dashboard's own
+  // document actually has. Tries the dashboard's own global theme function
+  // first (the same one its own now-hidden toggle called), reusing its
+  // complete, already-correct styling — and either way sets a bridge-owned
+  // attribute so the CSS variable fallback in injectBaseStyles() covers
+  // dashboards with no theme mechanism of their own. Both paths are safe
+  // no-ops where they don't apply.
+  function applyHostTheme(theme) {
+    document.documentElement.setAttribute('data-longlist-theme', theme)
+    if (typeof window.applyTheme !== 'function') return
+    try {
+      window.applyTheme(theme)
+      if (typeof window.setChartTheme === 'function') window.setChartTheme()
+      if (typeof window.render === 'function') window.render()
+    } catch (e) {
+      // The dashboard's own theme function threw — the CSS variable
+      // fallback above still applies regardless.
+    }
   }
 
   function populateOptions(select) {
@@ -493,17 +566,17 @@
   // <body>, so it's never a descendant of the row in the first place.
   // ---------------------------------------------------------------------
 
-  // Uploaded dashboards are static HTML documents with a fixed light
-  // design — they never change appearance when the host app's own theme
-  // toggle changes. Coloring the Action control from the app's theme (as
-  // the Status select does) previously produced a solid dark-navy fill
-  // whenever the app was in dark mode, clashing badly with the always-light
-  // table around it. So, unlike Status, Action always uses its light
-  // palette regardless of currentTheme.
+  // Colored from the host theme exactly like the Status select is
+  // (styles[currentTheme] in applyActionStyle() below) — previously this
+  // always used the light palette regardless of currentTheme, back when
+  // the surrounding table itself had no dark styling of its own to match;
+  // now that the uploaded HTML's structural colors are unified with the
+  // host theme too (see the html:root override in injectBaseStyles()),
+  // that mismatch no longer exists, so Action follows currentTheme like
+  // everything else.
   var UNSET_ACTION_PALETTE = {
-    background: '#FFFFFF',
-    text: '#6B7280',
-    border: '#9CA3AF',
+    light: { background: '#FFFFFF', text: '#6B7280', border: '#9CA3AF' },
+    dark: { background: '#161b22', text: '#94a3b8', border: '#30363d' },
   }
 
   var actionUidCounter = 0
@@ -597,7 +670,10 @@
   function applyActionStyle(trigger) {
     var value = getActionValue(trigger)
     var styles = value ? ACTION_STYLES[value] : null
-    var palette = (styles && styles.light) || UNSET_ACTION_PALETTE
+    var palette =
+      (styles && (styles[currentTheme] || styles.light)) ||
+      UNSET_ACTION_PALETTE[currentTheme] ||
+      UNSET_ACTION_PALETTE.light
     trigger.style.backgroundColor = palette.background
     trigger.style.color = palette.text
     trigger.style.borderColor = palette.border
@@ -1064,18 +1140,29 @@
     if (!ACTION_OPTIONS.length) return // config not delivered yet
     document.querySelectorAll('table').forEach(function (table) {
       // Read header cells BEFORE ensureActionHeader() runs, and use
-      // statusIdx (not the header's total length) as the "is this a real
-      // data row" threshold below: the header permanently gains our Action
-      // column after the first sync, but a freshly re-rendered <tbody> row
-      // (e.g. after the dashboard's own filter/sort) always starts without
-      // one — comparing against the inflated total would wrongly treat
-      // every legitimate row as a short/placeholder row forever after.
+      // statusIdx/headerCells.length (not the header's post-injection
+      // total) as the "is this a real data row" threshold below: the
+      // header permanently gains our Action column after the first sync,
+      // but a freshly re-rendered <tbody> row (e.g. after the dashboard's
+      // own filter/sort) always starts without one — comparing against the
+      // inflated total would wrongly treat every legitimate row as a
+      // short/placeholder row forever after.
       var headerCells = getHeaderCells(table)
       var statusIdx = findColumnIndex(headerCells, isStatusHeader)
-      if (statusIdx === -1) return
+      var minCells
+      if (statusIdx !== -1) {
+        minCells = statusIdx + 1
+      } else if (looksLikeGenericCandidateTable(table, headerCells)) {
+        // No Status column to anchor on — a real row here is simply one
+        // with every column the header defines (excludes colspan rows,
+        // same shape check pagination's generic path uses).
+        minCells = headerCells.length
+      } else {
+        return
+      }
       var nameIdx = findColumnIndex(headerCells, isNameHeader)
       ensureActionHeader(table)
-      ensureActionCells(table, nameIdx, statusIdx + 1)
+      ensureActionCells(table, nameIdx, minCells)
     })
   }
 
@@ -1169,6 +1256,47 @@
       typeof sample.name === 'string' &&
       typeof sample.tag === 'string' &&
       typeof sample.best_persona !== 'undefined'
+    )
+  }
+
+  // Second, more permissive candidate-table signal, used as a fallback
+  // wherever isExplorerTable() doesn't match. Not every uploaded
+  // dashboard's candidate table has the older generator's "Status" column
+  // or field vocabulary (rank/tag/best_persona/level/sen_dir/...) that
+  // isExplorerTable() and pgRowHtml() are built around — but a table can
+  // still be safely enhanced without ever reading any of those specific
+  // fields, by treating its OWN already-rendered <tr> elements as the
+  // source of truth instead of reconstructing them from raw data. "Full"
+  // rows (same cell count as the header) excludes colspan rows — a
+  // no-results notice, or (as in at least one real dashboard format) an
+  // inline candidate-detail row inserted on click — the same shape check
+  // ensureActionCells() already uses for that purpose. Requiring this
+  // count to line up 1:1 with window.__ROWS is strong enough evidence the
+  // table IS the dashboard's own candidate list to act on safely, without
+  // knowing anything about its column layout or field names.
+  function getFullCandidateRows(table, headerCellCount) {
+    var tbody = table.querySelector('tbody')
+    if (!tbody) return []
+    var out = []
+    var rows = tbody.children
+    for (var i = 0; i < rows.length; i++) {
+      if (
+        rows[i].tagName === 'TR' &&
+        rows[i].children.length === headerCellCount
+      ) {
+        out.push(rows[i])
+      }
+    }
+    return out
+  }
+
+  function looksLikeGenericCandidateTable(table, headerCells) {
+    if (!headerCells.length) return false
+    if (findColumnIndex(headerCells, isNameHeader) === -1) return false
+    var rows = window.__ROWS
+    if (!Array.isArray(rows)) return false
+    return (
+      getFullCandidateRows(table, headerCells.length).length === rows.length
     )
   }
 
@@ -1453,8 +1581,12 @@
     return el
   }
 
-  function syncTablePagination(table) {
-    if (!isExplorerTable(table)) return
+  // Reconstructs each page's row HTML from raw data — the original
+  // pagination strategy, kept exactly as-is. Only valid for tables whose
+  // candidate objects carry the specific field vocabulary pgRowHtml() reads
+  // (rank/tag/best_persona/level/sen_dir/...); isExplorerTable() verifies
+  // that before this ever runs.
+  function syncTablePaginationReconstruct(table) {
     var rows = window.__ROWS
     if (!Array.isArray(rows)) return
 
@@ -1491,6 +1623,58 @@
     // Action cell in the same tick, rather than waiting on the
     // MutationObserver's own independently-scheduled pass to catch up.
     syncActionColumns()
+  }
+
+  // Same pagination UI/state machine as the reconstruct path (shares
+  // getPgState/pgCalc/ensurePagerContainer/pgRenderPager unchanged), but
+  // for tables that only pass the more permissive
+  // looksLikeGenericCandidateTable() signal: instead of rebuilding row
+  // HTML from field names this dashboard format doesn't use, it shows/
+  // hides the table's OWN already-rendered rows in place. Any row the
+  // dashboard itself inserts later (e.g. an inline candidate-detail row on
+  // click) is simply never touched — it's not one of the "full" rows this
+  // counted, so it just sits there displayed exactly as the dashboard's
+  // own script left it, next to whichever row it belongs to.
+  function syncTablePaginationGeneric(table) {
+    var rows = window.__ROWS
+    if (!Array.isArray(rows)) return
+
+    var state = getPgState(table)
+    if (rows !== state.lastRows) {
+      state.lastRows = rows
+      state.page = 1
+      state.dirty = true
+    }
+    if (!state.dirty) return
+
+    var headerCells = getHeaderCells(table)
+    var candidateRows = getFullCandidateRows(table, headerCells.length)
+    // Detection can only have changed under us if the dashboard's own
+    // render() ran between the last check and now without going through
+    // the MutationObserver yet — bail rather than risk misnumbering pages.
+    if (candidateRows.length !== rows.length) return
+
+    var calc = pgCalc(rows.length, state.page, state.size)
+    state.page = calc.page
+
+    for (var i = 0; i < candidateRows.length; i++) {
+      candidateRows[i].style.display =
+        i >= calc.start && i < calc.end ? '' : 'none'
+    }
+
+    pgRenderPager(ensurePagerContainer(table), table, state, calc)
+    state.dirty = false
+    syncActionColumns()
+  }
+
+  function syncTablePagination(table) {
+    if (isExplorerTable(table)) {
+      syncTablePaginationReconstruct(table)
+      return
+    }
+    if (looksLikeGenericCandidateTable(table, getHeaderCells(table))) {
+      syncTablePaginationGeneric(table)
+    }
   }
 
   function syncExplorerPagination() {
@@ -1620,13 +1804,30 @@
   function measureHeight() {
     var scrollHeight = measureRawScrollHeight()
     var contentBottom = measureContentBottom()
+    var height
     if (
       contentBottom > 0 &&
       scrollHeight - contentBottom > INFLATION_THRESHOLD
     ) {
-      return Math.ceil(contentBottom) + 24
+      height = Math.ceil(contentBottom) + 24
+    } else {
+      height = scrollHeight
     }
-    return scrollHeight
+    // When content is wider than the frame, the iframe shows a horizontal
+    // scrollbar that consumes some of the iframe's own height. Sizing the
+    // box to exactly the content height then leaves the content taller than
+    // the space left above that scrollbar, so a VERTICAL scrollbar also
+    // appears — and because that narrows the content width, it re-triggers
+    // measurement, toggling the vertical scrollbar on/off ("shake"), most
+    // visible when a fractional content height lands within ~1px of the
+    // threshold. Reserving the horizontal scrollbar's height removes the
+    // deficit so the vertical scrollbar is never needed.
+    var docEl = document.documentElement
+    if (docEl.scrollWidth > docEl.clientWidth) {
+      var horizontalScrollbar = window.innerHeight - docEl.clientHeight
+      if (horizontalScrollbar > 0) height += horizontalScrollbar
+    }
+    return height
   }
 
   function reportHeight() {
@@ -1772,8 +1973,35 @@
     }).observe(modal, { attributes: true, attributeFilter: ['class'] })
   }
 
+  // The uploaded HTML's own sticky-positioned tab bar/filter rail (verified
+  // selectors: .tab-bar, .rail) had their `top` offsets calibrated assuming
+  // the header above them is visible — a sticky element's `top` isn't only
+  // a scroll-time stick point, it also decides whether the element is
+  // ALREADY past that threshold at the very top of the page. With the
+  // header hidden (0 height, see HIDE_EMBEDDED_HEADER_CSS in
+  // dashboardBridge.ts), .tab-bar's natural position is already below its
+  // old top:61px offset from the first pixel, so it renders permanently
+  // stuck there — a large blank gap where the header used to be, confirmed
+  // by directly forcing position:static and observing top drop from 61 to
+  // 0. .rail then needs to clear whatever height .tab-bar (now sticky at
+  // top:0) actually renders at — measured live rather than a second guessed
+  // constant, since a dashboard's own content can affect wrapping.
+  function fixOrphanedStickyOffsets() {
+    var tabBar = document.querySelector('.tab-bar')
+    if (tabBar && getComputedStyle(tabBar).position === 'sticky') {
+      tabBar.style.top = '0px'
+    }
+    var rail = document.querySelector('.rail')
+    if (rail && getComputedStyle(rail).position === 'sticky') {
+      var tabBarHeight = tabBar ? tabBar.getBoundingClientRect().height : 0
+      rail.style.top = tabBarHeight + 'px'
+      rail.style.maxHeight = 'calc(100vh - ' + Math.ceil(tabBarHeight) + 'px)'
+    }
+  }
+
   function init() {
     injectBaseStyles()
+    fixOrphanedStickyOffsets()
     watchCandidateDetailModal()
 
     // Some uploaded dashboards render/re-render their whole table body from
@@ -1882,6 +2110,7 @@
       ) {
         currentTheme = data.theme
         applyStylesToAll()
+        applyHostTheme(data.theme)
       }
 
       if (
