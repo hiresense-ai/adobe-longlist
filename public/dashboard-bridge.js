@@ -191,7 +191,15 @@
     var rows = parseCsv(text)
     if (rows.length === 0) return text
     var header = rows[0]
-    var nameIdx = header.indexOf('name')
+    // exportCSV() writes the display label ("Name"), not the raw field key
+    // ("name") — match case-insensitively rather than assuming either casing.
+    var nameIdx = -1
+    for (var h = 0; h < header.length; h++) {
+      if (String(header[h]).toLowerCase() === 'name') {
+        nameIdx = h
+        break
+      }
+    }
     // Format doesn't match what exportCSV() is known to produce — leave
     // the export exactly as the dashboard built it rather than guess.
     if (nameIdx === -1) return text
