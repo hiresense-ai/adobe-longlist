@@ -669,7 +669,16 @@
     if (nameIdx === -1) return null
     var cell = tr.children[nameIdx]
     if (!cell) return null
-    return (cell.textContent || '').trim()
+    var text = (cell.textContent || '').trim()
+    // The name cell often renders the candidate's name as a LinkedIn link
+    // with a trailing "↗" external-link indicator in the same text node —
+    // `>${esc(c.name)} ↗</a>`, consistent across every uploaded dashboard
+    // checked this session. Left in, that glyph becomes part of the
+    // identity used to key this candidate's Action value, so it never
+    // matches the clean name saved elsewhere (Supabase's candidate_name,
+    // the CSV export's own name column) — stripped here so the identity is
+    // just the name, exactly as every other consumer expects it.
+    return text.replace(/\s*↗\s*$/, '')
   }
 
   function getActionValue(trigger) {
