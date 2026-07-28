@@ -411,10 +411,24 @@
       // in this file is a custom listbox instead of a <select> — not an
       // oversight here, a real platform constraint for this specific
       // control that a custom listbox rewrite was out of scope for.
-      ".pg-lbl select { font: inherit; font-size: 13px; height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--ll-border); border-radius: 8px; background-color: var(--ll-card); color: var(--ll-fg); cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 8px center; transition: border-color .15s ease, box-shadow .15s ease; }" +
-      '.pg-lbl select:hover { border-color: var(--ll-primary); }' +
-      '.pg-lbl select:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 3px var(--ll-ring); }' +
-      '.pg-lbl select option { background-color: var(--ll-card); color: var(--ll-fg); }' +
+      // Scoped to `.pg-lbl select` (bridge-owned rows-per-page) and
+      // `#rail select` (the uploaded HTML's own filter-rail selects, e.g.
+      // the Employer dropdown — verified selector, not a blanket `select`
+      // rule) rather than every <select> on the page, so a select the
+      // bridge doesn't know about is never silently restyled.
+      ".pg-lbl select, #rail select { font: inherit; font-size: 13px; height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--ll-border); border-radius: 8px; background-color: var(--ll-card); color: var(--ll-fg); cursor: pointer; appearance: none; -webkit-appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 8px center; transition: border-color .15s ease, box-shadow .15s ease; }" +
+      '.pg-lbl select:hover, #rail select:hover { border-color: var(--ll-primary); }' +
+      '.pg-lbl select:focus-visible, #rail select:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 3px var(--ll-ring); }' +
+      '.pg-lbl select option, #rail select option { background-color: var(--ll-card); color: var(--ll-fg); }' +
+      // The filter rail's own text input (e.g. its search box) already sets
+      // a theme-following background (var(--white), aliased to the same
+      // --surface this bridge's html:root override repoints — see above),
+      // but never sets its own `color`, leaving typed text to whatever a
+      // browser's form-control default happens to be rather than reliably
+      // inheriting the page's text color. Setting it explicitly here, the
+      // same way as the selects above, removes that dependency.
+      '#rail input[type="text"], #rail input[type="search"] { color: var(--ll-fg); }' +
+      '#rail input[type="text"]::placeholder, #rail input[type="search"]::placeholder { color: var(--ll-muted-fg); opacity: 1; }' +
       '.pg-mid { font-weight: 600; color: var(--ll-fg); }' +
       '.pg-right { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }' +
       '.pg-nav, .pg-num { font: inherit; font-size: 13px; height: 34px; min-width: 34px; padding: 0 10px; border: 1px solid var(--ll-border); background-color: var(--ll-card); color: var(--ll-fg); border-radius: 8px; cursor: pointer; transition: border-color .15s ease, color .15s ease, background-color .15s ease; }' +
