@@ -2013,7 +2013,76 @@
     }
   }
 
+  // This app's production CSP is `script-src 'self'` with no
+  // `script-src-attr` override — per the CSP spec that means inline
+  // event-handler attributes (onclick="..." etc) fall back to `script-src`
+  // itself, which has no `unsafe-inline`, so the browser silently blocks
+  // every one of them (confirmed against the deployed header; visible only
+  // as a console warning, with no other error). The dashboard's own
+  // controls (Reset all, Clear all, chip removal, persona cards, CSV
+  // export, its own theme toggle) rely entirely on these attributes, so
+  // none of them fire under that policy. This document, loaded via a
+  // blob: URL, has no HTTP response of its own — it inherits the host
+  // page's CSP verbatim, so the same restriction applies here regardless
+  // of which uploaded dashboard is open.
+  //
+  // Rewires every inline handler to a real, CSP-compliant
+  // addEventListener instead, entirely at runtime — the stored HTML is
+  // never touched. No eval()/new Function() anywhere: those are exactly as
+  // CSP-blocked as the attributes themselves under `script-src 'self'`.
+  // Every inline handler observed across every uploaded dashboard checked
+  // this session uses the same simple shape — `functionName()` or
+  // `functionName('literal', 'literal', ...)`, never a general JS
+  // expression — so a small string-literal-aware parser is sufficient and
+  // correct; it does not need to be (and deliberately isn't) a general
+  // JavaScript parser.
+  var INLINE_HANDLER_ATTRS = [
+    'onclick',
+    'onchange',
+    'oninput',
+    'onkeyup',
+    'onkeydown',
+    'onsubmit',
+    'onfocus',
+    'onblur',
+    'ondblclick',
+  ]
+
+  function parseInlineHandlerCall(code) {
+    var call = /^\s*([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)\s*;?\s*$/.exec(code)
+    if (!call) return null
+    var argsRaw = call[2].trim()
+    var args = []
+    if (argsRaw) {
+      var literal = /'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"/g
+      var match
+      while ((match = literal.exec(argsRaw))) {
+        var raw = match[1] !== undefined ? match[1] : match[2]
+        args.push(raw.replace(/\\(.)/g, '$1'))
+      }
+    }
+    return { fnName: call[1], args: args }
+  }
+
+  function neutralizeInlineHandlers() {
+    INLINE_HANDLER_ATTRS.forEach(function (attr) {
+      var eventType = attr.slice(2) // 'onclick' -> 'click'
+      document.querySelectorAll('[' + attr + ']').forEach(function (el) {
+        var code = el.getAttribute(attr)
+        el.removeAttribute(attr)
+        var parsed = code && parseInlineHandlerCall(code)
+        if (!parsed || typeof window[parsed.fnName] !== 'function') return
+        var fn = window[parsed.fnName]
+        var args = parsed.args
+        el.addEventListener(eventType, function () {
+          fn.apply(el, args)
+        })
+      })
+    })
+  }
+
   function init() {
+    neutralizeInlineHandlers()
     injectBaseStyles()
     fixOrphanedStickyOffsets()
     watchCandidateDetailModal()
@@ -2034,6 +2103,12 @@
     // already rewrites #tbody's innerHTML (a childList change), so it was
     // already covered — this closes the gap for pure visibility toggles.
     new MutationObserver(function () {
+      // Synchronous, not scheduled like the rest below: the dashboard's own
+      // re-renders (drawChips() on every filter change, the persona grid,
+      // etc.) generate fresh onclick="" markup every time, and each one is
+      // a live CSP violation risk until neutralized — better to close that
+      // window immediately than defer it to the next animation frame.
+      neutralizeInlineHandlers()
       // Only force-close the popup if the row it belongs to was actually
       // wiped out by a re-render — not on every mutation, since appending
       // the popup itself (or the action cells) to the document is itself a
