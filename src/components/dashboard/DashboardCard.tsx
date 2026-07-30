@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { DeleteDashboardButton } from '@/components/dashboard/DeleteDashboardButton'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
+import { isAtLeastAdmin } from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import type { DashboardWithThumbnail } from '@/services/dashboards.service'
 
@@ -15,7 +16,7 @@ export function DashboardCard({
   dashboard: DashboardWithThumbnail
 }) {
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
 
   return (
     <div className="group border-border bg-card shadow-soft dark:hover:shadow-elevated hover:border-primary/30 dark:hover:border-primary/50 relative flex flex-col overflow-hidden rounded-2xl border transition-all duration-[220ms] ease-out hover:-translate-y-1.5 hover:scale-[1.02] hover:cursor-pointer hover:shadow-lg motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:hover:scale-100">

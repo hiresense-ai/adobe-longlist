@@ -1,0 +1,13 @@
+project_id = "lomiqhcbjivdgophreiw"
+
+# admin-users does its own caller-identity check (verifies the JWT and reads
+# profiles.role before anything runs), but the platform-level JWT gate is a
+# cheap first line of defense in front of that, so it stays on.
+[functions.admin-users]
+verify_jwt = true
+
+# auth-login IS the login endpoint — by definition, nobody calling it has a
+# session yet. It performs its own request validation instead (email/password
+# shape, rate limiting, generic error messages).
+[functions.auth-login]
+verify_jwt = false

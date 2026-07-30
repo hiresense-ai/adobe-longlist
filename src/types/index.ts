@@ -33,6 +33,11 @@ export interface AdminUserRow {
   lastSignInAt: string | null
   disabled: boolean
   emailConfirmed: boolean
+  /** True once locked_at is set. Always false for super_admin in practice —
+   * that role is never auto-locked (see the account-security migration). */
+  locked: boolean
+  /** Consecutive failed sign-in attempts since the last success or unlock. */
+  failedLoginAttempts: number
 }
 
 /** postMessage contract between an embedded HTML dashboard (iframe) and the host app. */

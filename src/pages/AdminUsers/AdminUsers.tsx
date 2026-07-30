@@ -11,6 +11,7 @@ import { ErrorState } from '@/components/common/ErrorState'
 import { CreateUserDialog } from '@/components/admin/CreateUserDialog'
 import { EditUserDialog } from '@/components/admin/EditUserDialog'
 import { DeleteUserDialog } from '@/components/admin/DeleteUserDialog'
+import { ResetPasswordDialog } from '@/components/admin/ResetPasswordDialog'
 import { UserRowActions } from '@/components/admin/UserRowActions'
 import { UsersBackground } from '@/components/admin/UsersBackground'
 import { useAdminUsers } from '@/hooks/useAdminUsers'
@@ -18,16 +19,23 @@ import { useAuth } from '@/hooks/useAuth'
 import { filterAdminUsers } from '@/services/adminUsers.service'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
+import { roleLabel } from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import type { AdminUserRow } from '@/types'
 
 export function AdminUsers() {
   const { user: currentUser } = useAuth()
+  // Falls back to the least-privileged role while the session is still
+  // loading, so no action briefly renders as available before it's known
+  // to actually be permitted.
+  const currentUserRole = currentUser?.role ?? 'viewer'
   const { data: users, isLoading, isError, error, refetch } = useAdminUsers()
   const [query, setQuery] = useState('')
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<AdminUserRow | null>(null)
   const [deletingUser, setDeletingUser] = useState<AdminUserRow | null>(null)
+  const [resettingPasswordUser, setResettingPasswordUser] =
+    useState<AdminUserRow | null>(null)
 
   const filtered = useMemo(
     () => filterAdminUsers(users ?? [], query),
@@ -109,7 +117,7 @@ export function AdminUsers() {
         {!isLoading && !isError && filtered.length > 0 && (
           <div className="border-border bg-card shadow-soft overflow-hidden rounded-2xl border">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[880px] text-left text-sm">
+              <table className="w-full min-w-[980px] text-left text-sm">
                 <thead>
                   <tr className="border-border bg-muted/50 border-b text-xs">
                     <th className="text-muted-foreground w-12 px-4 py-3 font-medium"></th>
@@ -130,6 +138,9 @@ export function AdminUsers() {
                     </th>
                     <th className="text-muted-foreground px-2 py-3 font-medium">
                       Status
+                    </th>
+                    <th className="text-muted-foreground px-2 py-3 font-medium">
+                      Failed attempts
                     </th>
                     <th className="w-12 px-4 py-3"></th>
                   </tr>
@@ -161,12 +172,14 @@ export function AdminUsers() {
                         <Badge
                           variant="outline"
                           className={
-                            user.role === 'admin'
-                              ? 'border-primary/30 bg-primary/5 text-primary capitalize'
-                              : 'capitalize'
+                            user.role === 'super_admin'
+                              ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                              : user.role === 'admin'
+                                ? 'border-primary/30 bg-primary/5 text-primary'
+                                : ''
                           }
                         >
-                          {user.role}
+                          {roleLabel(user.role)}
                         </Badge>
                       </td>
                       <td className="text-muted-foreground px-2 py-3">
@@ -181,20 +194,37 @@ export function AdminUsers() {
                         <Badge
                           variant="outline"
                           className={
-                            user.disabled
+                            user.locked || user.disabled
                               ? 'border-destructive/30 bg-destructive/5 text-destructive'
                               : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300'
                           }
                         >
-                          {user.disabled ? 'Disabled' : 'Active'}
+                          {user.locked
+                            ? 'Locked'
+                            : user.disabled
+                              ? 'Disabled'
+                              : 'Active'}
                         </Badge>
+                      </td>
+                      <td className="px-2 py-3">
+                        <span
+                          className={
+                            user.failedLoginAttempts > 0
+                              ? 'text-destructive font-medium'
+                              : 'text-muted-foreground'
+                          }
+                        >
+                          {user.failedLoginAttempts}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <UserRowActions
                           user={user}
                           currentUserId={currentUser?.id}
+                          currentUserRole={currentUserRole}
                           onEdit={setEditingUser}
                           onDelete={setDeletingUser}
+                          onResetPassword={setResettingPasswordUser}
                         />
                       </td>
                     </tr>
@@ -217,6 +247,10 @@ export function AdminUsers() {
         <DeleteUserDialog
           user={deletingUser}
           onOpenChange={(open) => !open && setDeletingUser(null)}
+        />
+        <ResetPasswordDialog
+          user={resettingPasswordUser}
+          onOpenChange={(open) => !open && setResettingPasswordUser(null)}
         />
       </div>
     </div>

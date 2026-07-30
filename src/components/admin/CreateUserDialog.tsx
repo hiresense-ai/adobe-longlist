@@ -6,6 +6,7 @@ import { Loader2, UserPlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import {
   Dialog,
   DialogContent,
@@ -30,12 +31,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCreateAdminUser } from '@/hooks/useAdminUserMutations'
+import { useAuth } from '@/hooks/useAuth'
 import {
   MIN_PASSWORD_LENGTH,
   PASSWORD_REQUIREMENTS_HINT,
   STRONG_PASSWORD_PATTERN,
 } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
+import { assignableRoles, roleLabel } from '@/lib/permissions'
 
 const createUserSchema = z.object({
   firstName: z.string().min(1, 'First name is required'),
@@ -62,6 +65,8 @@ export function CreateUserDialog({
   onOpenChange: (open: boolean) => void
   existingEmails: string[]
 }) {
+  const { user: currentUser } = useAuth()
+  const roles = assignableRoles(currentUser?.role ?? 'viewer')
   const createMutation = useCreateAdminUser()
 
   const form = useForm<CreateUserFormValues>({
@@ -106,7 +111,9 @@ export function CreateUserDialog({
         <DialogHeader>
           <DialogTitle>Create user</DialogTitle>
           <DialogDescription>
-            Add a new admin or viewer account.
+            {roles.length > 1
+              ? 'Add a new admin or viewer account.'
+              : 'Add a new viewer account.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -175,8 +182,7 @@ export function CreateUserDialog({
                 <FormItem>
                   <FormLabel>Password</FormLabel>
                   <FormControl>
-                    <Input
-                      type="password"
+                    <PasswordInput
                       placeholder="••••••••"
                       autoComplete="new-password"
                       disabled={isSubmitting}
@@ -209,8 +215,11 @@ export function CreateUserDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="viewer">Viewer</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
+                      {roles.map((role) => (
+                        <SelectItem key={role} value={role}>
+                          {roleLabel(role)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                   <FormMessage />

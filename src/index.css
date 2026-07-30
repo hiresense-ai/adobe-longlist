@@ -85,6 +85,19 @@
   --sidebar-accent-foreground: oklch(0.57 0.235 27);
   --sidebar-border: oklch(0.92 0.004 285);
   --sidebar-ring: oklch(0.57 0.235 27 / 0.5);
+  /* What an autofilled input should look like instead of the browser's
+     forced pale-blue box (see the input:-webkit-autofill rule below). Any
+     surface whose inputs aren't on the plain page background overrides
+     these locally rather than fighting the rule itself. */
+  --autofill-bg: var(--background);
+  --autofill-fg: var(--foreground);
+  /* Focus ring for an autofilled field. The normal focus-visible:ring-*
+     utility can't be used there — see the autofill rule near the end of
+     this file — so the ring is redrawn as an outline instead. --primary,
+     not --ring: --ring is the same hue at ~50% alpha, which over the dark
+     autofilled field lands at ~1.7:1 and fails the 3:1 WCAG asks of a
+     focus indicator. --primary is that hue opaque, and is theme-aware. */
+  --autofill-ring: var(--primary);
 }
 
 .dark {
@@ -108,6 +121,8 @@
   --border: #30363d;
   --input: #111827;
   --ring: oklch(0.64 0.22 27 / 0.6);
+  --autofill-bg: var(--input);
+  --autofill-fg: var(--foreground);
   --chart-1: oklch(0.64 0.22 27);
   --chart-2: oklch(0.7 0.18 40);
   --chart-3: #94a3b8;
@@ -143,6 +158,47 @@
        width constant whether or not the scrollbar is showing. */
     scrollbar-gutter: stable;
   }
+}
+
+/* Chrome/Edge/Safari paint their own pale blue background behind an
+   autofilled input, overriding the input's real background-color. On a dark
+   input (Login's especially) that washes the field out to a light box, and
+   any icon coloured for the dark background — notably the password show/hide
+   toggle — becomes unreadable against it.
+
+   The UA background can't be overridden by `background-color` (it wins at
+   any specificity), so it's painted over with a large inset shadow, which
+   sits above it. Colours come from --autofill-bg/-fg, so every theme, and
+   any surface that overrides those locally, stays correct without this
+   hard-coding anything.
+
+   Deliberately UNLAYERED: Tailwind's focus-visible:ring-* utility also
+   writes box-shadow, and the utilities layer outranks base, so while this
+   lived in @layer base merely focusing an autofilled field replaced the
+   cover and flashed the pale background back. Unlayered normal declarations
+   outrank every layered one, so the cover now holds in all states. That does
+   mean the ring utility no longer paints on these fields, so the focus ring
+   is redrawn below as an outline, which doesn't compete with box-shadow. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--autofill-bg) inset;
+  box-shadow: 0 0 0 1000px var(--autofill-bg) inset;
+  -webkit-text-fill-color: var(--autofill-fg);
+  caret-color: var(--autofill-fg);
+}
+
+input:-webkit-autofill:focus-visible {
+  outline: 2px solid var(--autofill-ring);
+  outline-offset: 0;
+}
+
+/* Firefox forces its own autofill background too, but does honour a plain
+   background-color override. */
+input:autofill {
+  background-color: var(--autofill-bg);
+  color: var(--autofill-fg);
 }
 
 /**

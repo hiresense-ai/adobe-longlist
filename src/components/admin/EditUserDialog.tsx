@@ -31,13 +31,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useUpdateAdminUser } from '@/hooks/useAdminUserMutations'
+import { useAuth } from '@/hooks/useAuth'
 import { getErrorMessage } from '@/lib/errors'
+import { assignableRoles, canEditRole, roleLabel } from '@/lib/permissions'
 import type { AdminUserRow } from '@/types'
 
 const editUserSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   email: z.string().min(1, 'Email is required').email('Enter a valid email'),
-  role: z.enum(['admin', 'viewer']),
+  // Widened to match UserRole so form.reset() accepts any real user's
+  // current role as a default value. 'super_admin' can never actually be
+  // submitted from here in practice — UserRowActions disables the Edit
+  // action itself for a super_admin target (see canDisableOrDelete), and
+  // the role field is additionally disabled whenever !roleIsEditable.
+  role: z.enum(['super_admin', 'admin', 'viewer']),
 })
 
 type EditUserFormValues = z.infer<typeof editUserSchema>
@@ -49,7 +56,13 @@ export function EditUserDialog({
   user: AdminUserRow | null
   onOpenChange: (open: boolean) => void
 }) {
+  const { user: currentUser } = useAuth()
   const updateMutation = useUpdateAdminUser()
+
+  const roleIsEditable = Boolean(
+    user && currentUser && canEditRole(currentUser.role, user.role),
+  )
+  const roleOptions = currentUser ? assignableRoles(currentUser.role) : []
 
   const form = useForm<EditUserFormValues>({
     resolver: zodResolver(editUserSchema),
@@ -128,7 +141,7 @@ export function EditUserDialog({
                   <Select
                     value={field.value}
                     onValueChange={field.onChange}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || !roleIsEditable}
                   >
                     <FormControl>
                       <SelectTrigger className="w-full">
@@ -136,10 +149,27 @@ export function EditUserDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="viewer">Viewer</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
+                      {/* The field is disabled when this isn't reachable, but
+                          the current value must still resolve to a rendered
+                          item, or the trigger shows nothing at all. */}
+                      {roleIsEditable ? (
+                        roleOptions.map((role) => (
+                          <SelectItem key={role} value={role}>
+                            {roleLabel(role)}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value={field.value}>
+                          {roleLabel(field.value)}
+                        </SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
+                  {!roleIsEditable && (
+                    <p className="text-muted-foreground text-xs">
+                      Only a Super Admin can change an Admin's role.
+                    </p>
+                  )}
                   <FormMessage />
                 </FormItem>
               )}

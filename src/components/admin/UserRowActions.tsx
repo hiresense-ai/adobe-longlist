@@ -3,6 +3,8 @@ import { toast } from 'sonner'
 import {
   KeyRound,
   Loader2,
+  LockKeyholeOpen,
+  Mail,
   MoreHorizontal,
   Pencil,
   ShieldOff,
@@ -18,35 +20,55 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useSetAdminUserDisabled } from '@/hooks/useAdminUserMutations'
+import {
+  useSetAdminUserDisabled,
+  useUnlockAdminUser,
+} from '@/hooks/useAdminUserMutations'
 import { sendPasswordResetEmail } from '@/supabase/auth'
 import { getErrorMessage } from '@/lib/errors'
-import type { AdminUserRow } from '@/types'
+import {
+  canDisableOrDelete,
+  canResetPassword,
+  canUnlock,
+} from '@/lib/permissions'
+import type { AdminUserRow, UserRole } from '@/types'
 
 export function UserRowActions({
   user,
   currentUserId,
+  currentUserRole,
   onEdit,
   onDelete,
+  onResetPassword,
 }: {
   user: AdminUserRow
   currentUserId: string | undefined
+  currentUserRole: UserRole
   onEdit: (user: AdminUserRow) => void
   onDelete: (user: AdminUserRow) => void
+  onResetPassword: (user: AdminUserRow) => void
 }) {
   const setDisabledMutation = useSetAdminUserDisabled()
-  const [isResetting, setIsResetting] = useState(false)
+  const unlockMutation = useUnlockAdminUser()
+  const [isSendingReset, setIsSendingReset] = useState(false)
   const isSelf = user.id === currentUserId
 
-  async function handleResetPassword() {
-    setIsResetting(true)
+  // super_admin is never editable/disable-able/deletable through this menu
+  // at all (see admin-users/index.ts) — canDisableOrDelete already reflects
+  // that, and the same hierarchy applies to Edit, so it's reused here too.
+  const canManage = canDisableOrDelete(currentUserRole, user.role)
+  const canUnlockThis = user.locked && canUnlock(currentUserRole, user.role)
+  const canSetPassword = canResetPassword(currentUserRole)
+
+  async function handleSendResetEmail() {
+    setIsSendingReset(true)
     try {
       await sendPasswordResetEmail(user.email)
       toast.success(`Password reset email sent to ${user.email}`)
     } catch (error) {
       toast.error(getErrorMessage(error, "Couldn't send reset email"))
     } finally {
-      setIsResetting(false)
+      setIsSendingReset(false)
     }
   }
 
@@ -64,6 +86,15 @@ export function UserRowActions({
     }
   }
 
+  async function handleUnlock() {
+    try {
+      await unlockMutation.mutateAsync(user.id)
+      toast.success(`${user.email} unlocked`)
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Couldn't unlock account"))
+    }
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -76,22 +107,51 @@ export function UserRowActions({
           <MoreHorizontal className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuItem onClick={() => onEdit(user)}>
+      <DropdownMenuContent align="end" className="w-52">
+        {/* Unlock only ever appears when it would actually do something —
+            the account is locked AND the current user has permission — per
+            the "show the button only if permitted" requirement. */}
+        {canUnlockThis && (
+          <>
+            <DropdownMenuItem
+              onClick={handleUnlock}
+              disabled={unlockMutation.isPending}
+            >
+              {unlockMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <LockKeyholeOpen className="size-4" />
+              )}
+              Unlock account
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
+
+        <DropdownMenuItem onClick={() => onEdit(user)} disabled={!canManage}>
           <Pencil className="size-4" />
           Edit
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={handleResetPassword} disabled={isResetting}>
-          {isResetting ? (
+        <DropdownMenuItem
+          onClick={handleSendResetEmail}
+          disabled={isSendingReset}
+        >
+          {isSendingReset ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
-            <KeyRound className="size-4" />
+            <Mail className="size-4" />
           )}
-          Reset password
+          Send reset email
         </DropdownMenuItem>
+        {canSetPassword && (
+          <DropdownMenuItem onClick={() => onResetPassword(user)}>
+            <KeyRound className="size-4" />
+            Set new password
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onClick={handleToggleDisabled}
-          disabled={setDisabledMutation.isPending || isSelf}
+          disabled={setDisabledMutation.isPending || isSelf || !canManage}
         >
           {user.disabled ? (
             <ShieldCheck className="size-4" />
@@ -104,7 +164,7 @@ export function UserRowActions({
         <DropdownMenuItem
           variant="destructive"
           onClick={() => onDelete(user)}
-          disabled={isSelf}
+          disabled={isSelf || !canManage}
         >
           <Trash2 className="size-4" />
           Delete

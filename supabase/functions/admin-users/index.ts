@@ -10,6 +10,17 @@
 // action runs; non-admins get 403. Every mutating action is rate-limited and
 // written to audit_logs (both keyed off the verified caller, never anything
 // the client asserts about itself).
+//
+// Role hierarchy (super_admin > admin > viewer) — enforced here, not just in
+// the UI, since this is the only place service-role writes actually happen:
+//   - create:   super_admin -> admin | viewer.  admin -> viewer only.
+//   - unlock:   super_admin -> anyone locked.   admin -> viewer only.
+//   - resetPassword: super_admin only.
+//   - super_admin accounts can't be created, disabled, deleted, or demoted
+//     through this endpoint at all — that role is assigned by hand outside
+//     the application (see the account-security migration), so its
+//     lifecycle stays outside the app's own reach too.
+//   - an admin cannot disable or delete another admin — only super_admin can.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -78,21 +89,25 @@ function validateName(label: string, value: string): string | null {
   return null
 }
 
-type Role = 'admin' | 'viewer'
+// The role a NEW or UPDATED user can be assigned through this API.
+// 'super_admin' is deliberately excluded — see the module comment.
+type AssignableRole = 'admin' | 'viewer'
+// The caller's own role, which can be any of the three.
+type CallerRole = 'super_admin' | 'admin' | 'viewer'
 
 interface CreateUserPayload {
   email: string
   password: string
   firstName: string
   lastName: string
-  role: Role
+  role: AssignableRole
 }
 
 interface UpdateUserPayload {
   userId: string
   name?: string
   email?: string
-  role?: Role
+  role?: AssignableRole
 }
 
 interface SetDisabledPayload {
@@ -104,12 +119,23 @@ interface DeleteUserPayload {
   userId: string
 }
 
+interface UnlockUserPayload {
+  userId: string
+}
+
+interface ResetPasswordPayload {
+  userId: string
+  newPassword: string
+}
+
 type ActionBody =
   | { action: 'list' }
   | { action: 'create'; payload: CreateUserPayload }
   | { action: 'update'; payload: UpdateUserPayload }
   | { action: 'setDisabled'; payload: SetDisabledPayload }
   | { action: 'delete'; payload: DeleteUserPayload }
+  | { action: 'unlock'; payload: UnlockUserPayload }
+  | { action: 'resetPassword'; payload: ResetPasswordPayload }
 
 type SupabaseClient = ReturnType<typeof createClient>
 
@@ -150,7 +176,12 @@ Deno.serve(async (req: Request) => {
     .eq('id', caller.id)
     .maybeSingle()
 
-  if (callerProfileError || callerProfile?.role !== 'admin') {
+  const callerRole = callerProfile?.role as CallerRole | undefined
+
+  if (
+    callerProfileError ||
+    (callerRole !== 'admin' && callerRole !== 'super_admin')
+  ) {
     return json({ error: 'Forbidden: admin role required' }, 403, cors)
   }
 
@@ -191,13 +222,53 @@ Deno.serve(async (req: Request) => {
       case 'list':
         return await listUsers(admin, cors)
       case 'create':
-        return await createUser(admin, body.payload, caller.id, cors)
+        return await createUser(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
       case 'update':
-        return await updateUser(admin, body.payload, caller.id, cors)
+        return await updateUser(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
       case 'setDisabled':
-        return await setDisabled(admin, body.payload, caller.id, cors)
+        return await setDisabled(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
       case 'delete':
-        return await deleteUser(admin, body.payload, caller.id, cors)
+        return await deleteUser(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
+      case 'unlock':
+        return await unlockUser(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
+      case 'resetPassword':
+        return await resetPassword(
+          admin,
+          body.payload,
+          caller.id,
+          callerRole,
+          cors,
+        )
       default:
         return json({ error: 'Unknown action' }, 400, cors)
     }
@@ -285,6 +356,12 @@ async function listUsers(admin: SupabaseClient, cors: Record<string, string>) {
         u.banned_until && new Date(u.banned_until) > new Date(),
       ),
       emailConfirmed: Boolean(u.email_confirmed_at),
+      // super_admin rows never actually carry a set locked_at (the
+      // account-security migration's login path never writes one for that
+      // role), but this reads the raw state rather than re-deriving it, so
+      // the admin UI reflects the database exactly.
+      locked: Boolean(profile?.locked_at),
+      failedLoginAttempts: profile?.failed_login_attempts ?? 0,
     }
   })
 
@@ -295,6 +372,7 @@ async function createUser(
   admin: SupabaseClient,
   payload: CreateUserPayload,
   callerId: string,
+  callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
   const { email, password, firstName, lastName, role } =
@@ -313,6 +391,13 @@ async function createUser(
   }
   if (role !== 'admin' && role !== 'viewer') {
     return json({ error: 'Role must be admin or viewer.' }, 400, cors)
+  }
+  if (role === 'admin' && callerRole !== 'super_admin') {
+    return json(
+      { error: 'Only a Super Admin can create Admin accounts.' },
+      403,
+      cors,
+    )
   }
 
   const name = [firstName, lastName].filter(Boolean).join(' ').trim() || null
@@ -341,8 +426,9 @@ async function createUser(
 
   const newUserId = created.user.id
 
-  // handle_new_user() trigger already created a default 'viewer' profile row.
-  // Patch in the name/role actually requested.
+  // handle_new_user() trigger already created a default 'viewer' profile row
+  // (it now clamps any client-supplied role to admin/viewer regardless, so
+  // this update is what actually assigns the role requested here).
   const { error: profileError } = await admin
     .from('profiles')
     .update({ name, role })
@@ -385,6 +471,7 @@ async function updateUser(
   admin: SupabaseClient,
   payload: UpdateUserPayload,
   callerId: string,
+  callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
   const { userId, name, email, role } = payload ?? ({} as UpdateUserPayload)
@@ -399,6 +486,40 @@ async function updateUser(
   }
   if (role !== undefined && role !== 'admin' && role !== 'viewer') {
     return json({ error: 'Role must be admin or viewer.' }, 400, cors)
+  }
+
+  const { data: target, error: targetError } = await admin
+    .from('profiles')
+    .select('role')
+    .eq('id', userId)
+    .maybeSingle()
+  if (targetError) return json({ error: targetError.message }, 400, cors)
+  if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  // super_admin's role/lifecycle is managed by hand, outside the app — see
+  // the module comment — so it can't be changed (in either direction)
+  // through this endpoint at all.
+  if (target.role === 'super_admin') {
+    return json(
+      { error: "Super Admin accounts can't be modified here." },
+      403,
+      cors,
+    )
+  }
+  // Changing a role TO admin, or changing one AWAY FROM admin (a demotion of
+  // a peer, not "managing a viewer"), both require a Super Admin — a regular
+  // Admin can only ever touch a Viewer's role.
+  if (
+    role !== undefined &&
+    role !== target.role &&
+    (role === 'admin' || target.role === 'admin') &&
+    callerRole !== 'super_admin'
+  ) {
+    return json(
+      { error: "Only a Super Admin can change an Admin's role." },
+      403,
+      cors,
+    )
   }
 
   if (email) {
@@ -445,12 +566,32 @@ async function setDisabled(
   admin: SupabaseClient,
   payload: SetDisabledPayload,
   callerId: string,
+  callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
   const { userId, disabled } = payload ?? ({} as SetDisabledPayload)
   if (!userId) return json({ error: 'userId is required.' }, 400, cors)
   if (userId === callerId && disabled) {
     return json({ error: "You can't disable your own account." }, 400, cors)
+  }
+
+  const { data: target, error: targetError } = await admin
+    .from('profiles')
+    .select('role')
+    .eq('id', userId)
+    .maybeSingle()
+  if (targetError) return json({ error: targetError.message }, 400, cors)
+  if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  if (target.role === 'super_admin') {
+    return json({ error: "Super Admin accounts can't be disabled." }, 403, cors)
+  }
+  if (target.role === 'admin' && callerRole !== 'super_admin') {
+    return json(
+      { error: 'Only a Super Admin can disable an Admin account.' },
+      403,
+      cors,
+    )
   }
 
   const { error } = await admin.auth.admin.updateUserById(userId, {
@@ -477,12 +618,32 @@ async function deleteUser(
   admin: SupabaseClient,
   payload: DeleteUserPayload,
   callerId: string,
+  callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
   const { userId } = payload ?? ({} as DeleteUserPayload)
   if (!userId) return json({ error: 'userId is required.' }, 400, cors)
   if (userId === callerId) {
     return json({ error: "You can't delete your own account." }, 400, cors)
+  }
+
+  const { data: target, error: targetError } = await admin
+    .from('profiles')
+    .select('role, email')
+    .eq('id', userId)
+    .maybeSingle()
+  if (targetError) return json({ error: targetError.message }, 400, cors)
+  if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  if (target.role === 'super_admin') {
+    return json({ error: "Super Admin accounts can't be deleted." }, 403, cors)
+  }
+  if (target.role === 'admin' && callerRole !== 'super_admin') {
+    return json(
+      { error: 'Only a Super Admin can delete an Admin account.' },
+      403,
+      cors,
+    )
   }
 
   // profiles.id -> auth.users(id) on delete cascade removes the profile row;
@@ -499,6 +660,111 @@ async function deleteUser(
     action: 'user.delete',
     targetType: 'user',
     targetId: userId,
+    targetEmail: target.email,
+    success: true,
+  })
+
+  return json({ ok: true }, 200, cors)
+}
+
+async function unlockUser(
+  admin: SupabaseClient,
+  payload: UnlockUserPayload,
+  callerId: string,
+  callerRole: CallerRole,
+  cors: Record<string, string>,
+) {
+  const { userId } = payload ?? ({} as UnlockUserPayload)
+  if (!userId) return json({ error: 'userId is required.' }, 400, cors)
+
+  const { data: target, error: targetError } = await admin
+    .from('profiles')
+    .select('role, email, locked_at')
+    .eq('id', userId)
+    .maybeSingle()
+  if (targetError) return json({ error: targetError.message }, 400, cors)
+  if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  if (target.role === 'super_admin') {
+    return json({ error: 'Super Admin accounts are never locked.' }, 400, cors)
+  }
+  if (target.role === 'admin' && callerRole !== 'super_admin') {
+    return json(
+      { error: 'Only a Super Admin can unlock an Admin account.' },
+      403,
+      cors,
+    )
+  }
+  // target.role === 'viewer' is unlockable by either admin or super_admin —
+  // both already passed the top-level "is at least admin" gate.
+
+  if (!target.locked_at) {
+    return json({ error: 'This account is not locked.' }, 400, cors)
+  }
+
+  const { error } = await admin
+    .from('profiles')
+    .update({ locked_at: null, failed_login_attempts: 0 })
+    .eq('id', userId)
+  if (error) return json({ error: error.message }, 400, cors)
+
+  await logAudit(admin, {
+    actorId: callerId,
+    action: 'account.unlocked',
+    targetType: 'user',
+    targetId: userId,
+    targetEmail: target.email,
+    success: true,
+  })
+
+  return json({ ok: true }, 200, cors)
+}
+
+async function resetPassword(
+  admin: SupabaseClient,
+  payload: ResetPasswordPayload,
+  callerId: string,
+  callerRole: CallerRole,
+  cors: Record<string, string>,
+) {
+  if (callerRole !== 'super_admin') {
+    return json(
+      { error: "Only a Super Admin can reset another user's password." },
+      403,
+      cors,
+    )
+  }
+
+  const { userId, newPassword } = payload ?? ({} as ResetPasswordPayload)
+  if (!userId) return json({ error: 'userId is required.' }, 400, cors)
+  const passwordError = validatePassword(newPassword ?? '')
+  if (passwordError) return json({ error: passwordError }, 400, cors)
+
+  const { data: target, error: targetError } = await admin
+    .from('profiles')
+    .select('email')
+    .eq('id', userId)
+    .maybeSingle()
+  if (targetError) return json({ error: targetError.message }, 400, cors)
+  if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  const { error } = await admin.auth.admin.updateUserById(userId, {
+    password: newPassword,
+  })
+  if (error) {
+    const status = isNotFoundError(error.message) ? 404 : 400
+    return json({ error: error.message }, status, cors)
+  }
+
+  // Deliberately independent of unlock — see the module comment. Resetting
+  // a password never implicitly clears a lock; that's a separate, explicit
+  // action with its own audit trail.
+  await logAudit(admin, {
+    actorId: callerId,
+    action: 'user.password_reset',
+    targetType: 'user',
+    targetId: userId,
+    targetEmail: target.email,
     success: true,
   })
 

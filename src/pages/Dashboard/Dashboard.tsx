@@ -14,12 +14,13 @@ import { DashboardBackground } from '@/components/dashboard/DashboardBackground'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { getErrorMessage } from '@/lib/errors'
+import { isAtLeastAdmin } from '@/lib/permissions'
 
 export function Dashboard() {
   const [searchParams] = useSearchParams()
   const query = searchParams.get('q') ?? ''
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
   const [isUploadOpen, setIsUploadOpen] = useState(false)
   const [isUpdateCandidatesOpen, setIsUpdateCandidatesOpen] = useState(false)
   const {
