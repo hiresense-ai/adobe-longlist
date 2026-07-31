@@ -47,11 +47,34 @@ export async function signOut() {
 export async function changeOwnPassword(
   currentPassword: string,
   newPassword: string,
-) {
-  await invokeEdgeFunction<{ ok: true }>('change-password', {
-    currentPassword,
-    newPassword,
-  })
+): Promise<{ sessionReissued: boolean }> {
+  const result = await invokeEdgeFunction<{
+    ok: true
+    sessionReissued?: boolean
+    access_token?: string
+    refresh_token?: string
+  }>('change-password', { currentPassword, newPassword })
+
+  // GoTrue revokes every refresh token for the user when their password
+  // changes, so the session this call was made with is already dead by the
+  // time it returns. The function mints a replacement; adopting it here is
+  // what keeps the user signed in instead of dropping them at the next token
+  // refresh or page reload. Same setSession handoff signInWithPassword uses.
+  if (result.access_token && result.refresh_token) {
+    const { error } = await supabase.auth.setSession({
+      access_token: result.access_token,
+      refresh_token: result.refresh_token,
+    })
+    if (error) throw error
+    return { sessionReissued: true }
+  }
+
+  // No replacement session (rare — see the Edge Function): the password DID
+  // change, so end the dead session deliberately and let the caller send the
+  // user back to sign in, rather than leaving them on a session that will
+  // fail at an unpredictable moment.
+  await supabase.auth.signOut()
+  return { sessionReissued: false }
 }
 
 export async function getSession() {

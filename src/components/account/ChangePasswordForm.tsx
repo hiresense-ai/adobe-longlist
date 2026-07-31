@@ -1,4 +1,5 @@
 import { useForm } from 'react-hook-form'
+import { useNavigate } from 'react-router-dom'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
@@ -19,6 +20,7 @@ import { changeOwnPassword } from '@/supabase/auth'
 import {
   MIN_PASSWORD_LENGTH,
   PASSWORD_REQUIREMENTS_HINT,
+  ROUTES,
   STRONG_PASSWORD_PATTERN,
 } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
@@ -64,6 +66,7 @@ export function ChangePasswordForm({
   onSignOut?: () => Promise<void>
 }) {
   const { refreshUser } = useAuth()
+  const navigate = useNavigate()
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -76,10 +79,22 @@ export function ChangePasswordForm({
 
   async function onSubmit(values: FormValues) {
     try {
-      await changeOwnPassword(values.currentPassword, values.newPassword)
+      const { sessionReissued } = await changeOwnPassword(
+        values.currentPassword,
+        values.newPassword,
+      )
       form.reset()
-      // Re-reads the profile so force_password_change (now cleared server
-      // side) stops gating the app without requiring a fresh sign-in.
+
+      if (!sessionReissued) {
+        // changeOwnPassword already signed out — the password change stuck,
+        // there just isn't a live session left to carry on with.
+        toast.success('Password updated — please sign in again')
+        navigate(ROUTES.login, { replace: true })
+        return
+      }
+
+      // Re-reads the profile behind the NEW session so force_password_change
+      // (cleared server-side) stops gating the app, without a fresh sign-in.
       await refreshUser()
       toast.success('Password updated')
     } catch (error) {

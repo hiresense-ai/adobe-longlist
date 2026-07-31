@@ -197,6 +197,27 @@ Deno.serve(async (req: Request) => {
     console.error('failed clearing force_password_change:', profileError)
   }
 
+  // Changing a password revokes EVERY refresh token GoTrue holds for this
+  // user — including the session that just made this request. Without a
+  // replacement the caller looks signed in only until its access token is
+  // next refreshed or the page is reloaded, at which point it is silently
+  // logged out with no idea why. (Reproduced: after the update, the old
+  // access token returned 403 and its refresh token "Refresh Token Not
+  // Found".) Revoking other sessions is correct and worth keeping — a
+  // password change should end sessions elsewhere — so the fix is to hand
+  // this client a fresh session rather than to weaken the revocation.
+  //
+  // Signed in with the NEW password, after the update, so these tokens are
+  // minted post-revocation and survive.
+  const sessionClient = createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false },
+  })
+  const { data: fresh, error: freshError } =
+    await sessionClient.auth.signInWithPassword({
+      email: caller.email,
+      password: newPassword,
+    })
+
   await logAudit(admin, {
     actorId: caller.id,
     actorEmail: caller.email,
@@ -204,11 +225,29 @@ Deno.serve(async (req: Request) => {
     targetType: 'user',
     targetId: caller.id,
     targetEmail: caller.email,
-    metadata: { ip, userAgent, self: true },
+    metadata: { ip, userAgent, self: true, reissuedSession: !freshError },
     success: true,
   })
 
-  return json({ ok: true }, 200, cors)
+  // The password change itself already succeeded, so this is still a 200
+  // whatever happens here. Without tokens the client signs out cleanly and
+  // asks the user to log in again — an explicit, explained re-login rather
+  // than a mysterious drop-out later.
+  if (freshError || !fresh?.session) {
+    console.error('could not reissue session after change:', freshError)
+    return json({ ok: true, sessionReissued: false }, 200, cors)
+  }
+
+  return json(
+    {
+      ok: true,
+      sessionReissued: true,
+      access_token: fresh.session.access_token,
+      refresh_token: fresh.session.refresh_token,
+    },
+    200,
+    cors,
+  )
 })
 
 async function isRateLimited(
