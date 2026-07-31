@@ -1,0 +1,259 @@
+// Self-service password change — server-side only.
+//
+// Every authenticated user (super_admin, admin, viewer alike) can change
+// their OWN password here, and only their own: the target is always taken
+// from the verified JWT, never from the request body, so there is no
+// user-supplied id to tamper with and no role check to get wrong.
+//
+// Changing your own password requires proving you know the current one.
+// That check is a real credential verification (a sign-in attempt against
+// GoTrue with the supplied current password), not a client-side assertion —
+// so a stolen/borrowed session alone can't be used to take over an account.
+//
+// This is also the only place force_password_change is cleared: an admin
+// reset sets it (see admin-users' resetPassword), and it stays set until the
+// account holder actually picks their own password here.
+//
+// Deliberately NOT email-based: this portal has no reset links, no OTP, and
+// no outbound mail at all. An administrator hands over a temporary password
+// out of band; the user then lands here.
+
+import { createClient } from 'npm:@supabase/supabase-js@2'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
+
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:5173',
+  'https://adobe-longlist.vercel.app',
+  'https://longlist.hiresense.ai',
+])
+
+function corsHeadersFor(req: Request): Record<string, string> {
+  const origin = req.headers.get('Origin') ?? ''
+  const allowed =
+    ALLOWED_ORIGINS.has(origin) ||
+    (origin.endsWith('.vercel.app') && origin.includes('adobe-longlist'))
+
+  return {
+    'Access-Control-Allow-Origin': allowed ? origin : 'null',
+    'Access-Control-Allow-Headers':
+      'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    Vary: 'Origin',
+  }
+}
+
+function json(
+  body: unknown,
+  status = 200,
+  cors: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+  })
+}
+
+// Same rule as admin-users and the frontend's STRONG_PASSWORD_PATTERN.
+const STRONG_PASSWORD_RE =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,}$/
+const MAX_BODY_BYTES = 10_000
+const RATE_LIMIT_WINDOW_MINUTES = 15
+const RATE_LIMIT_MAX_ATTEMPTS = 10
+
+function validatePassword(password: string): string | null {
+  if (typeof password !== 'string' || password.length < 12) {
+    return 'Password must be at least 12 characters.'
+  }
+  if (!STRONG_PASSWORD_RE.test(password)) {
+    return 'Password must include an uppercase letter, a lowercase letter, a number, and a special character.'
+  }
+  return null
+}
+
+type SupabaseClient = ReturnType<typeof createClient>
+
+Deno.serve(async (req: Request) => {
+  const cors = corsHeadersFor(req)
+
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
+  if (req.method !== 'POST') {
+    return json({ error: 'Method not allowed' }, 405, cors)
+  }
+
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader) {
+    return json({ error: 'Missing Authorization header' }, 401, cors)
+  }
+
+  const ip =
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const userAgent = req.headers.get('user-agent') ?? 'unknown'
+
+  // Identify the caller from their own JWT — this is the ONLY source of the
+  // account being changed.
+  const callerClient = createClient(SUPABASE_URL, ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { persistSession: false },
+  })
+
+  const {
+    data: { user: caller },
+    error: callerError,
+  } = await callerClient.auth.getUser()
+
+  if (callerError || !caller?.email) {
+    return json({ error: 'Invalid session' }, 401, cors)
+  }
+
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  })
+
+  const rawBody = await req.text()
+  if (rawBody.length > MAX_BODY_BYTES) {
+    return json({ error: 'Request body too large' }, 413, cors)
+  }
+
+  let body: { currentPassword?: string; newPassword?: string }
+  try {
+    body = JSON.parse(rawBody)
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400, cors)
+  }
+
+  const currentPassword = body.currentPassword ?? ''
+  const newPassword = body.newPassword ?? ''
+
+  // Throttle current-password guessing against a live session.
+  if (await isRateLimited(admin, caller.id)) {
+    return json(
+      { error: 'Too many attempts. Please wait a few minutes and try again.' },
+      429,
+      cors,
+    )
+  }
+
+  const passwordError = validatePassword(newPassword)
+  if (passwordError) return json({ error: passwordError }, 400, cors)
+
+  if (newPassword === currentPassword) {
+    return json(
+      { error: 'Your new password must be different from your current one.' },
+      400,
+      cors,
+    )
+  }
+
+  // Verify the CURRENT password for real. A fresh anon client is used so this
+  // sign-in attempt never disturbs the caller's existing session.
+  const verifyClient = createClient(SUPABASE_URL, ANON_KEY, {
+    auth: { persistSession: false },
+  })
+  const { error: verifyError } = await verifyClient.auth.signInWithPassword({
+    email: caller.email,
+    password: currentPassword,
+  })
+
+  if (verifyError) {
+    await logAudit(admin, {
+      actorId: caller.id,
+      actorEmail: caller.email,
+      action: 'user.password_change',
+      targetId: caller.id,
+      targetEmail: caller.email,
+      metadata: { ip, userAgent, reason: 'incorrect current password' },
+      success: false,
+    })
+    return json({ error: 'Your current password is incorrect.' }, 400, cors)
+  }
+
+  const { error: updateError } = await admin.auth.admin.updateUserById(
+    caller.id,
+    { password: newPassword },
+  )
+  if (updateError) {
+    await logAudit(admin, {
+      actorId: caller.id,
+      actorEmail: caller.email,
+      action: 'user.password_change',
+      targetId: caller.id,
+      targetEmail: caller.email,
+      metadata: { ip, userAgent, error: updateError.message },
+      success: false,
+    })
+    return json({ error: updateError.message }, 400, cors)
+  }
+
+  // The user has now chosen their own password, so an admin-imposed
+  // temporary one is no longer in force.
+  const { error: profileError } = await admin
+    .from('profiles')
+    .update({ force_password_change: false })
+    .eq('id', caller.id)
+  if (profileError) {
+    console.error('failed clearing force_password_change:', profileError)
+  }
+
+  await logAudit(admin, {
+    actorId: caller.id,
+    actorEmail: caller.email,
+    action: 'user.password_change',
+    targetType: 'user',
+    targetId: caller.id,
+    targetEmail: caller.email,
+    metadata: { ip, userAgent, self: true },
+    success: true,
+  })
+
+  return json({ ok: true }, 200, cors)
+})
+
+async function isRateLimited(
+  admin: SupabaseClient,
+  callerId: string,
+): Promise<boolean> {
+  const since = new Date(
+    Date.now() - RATE_LIMIT_WINDOW_MINUTES * 60_000,
+  ).toISOString()
+  const { count, error } = await admin
+    .from('audit_logs')
+    .select('id', { count: 'exact', head: true })
+    .eq('actor_id', callerId)
+    .eq('action', 'user.password_change')
+    .gte('created_at', since)
+
+  if (error) {
+    console.error('rate limit check failed:', error)
+    return false
+  }
+  return (count ?? 0) >= RATE_LIMIT_MAX_ATTEMPTS
+}
+
+async function logAudit(
+  admin: SupabaseClient,
+  entry: {
+    actorId: string
+    actorEmail?: string | null
+    action: string
+    targetType?: string
+    targetId?: string
+    targetEmail?: string
+    metadata?: Record<string, unknown>
+    success: boolean
+  },
+) {
+  const { error } = await admin.from('audit_logs').insert({
+    actor_id: entry.actorId,
+    actor_email: entry.actorEmail ?? null,
+    action: entry.action,
+    target_type: entry.targetType ?? null,
+    target_id: entry.targetId ?? null,
+    target_email: entry.targetEmail ?? null,
+    metadata: entry.metadata ?? {},
+    success: entry.success,
+  })
+  if (error) console.error('audit log insert failed:', error)
+}

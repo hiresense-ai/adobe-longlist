@@ -1,52 +1,20 @@
-import { useState } from 'react'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
 import { Link } from 'react-router-dom'
-import { toast } from 'sonner'
-import { ArrowLeft, Loader2, Mail } from 'lucide-react'
+import { ArrowLeft, ShieldQuestion } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
-import { sendPasswordResetEmail } from '@/supabase/auth'
 import { ROUTES, APP_NAME } from '@/constants'
-import { getErrorMessage } from '@/lib/errors'
 
-const schema = z.object({
-  email: z.string().min(1, 'Email is required').email('Enter a valid email'),
-})
-
-type FormValues = z.infer<typeof schema>
-
+/**
+ * Deliberately not a form.
+ *
+ * This is an internal enterprise portal with no outbound email, no OTP, and
+ * no password reset links — accounts are provisioned and recovered by an
+ * administrator, who resets the password and hands over a temporary one out
+ * of band. The route is kept (rather than deleted) so the "Forgot password?"
+ * link on the sign-in page, and any existing bookmark, lands somewhere that
+ * explains what to do instead of a 404.
+ */
 export function ForgotPassword() {
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSent, setIsSent] = useState(false)
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: { email: '' },
-  })
-
-  async function onSubmit(values: FormValues) {
-    setIsSubmitting(true)
-    try {
-      await sendPasswordResetEmail(values.email)
-      setIsSent(true)
-    } catch (error) {
-      toast.error(getErrorMessage(error, 'Unable to send reset email'))
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
   return (
     <div className="bg-muted/40 flex min-h-svh items-center justify-center px-4">
       <div className="w-full max-w-sm">
@@ -58,73 +26,28 @@ export function ForgotPassword() {
             <h1 className="text-foreground text-xl font-semibold">
               {APP_NAME}
             </h1>
-            <p className="text-muted-foreground text-sm">Reset your password</p>
+            <p className="text-muted-foreground text-sm">Password help</p>
           </div>
         </div>
 
-        <div className="border-border bg-card shadow-soft rounded-2xl border p-6 sm:p-8">
-          {isSent ? (
-            <div className="space-y-4 text-center">
-              <p className="text-foreground text-sm">
-                If an account exists for that email, a reset link is on its way.
-                Check your inbox.
-              </p>
-              <Button asChild variant="outline" className="w-full">
-                <Link to={ROUTES.login}>Back to sign in</Link>
-              </Button>
-            </div>
-          ) : (
-            <Form {...form}>
-              <form
-                onSubmit={form.handleSubmit(onSubmit)}
-                className="space-y-5"
-                noValidate
-              >
-                <FormField
-                  control={form.control}
-                  name="email"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Email</FormLabel>
-                      <FormControl>
-                        <div className="relative">
-                          <Mail className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-                          <Input
-                            type="email"
-                            placeholder="you@adobe.com"
-                            autoComplete="email"
-                            className="pl-9"
-                            {...field}
-                          />
-                        </div>
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+        <div className="border-border bg-card shadow-soft rounded-2xl border p-6 text-center sm:p-8">
+          <div className="bg-muted text-muted-foreground mx-auto mb-4 flex size-11 items-center justify-center rounded-full">
+            <ShieldQuestion className="size-5" />
+          </div>
+          <p className="text-foreground text-sm font-medium">
+            Please contact your administrator to reset your password.
+          </p>
+          <p className="text-muted-foreground mt-2 text-sm">
+            They will set a temporary password for you. You'll be asked to
+            choose your own the next time you sign in.
+          </p>
 
-                <Button
-                  type="submit"
-                  className="h-10 w-full"
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    'Send reset link'
-                  )}
-                </Button>
-
-                <Link
-                  to={ROUTES.login}
-                  className="text-muted-foreground hover:text-foreground flex items-center justify-center gap-1 text-sm"
-                >
-                  <ArrowLeft className="size-3.5" />
-                  Back to sign in
-                </Link>
-              </form>
-            </Form>
-          )}
+          <Button asChild variant="outline" className="mt-6 w-full">
+            <Link to={ROUTES.login}>
+              <ArrowLeft className="size-4" />
+              Back to sign in
+            </Link>
+          </Button>
         </div>
       </div>
     </div>

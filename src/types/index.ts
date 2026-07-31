@@ -15,6 +15,11 @@ export interface AppUser {
   email: string
   name: string | null
   role: import('./database.types').UserRole
+  /** True after an administrator reset this account's password. Every route
+   * is blocked until the user sets their own password (see
+   * ForcePasswordChangeGate); only the change-password Edge Function
+   * clears it. */
+  forcePasswordChange: boolean
 }
 
 export interface ApiError {

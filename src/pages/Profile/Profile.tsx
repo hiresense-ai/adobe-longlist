@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
+import { ChangePasswordForm } from '@/components/account/ChangePasswordForm'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
@@ -93,6 +94,19 @@ export function Profile() {
           <LogOut className="size-4" />
           Sign out
         </Button>
+      </div>
+
+      {/* Available to every role — Super Admin, Admin and Viewer alike.
+          The server reads the target account from the caller's own JWT. */}
+      <div className="border-border bg-card shadow-soft mt-6 rounded-2xl border p-6 sm:p-8">
+        <h2 className="text-foreground text-lg font-semibold">
+          Change password
+        </h2>
+        <p className="text-muted-foreground mt-1 mb-5 text-sm">
+          You'll need your current password. There is no email reset in this
+          portal — if you've forgotten it, contact your administrator.
+        </p>
+        <ChangePasswordForm />
       </div>
     </div>
   )

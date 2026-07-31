@@ -19,13 +19,20 @@
 //     since all of those run client-side over this same array.
 //   - create:   super_admin -> admin | viewer.  admin -> viewer only.
 //   - unlock:   super_admin -> admin | viewer.  admin -> viewer only.
-//   - resetPassword: super_admin -> admin | viewer.  admin -> viewer only.
-//   - super_admin accounts can't be created, disabled, deleted, demoted, or
-//     have their password reset through this endpoint at all — that role
-//     is assigned by hand outside the application (see the account-security
-//     migration), so its lifecycle stays outside the app's own reach too.
+//   - resetPassword: super_admin -> super_admin | admin | viewer (the one
+//     action allowed against a super_admin target, including the caller's
+//     own account). admin -> viewer only.
+//   - super_admin accounts can't be created, disabled, deleted, or demoted
+//     through this endpoint — that role is assigned by hand outside the
+//     application (see the account-security migration), so its lifecycle
+//     stays outside the app's own reach. Password reset is the deliberate
+//     exception: this portal has no email reset flow, so without it a
+//     locked-out super_admin would have no in-app recovery path at all.
 //   - an admin cannot disable, delete, or reset the password of another
 //     admin — only super_admin can.
+//   - every reset of SOMEONE ELSE's password sets profiles
+//     .force_password_change, which the app enforces on next login and only
+//     the change-password function can clear.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { isLockExpired } from '../_shared/lockout.ts'
@@ -161,6 +168,11 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Missing Authorization header' }, 401, cors)
   }
 
+  // Recorded on password resets for the audit trail (see resetPassword).
+  const ip =
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const userAgent = req.headers.get('user-agent') ?? 'unknown'
+
   // Scoped to the caller's own JWT — used only to verify who they are.
   const callerClient = createClient(SUPABASE_URL, ANON_KEY, {
     global: { headers: { Authorization: authHeader } },
@@ -273,6 +285,7 @@ Deno.serve(async (req: Request) => {
           body.payload,
           caller.id,
           callerRole,
+          { ip, userAgent },
           cors,
         )
       default:
@@ -762,6 +775,7 @@ async function resetPassword(
   payload: ResetPasswordPayload,
   callerId: string,
   callerRole: CallerRole,
+  request: { ip: string; userAgent: string },
   cors: Record<string, string>,
 ) {
   const { userId, newPassword } = payload ?? ({} as ResetPasswordPayload)
@@ -777,19 +791,20 @@ async function resetPassword(
   if (targetError) return json({ error: targetError.message }, 400, cors)
   if (!target) return json({ error: 'User not found.' }, 404, cors)
 
-  // Same hierarchy as unlock/disable/delete: a Viewer target is resettable
-  // by an Admin or a Super Admin; an Admin target requires a Super Admin;
-  // a Super Admin target is off-limits through this endpoint entirely.
-  if (target.role === 'super_admin') {
+  // Password reset is the ONE action a Super Admin may perform against
+  // another Super Admin (including their own account), deliberately unlike
+  // update/disable/delete/unlock, which stay off-limits for every
+  // super_admin target. With no email reset flow left in this portal, a
+  // locked-out Super Admin would otherwise have no in-app recovery path at
+  // all. An Admin still cannot touch an Admin or a Super Admin.
+  if (callerRole !== 'super_admin' && target.role !== 'viewer') {
     return json(
-      { error: "Super Admin accounts' passwords can't be reset here." },
-      403,
-      cors,
-    )
-  }
-  if (target.role === 'admin' && callerRole !== 'super_admin') {
-    return json(
-      { error: "Only a Super Admin can reset an Admin's password." },
+      {
+        error:
+          target.role === 'super_admin'
+            ? "Only a Super Admin can reset a Super Admin's password."
+            : "Only a Super Admin can reset an Admin's password.",
+      },
       403,
       cors,
     )
@@ -803,6 +818,22 @@ async function resetPassword(
     return json({ error: error.message }, status, cors)
   }
 
+  // What the admin just set is a TEMPORARY password they read out to the
+  // user, so the account is flagged until its owner picks their own. The
+  // app blocks every route while this is true, and only the
+  // change-password function (which requires the current password) clears
+  // it. Skipped when a Super Admin resets their own account — they have
+  // just chosen that password themselves, so there is nothing to force.
+  if (userId !== callerId) {
+    const { error: flagError } = await admin
+      .from('profiles')
+      .update({ force_password_change: true })
+      .eq('id', userId)
+    if (flagError) {
+      console.error('failed setting force_password_change:', flagError)
+    }
+  }
+
   // Deliberately independent of unlock — see the module comment. Resetting
   // a password never implicitly clears a lock; that's a separate, explicit
   // action with its own audit trail.
@@ -812,6 +843,13 @@ async function resetPassword(
     targetType: 'user',
     targetId: userId,
     targetEmail: target.email,
+    metadata: {
+      ip: request.ip,
+      userAgent: request.userAgent,
+      targetRole: target.role,
+      forcePasswordChange: userId !== callerId,
+      self: userId === callerId,
+    },
     success: true,
   })
 

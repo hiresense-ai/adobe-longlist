@@ -32,16 +32,26 @@ export async function signOut() {
   if (error) throw error
 }
 
-export async function sendPasswordResetEmail(email: string) {
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${window.location.origin}/reset-password`,
+/**
+ * Self-service password change for the signed-in user.
+ *
+ * Routed through the change-password Edge Function rather than
+ * supabase.auth.updateUser({ password }) directly, for two reasons GoTrue
+ * can't cover on its own: it verifies the CURRENT password before allowing
+ * the change (so a borrowed session alone can't take over an account), and
+ * it clears profiles.force_password_change, which is service-role-only.
+ *
+ * This portal has no email/OTP/reset-link flow at all — an administrator
+ * hands over a temporary password out of band and the user lands here.
+ */
+export async function changeOwnPassword(
+  currentPassword: string,
+  newPassword: string,
+) {
+  await invokeEdgeFunction<{ ok: true }>('change-password', {
+    currentPassword,
+    newPassword,
   })
-  if (error) throw error
-}
-
-export async function updatePassword(newPassword: string) {
-  const { error } = await supabase.auth.updateUser({ password: newPassword })
-  if (error) throw error
 }
 
 export async function getSession() {

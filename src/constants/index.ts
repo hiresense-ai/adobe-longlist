@@ -4,8 +4,9 @@
 
 export const ROUTES = {
   login: '/login',
+  // Static "contact your administrator" notice — this portal has no email,
+  // OTP, or reset-link flow. See src/pages/Login/ForgotPassword.tsx.
   forgotPassword: '/forgot-password',
-  resetPassword: '/reset-password',
   home: '/',
   dashboardPattern: '/dashboards/:id',
   dashboard: (id: string) => `/dashboards/${id}`,
