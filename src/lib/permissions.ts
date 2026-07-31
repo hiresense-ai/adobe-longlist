@@ -52,9 +52,16 @@ export function canUnlock(callerRole: UserRole, targetRole: UserRole): boolean {
   return canActOnAccount(callerRole, targetRole)
 }
 
-/** Only a Super Admin can reset another account's password. */
-export function canResetPassword(callerRole: UserRole): boolean {
-  return callerRole === 'super_admin'
+/** Viewer accounts: password resettable by an Admin or a Super Admin.
+ * Admin accounts: resettable only by a Super Admin.
+ * Super Admin accounts: never resettable through the app. Same hierarchy
+ * as unlock/disable/delete — kept as its own named export since "reset
+ * password" is a distinct capability callers reason about separately. */
+export function canResetPassword(
+  callerRole: UserRole,
+  targetRole: UserRole,
+): boolean {
+  return canActOnAccount(callerRole, targetRole)
 }
 
 /** An Admin may disable/delete a Viewer but not a fellow Admin — the same
@@ -75,6 +82,35 @@ export function canEditRole(
   targetRole: UserRole,
 ): boolean {
   return canActOnAccount(callerRole, targetRole)
+}
+
+/** Whether a caller may see this user exists at all — the visibility rule
+ * behind the Users table, search, filters, and pagination counts. Super
+ * Admin accounts are invisible everywhere except to a Super Admin caller
+ * (or the account itself); Admin and Viewer accounts are visible to any
+ * admin-level caller, same as today. */
+export function canViewUser(
+  callerRole: UserRole,
+  targetRole: UserRole,
+): boolean {
+  if (targetRole === 'super_admin') return callerRole === 'super_admin'
+  return true
+}
+
+/** Candidate status/action updates (the per-candidate select inside an
+ * embedded dashboard) are Super Admin only — Admin and Viewer get
+ * read-only dashboards. */
+export function canUpdateCandidateStatus(role: UserRole): boolean {
+  return role === 'super_admin'
+}
+
+/** Uploading, replacing, and deleting dashboards — Super Admin only.
+ * Browsing/opening dashboards stays open to every authenticated role;
+ * this gates only the write side (upload dialog, Update Candidates bulk
+ * append, delete button). Mirrored server-side by the is_super_admin()
+ * RLS policies on public.dashboards and the `dashboards` storage bucket. */
+export function canManageDashboards(role: UserRole): boolean {
+  return role === 'super_admin'
 }
 
 export function roleLabel(role: UserRole): string {

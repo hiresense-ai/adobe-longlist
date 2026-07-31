@@ -19,8 +19,8 @@ import { useAuth } from '@/hooks/useAuth'
 import { filterAdminUsers } from '@/services/adminUsers.service'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
-import { roleLabel } from '@/lib/permissions'
-import { formatDate } from '@/utils/date'
+import { canViewUser, roleLabel } from '@/lib/permissions'
+import { formatDate, formatRemainingLockMinutes } from '@/utils/date'
 import type { AdminUserRow } from '@/types'
 
 export function AdminUsers() {
@@ -37,14 +37,23 @@ export function AdminUsers() {
   const [resettingPasswordUser, setResettingPasswordUser] =
     useState<AdminUserRow | null>(null)
 
+  // Defense-in-depth only — the admin-users edge function already excludes
+  // Super Admin rows from its response for a non-Super-Admin caller (see
+  // supabase/functions/admin-users/index.ts). Filtering again here means a
+  // caching bug or a stale query can never surface one in this table.
+  const visibleUsers = useMemo(
+    () => (users ?? []).filter((u) => canViewUser(currentUserRole, u.role)),
+    [users, currentUserRole],
+  )
+
   const filtered = useMemo(
-    () => filterAdminUsers(users ?? [], query),
-    [users, query],
+    () => filterAdminUsers(visibleUsers, query),
+    [visibleUsers, query],
   )
 
   const existingEmails = useMemo(
-    () => (users ?? []).map((u) => u.email.toLowerCase()),
-    [users],
+    () => visibleUsers.map((u) => u.email.toLowerCase()),
+    [visibleUsers],
   )
 
   return (
@@ -94,7 +103,7 @@ export function AdminUsers() {
           />
         )}
 
-        {!isLoading && !isError && users && users.length === 0 && (
+        {!isLoading && !isError && users && visibleUsers.length === 0 && (
           <EmptyState
             icon={UsersIcon}
             title="No users yet"
@@ -105,7 +114,7 @@ export function AdminUsers() {
         {!isLoading &&
           !isError &&
           users &&
-          users.length > 0 &&
+          visibleUsers.length > 0 &&
           filtered.length === 0 && (
             <EmptyState
               icon={ShieldX}
@@ -200,7 +209,9 @@ export function AdminUsers() {
                           }
                         >
                           {user.locked
-                            ? 'Locked'
+                            ? user.lockExpiresAt
+                              ? `Locked · ${formatRemainingLockMinutes(user.lockExpiresAt)}`
+                              : 'Locked'
                             : user.disabled
                               ? 'Disabled'
                               : 'Active'}

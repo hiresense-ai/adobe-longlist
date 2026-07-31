@@ -14,6 +14,8 @@ import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
 import { ACTION_LIST, serializeActionStyles } from '@/config/actionConfig'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
+import { useAuth } from '@/hooks/useAuth'
+import { canUpdateCandidateStatus } from '@/lib/permissions'
 import type { DashboardBridgeMessage, DashboardStatus } from '@/types'
 
 interface UseDashboardStatusBridgeOptions {
@@ -39,6 +41,14 @@ export function useDashboardStatusBridge({
 }: UseDashboardStatusBridgeOptions) {
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
+  const { user } = useAuth()
+  // Candidate status/action updates are Super Admin only (see
+  // src/lib/permissions.ts) — everyone else gets a read-only dashboard.
+  // Checked here, not just left to RLS, so a non-Super-Admin gets an
+  // immediate, clear ack/toast instead of a raw Postgres error, and so the
+  // iframe is told up front (via longlist:init-config below) to render its
+  // own controls disabled rather than silently rejecting every attempt.
+  const canEdit = canUpdateCandidateStatus(user?.role ?? 'viewer')
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
   const modalOpenRef = useRef(false)
   const bodyOverflowBeforeModalRef = useRef<string>('')
@@ -178,6 +188,7 @@ export function useDashboardStatusBridge({
           statusStyles: serializeStatusStyles(),
           actionOrder: ACTION_LIST.map((a) => a.value),
           actionStyles: serializeActionStyles(),
+          canUpdateStatus: canEdit,
         })
 
         const statuses = await queryClient.fetchQuery({
@@ -197,6 +208,16 @@ export function useDashboardStatusBridge({
       if (data.type === 'longlist:status-update') {
         const { payload } = data
         if (payload.dashboardId !== id) return
+
+        if (!canEdit) {
+          postToIframe({
+            type: 'longlist:status-ack',
+            success: false,
+            candidateName: payload.candidateName,
+            error: 'Only a Super Admin can update candidate status.',
+          })
+          return
+        }
 
         try {
           const updated = await upsertCandidateStatus(payload)
@@ -256,6 +277,16 @@ export function useDashboardStatusBridge({
       if (data.type === 'longlist:action-update') {
         const { payload } = data
         if (payload.dashboardId !== id) return
+
+        if (!canEdit) {
+          postToIframe({
+            type: 'longlist:action-ack',
+            success: false,
+            candidateName: payload.candidateName,
+            error: 'Only a Super Admin can update candidate status.',
+          })
+          return
+        }
 
         try {
           const updated = await upsertCandidateAction(payload)
@@ -338,7 +369,7 @@ export function useDashboardStatusBridge({
         modalOpenRef.current = false
       }
     }
-  }, [dashboardId, iframeRef, queryClient, resolvedTheme])
+  }, [dashboardId, iframeRef, queryClient, resolvedTheme, canEdit])
 
   // Theme can change independently of any bridge message (user toggles the
   // app's theme while a dashboard is already open) — push it down live so

@@ -14,13 +14,17 @@ import { DashboardBackground } from '@/components/dashboard/DashboardBackground'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { getErrorMessage } from '@/lib/errors'
-import { isAtLeastAdmin } from '@/lib/permissions'
+import { canManageDashboards } from '@/lib/permissions'
 
 export function Dashboard() {
   const [searchParams] = useSearchParams()
   const query = searchParams.get('q') ?? ''
   const { user } = useAuth()
-  const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
+  // Upload / Update Candidates / delete are Super Admin only — an Admin
+  // browses dashboards read-only, same as a Viewer. Server-side this is
+  // enforced by the is_super_admin() RLS policies on public.dashboards and
+  // the `dashboards` storage bucket, so hiding these is UX, not the gate.
+  const canManage = Boolean(user && canManageDashboards(user.role))
   const [isUploadOpen, setIsUploadOpen] = useState(false)
   const [isUpdateCandidatesOpen, setIsUpdateCandidatesOpen] = useState(false)
   const {
@@ -49,7 +53,7 @@ export function Dashboard() {
               Browse hiring dashboards and track candidate status in real time.
             </p>
           </div>
-          {isAdmin && (
+          {canManage && (
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
@@ -66,7 +70,7 @@ export function Dashboard() {
           )}
         </div>
 
-        {isAdmin && (
+        {canManage && (
           <>
             <UploadDashboardDialog
               open={isUploadOpen}

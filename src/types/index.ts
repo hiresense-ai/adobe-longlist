@@ -33,9 +33,16 @@ export interface AdminUserRow {
   lastSignInAt: string | null
   disabled: boolean
   emailConfirmed: boolean
-  /** True once locked_at is set. Always false for super_admin in practice —
-   * that role is never auto-locked (see the account-security migration). */
+  /** True once locked_at is set AND the random lock timer hasn't already
+   * expired — the server (admin-users' listUsers) applies the expiry, so
+   * this always reflects the account's real current state, not just the
+   * raw database column. Always false for super_admin in practice — that
+   * role is never auto-locked (see the account-security migration). */
   locked: boolean
+  /** When the current lock expires and the account unlocks itself. Only
+   * ever set alongside locked: true — null whenever locked is false,
+   * including once expiry has passed (see the `locked` note above). */
+  lockExpiresAt: string | null
   /** Consecutive failed sign-in attempts since the last success or unlock. */
   failedLoginAttempts: number
 }
@@ -97,6 +104,9 @@ export type DashboardHostMessage =
       statusStyles: unknown
       actionOrder: import('./database.types').CandidateAction[]
       actionStyles: unknown
+      /** Super Admin only (see src/lib/permissions.ts) — tells the iframe
+       * whether to render its status/action controls as editable at all. */
+      canUpdateStatus: boolean
     }
   | {
       type: 'longlist:init-statuses'
