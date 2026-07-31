@@ -282,11 +282,23 @@
   // via longlist:init-config's canUpdateStatus flag. Starts false (fail
   // closed) until that message actually arrives; the real enforcement is
   // server-side (RLS + the host's own role check before it ever calls
-  // Supabase) regardless of what this flag is set to, so this only ever
-  // controls whether the controls in THIS document look/behave editable.
+  // Supabase) regardless of what this flag is set to.
+  //
+  // When false the interactive controls are not rendered AT ALL — the
+  // uploaded HTML's <select> is REPLACED with a static badge and the Action
+  // cell gets a plain <span> instead of a combobox button. Deliberately not
+  // `disabled`: a disabled control is still a control in the DOM (visible,
+  // inspectable, re-enablable from devtools), and the requirement is that
+  // the feature be absent for non-Super-Admins, not merely inert. The
+  // current value is still displayed as text, since read access to
+  // candidate status is intentionally open to every role.
   var EDITABLE = false
+  var STATUS_READONLY_ATTR = 'data-longlist-status-readonly'
+  var ACTION_READONLY_ATTR = 'data-longlist-action-readonly'
   var currentTheme = 'light'
   var selects = []
+  // Static status badges rendered in place of the selects when !EDITABLE.
+  var readonlyStatusEls = []
   var wired = false
   // candidate name (lowercased) -> current action value ('' / null = unset)
   var actionValuesByName = {}
@@ -325,6 +337,14 @@
       '[' +
       ACTION_ATTR +
       ']:hover { box-shadow: 0 2px 5px 0 rgba(0,0,0,0.08); }' +
+      // Read-only Action cell (non-Super-Admin): strip every affordance that
+      // says "interactive" — no pointer cursor, no shadow, no hover lift.
+      '[' +
+      ACTION_READONLY_ATTR +
+      '] { cursor: default; box-shadow: none; }' +
+      '[' +
+      ACTION_READONLY_ATTR +
+      ']:hover { box-shadow: none; }' +
       '[' +
       ACTION_ATTR +
       ']:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--action-ring-color, rgba(0,0,0,0.18)); }' +
@@ -484,11 +504,20 @@
     })
   }
 
+  // Works for both the editable <select> and the static read-only <span>
+  // that replaces it when !EDITABLE — the span carries its value in
+  // data-value since only a form control has .value.
+  function statusValueOf(el) {
+    return el.tagName === 'SELECT'
+      ? el.value
+      : el.getAttribute('data-value') || ''
+  }
+
   // Colors, radius, padding, and typography are all set inline (rather than
   // via a stylesheet) so they take effect regardless of whatever CSS the
   // uploaded dashboard itself ships with.
   function applyStatusStyle(select) {
-    var styles = STATUS_STYLES[select.value]
+    var styles = STATUS_STYLES[statusValueOf(select)]
     if (!styles) return
     var palette = styles[currentTheme] || styles.light
     select.style.backgroundColor = palette.background
@@ -501,12 +530,42 @@
     select.style.fontWeight = '500'
     select.style.fontSize = '13px'
     select.style.fontFamily = 'inherit'
-    select.style.cursor = 'pointer'
+    // A read-only badge must not present itself as interactive.
+    select.style.cursor = select.tagName === 'SELECT' ? 'pointer' : 'default'
     select.style.outlineColor = palette.text
+  }
+
+  // Swaps the uploaded HTML's own status <select> for a static badge. The
+  // <select> is removed from the document entirely — see the EDITABLE note
+  // above for why this is a replacement rather than `disabled`.
+  function replaceStatusWithReadonly(select) {
+    var row = getRow(select)
+    var name = row.getAttribute(ATTR_NAME) || select.getAttribute(ATTR_NAME)
+    var value = select.value || ''
+
+    var badge = document.createElement('span')
+    badge.setAttribute(ATTR_STATUS, '')
+    badge.setAttribute(STATUS_READONLY_ATTR, '')
+    if (name) badge.setAttribute(ATTR_NAME, name)
+    badge.setAttribute('data-value', value)
+    badge.textContent = value
+    badge.style.display = 'inline-block'
+
+    if (select.parentNode) select.parentNode.replaceChild(badge, select)
+    applyStatusStyle(badge)
+    readonlyStatusEls.push(badge)
+    return badge
+  }
+
+  function setReadonlyStatusValue(badge, value) {
+    badge.setAttribute('data-value', value || '')
+    badge.textContent = value || ''
+    applyStatusStyle(badge)
   }
 
   function applyStylesToAll() {
     selects.forEach(applyStatusStyle)
+    readonlyStatusEls.forEach(applyStatusStyle)
     document.querySelectorAll('[' + ACTION_ATTR + ']').forEach(applyActionStyle)
   }
 
@@ -576,14 +635,25 @@
   function wireSelects() {
     if (wired) return
     wired = true
-    selects = Array.prototype.slice.call(
+    var found = Array.prototype.slice.call(
       document.querySelectorAll('[' + ATTR_STATUS + ']'),
     )
+
+    if (!EDITABLE) {
+      // No listeners, no options, no control: every status <select> is
+      // swapped for a static badge and never enters `selects`, so nothing
+      // downstream can post a status-update from this document.
+      selects = []
+      found.forEach(function (el) {
+        if (el.tagName === 'SELECT') replaceStatusWithReadonly(el)
+      })
+      return
+    }
+
+    selects = found
     selects.forEach(function (select) {
       populateOptions(select)
       applyStatusStyle(select)
-      select.disabled = !EDITABLE
-      select.style.cursor = EDITABLE ? 'pointer' : 'not-allowed'
       select.addEventListener('change', handleChange)
     })
   }
@@ -700,9 +770,14 @@
 
   function setActionValue(trigger, value) {
     trigger.setAttribute('data-value', value || '')
+    // "Select Action" is an invitation to act — wrong for a read-only cell,
+    // which shows an em dash when no action has been recorded yet.
+    var empty = trigger.hasAttribute(ACTION_READONLY_ATTR)
+      ? '—'
+      : 'Select Action'
     var label = trigger.querySelector('[' + ACTION_LABEL_ATTR + ']')
-    if (label) label.textContent = value || 'Select Action'
-    trigger.title = value || 'Select Action'
+    if (label) label.textContent = value || empty
+    trigger.title = value || empty
     applyActionStyle(trigger)
   }
 
@@ -1082,7 +1157,25 @@
     'touchend',
   ]
 
+  // Read-only counterpart of the Action combobox: a plain <span> with no
+  // popup, no listeners, no aria-haspopup, and nothing focusable. Not a
+  // disabled <button> — see the EDITABLE note at the top of this file.
+  function createActionReadonly(name) {
+    actionUidCounter += 1
+    var span = document.createElement('span')
+    span.id = 'll-action-' + actionUidCounter
+    span.setAttribute(ACTION_ATTR, '')
+    span.setAttribute(ACTION_READONLY_ATTR, '')
+    if (name) span.setAttribute(ACTION_NAME_ATTR, name)
+    var label = document.createElement('span')
+    label.setAttribute(ACTION_LABEL_ATTR, '')
+    span.appendChild(label)
+    return span
+  }
+
   function createActionTrigger(name) {
+    if (!EDITABLE) return createActionReadonly(name)
+
     actionUidCounter += 1
     var button = document.createElement('button')
     button.type = 'button'
@@ -1090,9 +1183,6 @@
     button.setAttribute(ACTION_ATTR, '')
     button.setAttribute('aria-haspopup', 'listbox')
     button.setAttribute('aria-expanded', 'false')
-    button.disabled = !EDITABLE
-    button.style.cursor = EDITABLE ? 'pointer' : 'not-allowed'
-    if (!EDITABLE) button.style.opacity = '0.6'
     if (name) {
       button.setAttribute(ACTION_NAME_ATTR, name)
       button.setAttribute('aria-label', 'Action for ' + name)
@@ -1188,7 +1278,27 @@
     })
   }
 
+  // Re-render safety net. The dashboard rebuilds its <tbody> on every
+  // filter/sort/paginate, so rows that appear after the initial wireSelects()
+  // pass would otherwise arrive as live <select> controls. This runs on every
+  // DOM sync (the MutationObserver drives it), is idempotent, and keeps the
+  // "no interactive status control exists for a non-Super-Admin" invariant
+  // true for the lifetime of the page, not just at load.
+  function enforceReadonlyStatus() {
+    if (EDITABLE) return
+    var live = document.querySelectorAll('select[' + ATTR_STATUS + ']')
+    for (var i = 0; i < live.length; i++) replaceStatusWithReadonly(live[i])
+    // Drop badges whose rows the dashboard has since re-rendered away, so
+    // this array tracks the live DOM instead of growing on every repaint.
+    if (readonlyStatusEls.length > live.length) {
+      readonlyStatusEls = readonlyStatusEls.filter(function (el) {
+        return el.isConnected
+      })
+    }
+  }
+
   function syncActionColumns() {
+    enforceReadonlyStatus()
     if (!ACTION_OPTIONS.length) return // config not delivered yet
     document.querySelectorAll('table').forEach(function (table) {
       // Read header cells BEFORE ensureActionHeader() runs, and use
@@ -2147,6 +2257,13 @@
       // a live CSP violation risk until neutralized — better to close that
       // window immediately than defer it to the next animation frame.
       neutralizeInlineHandlers()
+      // Synchronous for the same reason, and more so: this one is a
+      // permission boundary. A re-rendered row briefly containing a live
+      // status <select> is an interactive control a non-Super-Admin should
+      // never have, so it must not survive even one frame — and deferring
+      // to requestAnimationFrame would mean it survives indefinitely in a
+      // background/hidden tab, where rAF is throttled or never runs at all.
+      enforceReadonlyStatus()
       // Only force-close the popup if the row it belongs to was actually
       // wiped out by a re-render — not on every mutation, since appending
       // the popup itself (or the action cells) to the document is itself a
@@ -2205,6 +2322,14 @@
             if (name === entry.candidateName) {
               select.value = entry.status
               applyStatusStyle(select)
+            }
+          })
+          // `selects` is empty in read-only mode, so the static badges are
+          // kept in sync here instead (including live Realtime updates
+          // pushed down after another user changes a status).
+          readonlyStatusEls.forEach(function (badge) {
+            if (badge.getAttribute(ATTR_NAME) === entry.candidateName) {
+              setReadonlyStatusValue(badge, entry.status)
             }
           })
         })
