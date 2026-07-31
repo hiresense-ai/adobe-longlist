@@ -46,8 +46,24 @@ export async function setAdminUserDisabled(
   await invoke({ action: 'setDisabled', payload: { userId, disabled } })
 }
 
-export async function deleteAdminUser(userId: string): Promise<void> {
-  await invoke({ action: 'delete', payload: { userId } })
+/** Outcome of a delete, so the UI can tell "I removed this account" from
+ * "this account was already gone" and word the confirmation accordingly. */
+export interface DeleteAdminUserResult {
+  /** The account had already been removed elsewhere (e.g. straight from the
+   * Supabase Dashboard) before this click landed. */
+  alreadyDeleted?: boolean
+  /** A profile row was left behind without a live auth user and got cleaned
+   * up as part of this delete. */
+  orphanCleaned?: boolean
+}
+
+export async function deleteAdminUser(
+  userId: string,
+): Promise<DeleteAdminUserResult> {
+  return invoke<DeleteAdminUserResult>({
+    action: 'delete',
+    payload: { userId },
+  })
 }
 
 export async function unlockAdminUser(userId: string): Promise<void> {

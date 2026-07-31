@@ -52,16 +52,30 @@ export function canUnlock(callerRole: UserRole, targetRole: UserRole): boolean {
   return canActOnAccount(callerRole, targetRole)
 }
 
-/** Viewer accounts: password resettable by an Admin or a Super Admin.
- * Admin accounts: resettable only by a Super Admin.
- * Super Admin accounts: never resettable through the app. Same hierarchy
- * as unlock/disable/delete — kept as its own named export since "reset
- * password" is a distinct capability callers reason about separately. */
+/** Resetting SOMEONE ELSE's password to a temporary one.
+ *
+ * Viewer target:      Admin or Super Admin.
+ * Admin target:       Super Admin only.
+ * Super Admin target: Super Admin only.
+ *
+ * Deliberately NOT canActOnAccount: a super_admin target is off-limits for
+ * update/disable/delete/unlock, but reset is the one exception. With no
+ * email reset flow in this portal, that is the only in-app way to recover a
+ * Super Admin account. Mirrored server-side in admin-users' resetPassword. */
 export function canResetPassword(
   callerRole: UserRole,
   targetRole: UserRole,
 ): boolean {
-  return canActOnAccount(callerRole, targetRole)
+  if (callerRole === 'super_admin') return true
+  if (callerRole === 'admin') return targetRole === 'viewer'
+  return false
+}
+
+/** Changing your OWN password — available to every signed-in role, and
+ * always requires the current password. Server-side the target is taken
+ * from the JWT, so this is a UI affordance rather than a boundary. */
+export function canChangeOwnPassword(_role: UserRole): boolean {
+  return true
 }
 
 /** An Admin may disable/delete a Viewer but not a fellow Admin — the same

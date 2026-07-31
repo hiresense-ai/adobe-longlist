@@ -16,6 +16,9 @@ async function buildAppUser(session: Session | null): Promise<AppUser | null> {
     email: session.user.email ?? '',
     name: profile?.name ?? null,
     role: profile?.role ?? 'viewer',
+    // Fail closed: if the profile row can't be read, assume a pending forced
+    // change rather than letting someone through the gate on a fetch error.
+    forcePasswordChange: profile?.force_password_change ?? true,
   }
 }
 
@@ -57,8 +60,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signOutRequest()
   }
 
+  async function refreshUser() {
+    const { data } = await supabase.auth.getSession()
+    setSession(data.session)
+    setUser(await buildAppUser(data.session))
+  }
+
   return (
-    <AuthContext.Provider value={{ session, user, isLoading, login, logout }}>
+    <AuthContext.Provider
+      value={{ session, user, isLoading, login, logout, refreshUser }}
+    >
       {children}
     </AuthContext.Provider>
   )

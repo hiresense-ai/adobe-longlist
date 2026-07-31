@@ -1,10 +1,8 @@
-import { useState } from 'react'
 import { toast } from 'sonner'
 import {
   KeyRound,
   Loader2,
   LockKeyholeOpen,
-  Mail,
   MoreHorizontal,
   Pencil,
   ShieldOff,
@@ -24,7 +22,6 @@ import {
   useSetAdminUserDisabled,
   useUnlockAdminUser,
 } from '@/hooks/useAdminUserMutations'
-import { sendPasswordResetEmail } from '@/supabase/auth'
 import { getErrorMessage } from '@/lib/errors'
 import {
   canDisableOrDelete,
@@ -50,7 +47,6 @@ export function UserRowActions({
 }) {
   const setDisabledMutation = useSetAdminUserDisabled()
   const unlockMutation = useUnlockAdminUser()
-  const [isSendingReset, setIsSendingReset] = useState(false)
   const isSelf = user.id === currentUserId
 
   // super_admin is never editable/disable-able/deletable through this menu
@@ -58,19 +54,9 @@ export function UserRowActions({
   // that, and the same hierarchy applies to Edit, so it's reused here too.
   const canManage = canDisableOrDelete(currentUserRole, user.role)
   const canUnlockThis = user.locked && canUnlock(currentUserRole, user.role)
+  // Unlike canManage, this DOES allow a super_admin target — password reset
+  // is the one action permitted against a Super Admin (see permissions.ts).
   const canSetPassword = canResetPassword(currentUserRole, user.role)
-
-  async function handleSendResetEmail() {
-    setIsSendingReset(true)
-    try {
-      await sendPasswordResetEmail(user.email)
-      toast.success(`Password reset email sent to ${user.email}`)
-    } catch (error) {
-      toast.error(getErrorMessage(error, "Couldn't send reset email"))
-    } finally {
-      setIsSendingReset(false)
-    }
-  }
 
   async function handleToggleDisabled() {
     try {
@@ -132,21 +118,13 @@ export function UserRowActions({
           <Pencil className="size-4" />
           Edit
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={handleSendResetEmail}
-          disabled={isSendingReset}
-        >
-          {isSendingReset ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Mail className="size-4" />
-          )}
-          Send reset email
-        </DropdownMenuItem>
+        {/* "Send reset email" used to sit here. Removed with the rest of the
+            email flow — this portal issues a temporary password in-app
+            instead, which the admin passes on directly. */}
         {canSetPassword && (
           <DropdownMenuItem onClick={() => onResetPassword(user)}>
             <KeyRound className="size-4" />
-            Set new password
+            Reset password
           </DropdownMenuItem>
         )}
         <DropdownMenuItem

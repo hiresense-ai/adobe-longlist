@@ -6,6 +6,13 @@ project_id = "lomiqhcbjivdgophreiw"
 [functions.admin-users]
 verify_jwt = true
 
+# change-password only ever acts on the CALLER's own account (the target is
+# read from the verified JWT, never the body), and re-verifies the current
+# password before changing anything. The platform JWT gate stays on for the
+# same reason as admin-users.
+[functions.change-password]
+verify_jwt = true
+
 # auth-login IS the login endpoint — by definition, nobody calling it has a
 # session yet. It performs its own request validation instead (email/password
 # shape, rate limiting, generic error messages).

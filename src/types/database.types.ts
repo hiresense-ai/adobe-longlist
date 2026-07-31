@@ -32,7 +32,9 @@ export interface Database {
           created_at: string
           failed_login_attempts: number
           locked_at: string | null
+          lock_expires_at: string | null
           last_failed_login_at: string | null
+          force_password_change: boolean
         }
         Insert: {
           id: string
@@ -42,7 +44,9 @@ export interface Database {
           created_at?: string
           failed_login_attempts?: number
           locked_at?: string | null
+          lock_expires_at?: string | null
           last_failed_login_at?: string | null
+          force_password_change?: boolean
         }
         Update: {
           id?: string
@@ -52,7 +56,9 @@ export interface Database {
           created_at?: string
           failed_login_attempts?: number
           locked_at?: string | null
+          lock_expires_at?: string | null
           last_failed_login_at?: string | null
+          force_password_change?: boolean
         }
         Relationships: []
       }
