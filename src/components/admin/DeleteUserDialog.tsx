@@ -27,9 +27,19 @@ export function DeleteUserDialog({
   async function handleConfirm(event: { preventDefault: () => void }) {
     event.preventDefault()
     if (!user) return
+    const label = user.name ?? user.email
     try {
-      await deleteMutation.mutateAsync(user.id)
-      toast.success(`${user.name ?? user.email} was deleted`)
+      const result = await deleteMutation.mutateAsync(user.id)
+      // The account being gone already is the outcome that was asked for,
+      // so it closes and refreshes like any other success — it just says
+      // what actually happened instead of claiming this click did it.
+      if (result?.alreadyDeleted) {
+        toast.success(`${label} had already been removed — list refreshed`)
+      } else if (result?.orphanCleaned) {
+        toast.success(`Cleaned up a leftover profile for ${label}`)
+      } else {
+        toast.success(`${label} was deleted`)
+      }
       onOpenChange(false)
     } catch (error) {
       toast.error(getErrorMessage(error, "Couldn't delete user"))

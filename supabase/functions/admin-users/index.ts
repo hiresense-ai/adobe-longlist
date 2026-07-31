@@ -365,6 +365,77 @@ async function listUsers(
 
   const profileById = new Map((profiles ?? []).map((p) => [p.id, p]))
 
+  // ---------------------------------------------------------------------
+  // Deleted-account reconciliation.
+  //
+  // GoTrue supports SOFT delete, and deleting a user from the Supabase
+  // Dashboard can take that path: the auth.users row survives with
+  // deleted_at set. Two consequences this list used to get wrong, both
+  // reproduced against the live project before this fix:
+  //   1. auth.admin.listUsers() still returns the row, so the account went
+  //      on being listed in the UI forever — not a cache artifact, the
+  //      server really was reporting it, so refreshing never helped.
+  //   2. profiles.id references auth.users ON DELETE CASCADE, and the row
+  //      is still there, so the cascade never fires and the profile lingers.
+  // A soft-deleted account can't sign in, so listing it is simply wrong.
+  const isDeleted = (u: { deleted_at?: string | null }) => Boolean(u.deleted_at)
+  const liveAuthUsers = authList.users.filter((u) => !isDeleted(u))
+  const liveAuthIds = new Set(liveAuthUsers.map((u) => u.id))
+
+  // Orphans (a profile with no live auth user behind it) are HIDDEN, never
+  // deleted here.
+  //
+  // An earlier version of this function deleted them on every list call, and
+  // that was a mistake: `list` is a read path that any admin triggers just by
+  // opening the Users page, it runs with service_role, and its only input is
+  // whatever auth.admin.listUsers() happened to return. If that call is ever
+  // incomplete — a clamped page size, a partial response, a transient upstream
+  // hiccup — every profile missing from it looks exactly like an orphan, and
+  // the sweep deletes live users' roles. That failure is silent, immediate and
+  // unrecoverable, whereas the worst case for hiding is a row that stops being
+  // listed until someone looks into it. A read must not be able to destroy
+  // data, so the destructive branch is gone.
+  //
+  // Actual deletion still happens, but only where it is explicitly asked for
+  // and scoped to ONE id the caller named: see deleteUser, which cleans the
+  // orphan for the specific account being deleted.
+  const orphanIds = (profiles ?? [])
+    .map((p) => p.id as string)
+    .filter((id) => !liveAuthIds.has(id))
+
+  if (orphanIds.length > 0) {
+    console.log(
+      `hiding ${orphanIds.length} orphaned profile(s) from the list;` +
+        ' delete the account explicitly to clean them up',
+    )
+    for (const id of orphanIds) profileById.delete(id)
+  }
+
+  // public.profiles IS the application's user registry — auth.users is only
+  // the credential store behind it. So an auth row with NO profile row is not
+  // a user of this app and is not listed.
+  //
+  // This is the case behind the reported bug: deleting a row from the
+  // profiles table in the Supabase Dashboard removes the CHILD of the
+  // profiles -> auth.users foreign key, and a cascade only ever travels
+  // parent -> child, so auth.users was left untouched. This list is built by
+  // mapping over auth.users, so the account kept appearing, with `role`
+  // quietly falling back to 'viewer' for the profile that no longer existed.
+  // Deleting it from the UI then failed with "User not found", because
+  // deleteUser looked the target up in profiles first.
+  //
+  // Such an account cannot sign in either — auth-login resolves the caller
+  // through profiles — so listing it was showing an account that, from this
+  // application's point of view, genuinely no longer exists.
+  const registeredAuthUsers = liveAuthUsers.filter((u) => profileById.has(u.id))
+  const unregisteredCount = liveAuthUsers.length - registeredAuthUsers.length
+  if (unregisteredCount > 0) {
+    console.log(
+      `hiding ${unregisteredCount} auth user(s) with no profile row;` +
+        ' they cannot sign in and are not listed',
+    )
+  }
+
   // Super Admin visibility: a Super Admin caller sees everyone; anyone else
   // (a plain admin — the only other role that reaches this function) must
   // never see a Super Admin account here, in search results built on top of
@@ -374,8 +445,8 @@ async function listUsers(
   // mirrors src/lib/permissions.ts's canViewUser.
   const authUsers =
     callerRole === 'super_admin'
-      ? authList.users
-      : authList.users.filter(
+      ? registeredAuthUsers
+      : registeredAuthUsers.filter(
           (u) => (profileById.get(u.id)?.role ?? 'viewer') !== 'super_admin',
         )
 
@@ -673,18 +744,74 @@ async function deleteUser(
     return json({ error: "You can't delete your own account." }, 400, cors)
   }
 
-  const { data: target, error: targetError } = await admin
-    .from('profiles')
-    .select('role, email')
-    .eq('id', userId)
-    .maybeSingle()
+  // Both sides are read before deciding, because they can legitimately
+  // disagree: a soft delete leaves auth.users present-but-deleted with the
+  // profile intact, and a hard delete elsewhere removes both while a stale
+  // browser tab still offers the button.
+  const [
+    { data: target, error: targetError },
+    { data: authUser, error: authLookupError },
+  ] = await Promise.all([
+    admin.from('profiles').select('role, email').eq('id', userId).maybeSingle(),
+    admin.auth.admin.getUserById(userId),
+  ])
   if (targetError) return json({ error: targetError.message }, 400, cors)
-  if (!target) return json({ error: 'User not found.' }, 404, cors)
 
-  if (target.role === 'super_admin') {
+  // getUserById 404s for an id that is fully gone — that's an expected
+  // state here, not a failure, so only a real error is surfaced.
+  const authMissing =
+    Boolean(authLookupError) && isNotFoundError(authLookupError!.message)
+  if (authLookupError && !authMissing) {
+    return json({ error: authLookupError.message }, 400, cors)
+  }
+  const liveAuthUser =
+    !authMissing && authUser?.user && !authUser.user.deleted_at
+      ? authUser.user
+      : null
+
+  // Already gone on both sides: converge instead of erroring. This is the
+  // exact case that used to surface "User not found." — an admin clicking
+  // Delete on a row that a Dashboard delete had already removed. The
+  // caller's intent (this account should not exist) is already satisfied,
+  // so report success and let the client refresh.
+  if (!target && !liveAuthUser && authMissing) {
+    return json({ ok: true, alreadyDeleted: true }, 200, cors)
+  }
+
+  // Orphan: a profile with no live auth user behind it (soft delete, or a
+  // row that outlived its auth user). Clean it up and report success rather
+  // than making the operator chase a phantom account.
+  if (target && !liveAuthUser) {
+    // Still attempt a hard delete first, so a SOFT-deleted auth row is
+    // really removed rather than left to keep blocking its own email.
+    if (!authMissing) await admin.auth.admin.deleteUser(userId)
+    const { error: orphanError } = await admin
+      .from('profiles')
+      .delete()
+      .eq('id', userId)
+    if (orphanError) return json({ error: orphanError.message }, 400, cors)
+
+    await logAudit(admin, {
+      actorId: callerId,
+      action: 'user.delete',
+      targetType: 'user',
+      targetId: userId,
+      targetEmail: target.email,
+      metadata: { orphanCleanup: true },
+      success: true,
+    })
+    return json({ ok: true, orphanCleaned: true }, 200, cors)
+  }
+
+  // A live auth user with no profile row has no role, and therefore no
+  // privileges — role lives entirely in profiles. Treating it as 'viewer'
+  // matches how listUsers renders the same case.
+  const targetRole = target?.role ?? 'viewer'
+
+  if (targetRole === 'super_admin') {
     return json({ error: "Super Admin accounts can't be deleted." }, 403, cors)
   }
-  if (target.role === 'admin' && callerRole !== 'super_admin') {
+  if (targetRole === 'admin' && callerRole !== 'super_admin') {
     return json(
       { error: 'Only a Super Admin can delete an Admin account.' },
       403,
@@ -697,8 +824,31 @@ async function deleteUser(
   // so dashboards and candidate status history are preserved.
   const { error } = await admin.auth.admin.deleteUser(userId)
   if (error) {
-    const status = isNotFoundError(error.message) ? 404 : 400
-    return json({ error: error.message }, status, cors)
+    // Lost a race with another delete — the end state is what was asked for.
+    if (isNotFoundError(error.message)) {
+      await admin.from('profiles').delete().eq('id', userId)
+      return json({ ok: true, alreadyDeleted: true }, 200, cors)
+    }
+    return json({ error: error.message }, 400, cors)
+  }
+
+  // The cascade normally removes the profile with the auth row. Verified
+  // afterwards rather than assumed: if anything left it behind, the account
+  // would come back as an orphan on the next list, so it is swept here
+  // while the audit entry can still name it.
+  const { data: leftover } = await admin
+    .from('profiles')
+    .select('id')
+    .eq('id', userId)
+    .maybeSingle()
+  if (leftover) {
+    const { error: sweepError } = await admin
+      .from('profiles')
+      .delete()
+      .eq('id', userId)
+    if (sweepError) {
+      console.error('profile sweep after delete failed:', sweepError)
+    }
   }
 
   await logAudit(admin, {
@@ -706,7 +856,8 @@ async function deleteUser(
     action: 'user.delete',
     targetType: 'user',
     targetId: userId,
-    targetEmail: target.email,
+    targetEmail: target?.email,
+    metadata: { profileSweptManually: Boolean(leftover) },
     success: true,
   })
 
