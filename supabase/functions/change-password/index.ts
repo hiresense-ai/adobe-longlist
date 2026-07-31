@@ -188,13 +188,57 @@ Deno.serve(async (req: Request) => {
   }
 
   // The user has now chosen their own password, so an admin-imposed
-  // temporary one is no longer in force.
-  const { error: profileError } = await admin
-    .from('profiles')
-    .update({ force_password_change: false })
-    .eq('id', caller.id)
-  if (profileError) {
-    console.error('failed clearing force_password_change:', profileError)
+  // temporary one is no longer in force. Verified by reading the row back,
+  // not assumed from an error-free response — Postgres can accept an UPDATE
+  // and still leave the value unchanged (e.g. a trigger silently reverting
+  // it, or a stale read winning a race), and "the password changed but the
+  // account stays gated forever" is exactly the failure mode that must not
+  // happen silently. One retry covers a transient hiccup; if it still
+  // hasn't taken, this is a genuine anomaly worth surfacing rather than
+  // returning ok:true over it.
+  let flagCleared = false
+  for (let attempt = 0; attempt < 2 && !flagCleared; attempt++) {
+    const { data: updated, error: updateFlagError } = await admin
+      .from('profiles')
+      .update({ force_password_change: false })
+      .eq('id', caller.id)
+      .select('force_password_change')
+      .maybeSingle()
+    if (updateFlagError) {
+      console.error(
+        `failed clearing force_password_change (attempt ${attempt + 1}):`,
+        updateFlagError,
+      )
+      continue
+    }
+    flagCleared = updated?.force_password_change === false
+  }
+
+  if (!flagCleared) {
+    await logAudit(admin, {
+      actorId: caller.id,
+      actorEmail: caller.email,
+      action: 'user.password_change',
+      targetId: caller.id,
+      targetEmail: caller.email,
+      metadata: { ip, userAgent, self: true, flagCleared: false },
+      success: false,
+    })
+    // The password itself already changed in auth.users — that is not
+    // rolled back, since the new password is what the user now actually
+    // knows. What failed is only the account-state update, so this is
+    // reported as its own distinct problem rather than a generic failure,
+    // and specifically NOT as ok:true — the caller must not walk away
+    // thinking they're through the gate when the database still says
+    // otherwise.
+    return json(
+      {
+        error:
+          'Your password was changed, but your account could not be fully updated. Please contact your administrator.',
+      },
+      500,
+      cors,
+    )
   }
 
   // Changing a password revokes EVERY refresh token GoTrue holds for this
@@ -225,7 +269,13 @@ Deno.serve(async (req: Request) => {
     targetType: 'user',
     targetId: caller.id,
     targetEmail: caller.email,
-    metadata: { ip, userAgent, self: true, reissuedSession: !freshError },
+    metadata: {
+      ip,
+      userAgent,
+      self: true,
+      flagCleared: true,
+      reissuedSession: !freshError,
+    },
     success: true,
   })
 

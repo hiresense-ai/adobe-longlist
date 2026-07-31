@@ -190,7 +190,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: callerProfile, error: callerProfileError } = await callerClient
     .from('profiles')
-    .select('role')
+    .select('role, force_password_change')
     .eq('id', caller.id)
     .maybeSingle()
 
@@ -201,6 +201,25 @@ Deno.serve(async (req: Request) => {
     (callerRole !== 'admin' && callerRole !== 'super_admin')
   ) {
     return json({ error: 'Forbidden: admin role required' }, 403, cors)
+  }
+
+  // Every action here is a privileged management action — none of them are
+  // how a user completes a forced password change, so none of them should
+  // be reachable until that's done. This is the server-side half of
+  // ForcePasswordChangeGate's UI block: that component's own comment
+  // claimed this already held "regardless of this gate," which wasn't true
+  // until this check existed — a valid session with a pending
+  // force_password_change could call this function directly and it would
+  // simply work. change-password (a separate function) is deliberately
+  // unaffected, since it's the only way out of this state.
+  if (callerProfile?.force_password_change) {
+    return json(
+      {
+        error: 'You must change your password before performing this action.',
+      },
+      403,
+      cors,
+    )
   }
 
   // Service-role client — only reached after the admin check above.
@@ -277,6 +296,7 @@ Deno.serve(async (req: Request) => {
           body.payload,
           caller.id,
           callerRole,
+          { ip, userAgent },
           cors,
         )
       case 'resetPassword':
@@ -869,6 +889,7 @@ async function unlockUser(
   payload: UnlockUserPayload,
   callerId: string,
   callerRole: CallerRole,
+  request: { ip: string; userAgent: string },
   cors: Record<string, string>,
 ) {
   const { userId } = payload ?? ({} as UnlockUserPayload)
@@ -915,6 +936,7 @@ async function unlockUser(
     targetType: 'user',
     targetId: userId,
     targetEmail: target.email,
+    metadata: { ip: request.ip, userAgent: request.userAgent },
     success: true,
   })
 
@@ -973,12 +995,20 @@ async function resetPassword(
   // user, so the account is flagged until its owner picks their own. The
   // app blocks every route while this is true, and only the
   // change-password function (which requires the current password) clears
-  // it. Skipped when a Super Admin resets their own account — they have
-  // just chosen that password themselves, so there is nothing to force.
+  // it. password_reset_at/password_reset_by are a separate, permanent audit
+  // trail (never cleared by change-password) recording who reset this
+  // account and when — distinct from force_password_change, which is only
+  // "is a change still pending." Both skipped when a Super Admin resets
+  // their own account — they have just chosen that password themselves, so
+  // there is nothing to force and nobody else performed a reset.
   if (userId !== callerId) {
     const { error: flagError } = await admin
       .from('profiles')
-      .update({ force_password_change: true })
+      .update({
+        force_password_change: true,
+        password_reset_at: new Date().toISOString(),
+        password_reset_by: callerId,
+      })
       .eq('id', userId)
     if (flagError) {
       console.error('failed setting force_password_change:', flagError)

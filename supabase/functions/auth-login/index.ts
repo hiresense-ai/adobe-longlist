@@ -114,6 +114,7 @@ Deno.serve(async (req: Request) => {
 
   const clientIp =
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const userAgent = req.headers.get('user-agent') ?? 'unknown'
 
   const rawBody = await req.text()
   if (rawBody.length > MAX_BODY_BYTES) {
@@ -146,7 +147,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    return await handleLogin(admin, email, password, clientIp, cors)
+    return await handleLogin(admin, email, password, clientIp, userAgent, cors)
   } catch (err) {
     console.error('auth-login error:', err)
     return json({ error: GENERIC_ERROR }, 500, cors)
@@ -212,6 +213,7 @@ async function handleLogin(
   email: string,
   password: string,
   clientIp: string,
+  userAgent: string,
   cors: Record<string, string>,
 ): Promise<Response> {
   const { data: profile } = await admin
@@ -231,7 +233,7 @@ async function handleLogin(
       targetEmail: email,
       action: 'login.failure',
       success: false,
-      metadata: { ip: clientIp, reason: 'no_such_account' },
+      metadata: { ip: clientIp, userAgent, reason: 'no_such_account' },
     })
     return json({ error: GENERIC_ERROR }, 401, cors)
   }
@@ -262,7 +264,7 @@ async function handleLogin(
         targetEmail: profile.email,
         action: 'account.unlocked',
         success: true,
-        metadata: { ip: clientIp, reason: 'expired' },
+        metadata: { ip: clientIp, userAgent, reason: 'expired' },
       })
       profile.locked_at = null
       profile.lock_expires_at = null
@@ -274,7 +276,7 @@ async function handleLogin(
         targetEmail: profile.email,
         action: 'login.failure',
         success: false,
-        metadata: { ip: clientIp, reason: 'locked' },
+        metadata: { ip: clientIp, userAgent, reason: 'locked' },
       })
       return json(
         {
@@ -307,7 +309,7 @@ async function handleLogin(
       targetEmail: profile.email,
       action: 'login.failure',
       success: false,
-      metadata: { ip: clientIp, reason: 'disabled' },
+      metadata: { ip: clientIp, userAgent, reason: 'disabled' },
     })
     return json({ error: DISABLED_ERROR }, 403, cors)
   }
@@ -340,7 +342,7 @@ async function handleLogin(
       targetEmail: profile.email,
       action: 'login.success',
       success: true,
-      metadata: { ip: clientIp },
+      metadata: { ip: clientIp, userAgent },
     })
 
     return json(
@@ -379,7 +381,7 @@ async function handleLogin(
     targetEmail: profile.email,
     action: 'login.failure',
     success: false,
-    metadata: { ip: clientIp, attempts: nextAttempts },
+    metadata: { ip: clientIp, userAgent, attempts: nextAttempts },
   })
 
   if (willLock && lockExpiresAt) {
@@ -391,6 +393,7 @@ async function handleLogin(
       success: true,
       metadata: {
         ip: clientIp,
+        userAgent,
         reason: 'max_failed_attempts',
         lockExpiresAt,
         lockDurationMinutes: remainingLockMinutes(lockExpiresAt),
