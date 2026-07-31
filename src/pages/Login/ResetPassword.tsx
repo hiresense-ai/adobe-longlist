@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import { Loader2, Lock } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { PasswordInput } from '@/components/ui/password-input'
 import {
   Form,
   FormControl,
@@ -99,8 +99,7 @@ export function ResetPassword() {
                     <FormControl>
                       <div className="relative">
                         <Lock className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-                        <Input
-                          type="password"
+                        <PasswordInput
                           placeholder="••••••••"
                           autoComplete="new-password"
                           className="pl-9"
@@ -126,8 +125,7 @@ export function ResetPassword() {
                     <FormControl>
                       <div className="relative">
                         <Lock className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-                        <Input
-                          type="password"
+                        <PasswordInput
                           placeholder="••••••••"
                           autoComplete="new-password"
                           className="pl-9"

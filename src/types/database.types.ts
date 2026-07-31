@@ -18,7 +18,7 @@ export type CandidateAction =
   | 'Offer - Adobe'
   | 'Offer - HireSense'
 
-export type UserRole = 'admin' | 'viewer'
+export type UserRole = 'super_admin' | 'admin' | 'viewer'
 
 export interface Database {
   public: {
@@ -30,6 +30,9 @@ export interface Database {
           email: string
           role: UserRole
           created_at: string
+          failed_login_attempts: number
+          locked_at: string | null
+          last_failed_login_at: string | null
         }
         Insert: {
           id: string
@@ -37,6 +40,9 @@ export interface Database {
           email: string
           role?: UserRole
           created_at?: string
+          failed_login_attempts?: number
+          locked_at?: string | null
+          last_failed_login_at?: string | null
         }
         Update: {
           id?: string
@@ -44,6 +50,9 @@ export interface Database {
           email?: string
           role?: UserRole
           created_at?: string
+          failed_login_attempts?: number
+          locked_at?: string | null
+          last_failed_login_at?: string | null
         }
         Relationships: []
       }

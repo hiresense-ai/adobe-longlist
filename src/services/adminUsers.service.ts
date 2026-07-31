@@ -1,29 +1,10 @@
-import { supabase } from '@/supabase/client'
+import { invokeEdgeFunction } from '@/lib/edgeFunction'
 import type { AdminUserRow, UserRole } from '@/types'
 
 const FUNCTION_NAME = 'admin-users'
 
-async function invoke<T>(body: Record<string, unknown>): Promise<T> {
-  const { data, error } = await supabase.functions.invoke(FUNCTION_NAME, {
-    body,
-  })
-
-  if (error) {
-    // Supabase wraps non-2xx responses in a FunctionsHttpError; the actual
-    // { error: string } payload is on error.context, not error.message.
-    const context = (error as { context?: Response }).context
-    if (context) {
-      try {
-        const parsed = await context.clone().json()
-        if (parsed?.error) throw new Error(parsed.error)
-      } catch {
-        // fall through to the generic error below
-      }
-    }
-    throw new Error(error.message)
-  }
-
-  return data as T
+function invoke<T>(body: Record<string, unknown>): Promise<T> {
+  return invokeEdgeFunction<T>(FUNCTION_NAME, body)
 }
 
 export async function listAdminUsers(): Promise<AdminUserRow[]> {
@@ -67,6 +48,17 @@ export async function setAdminUserDisabled(
 
 export async function deleteAdminUser(userId: string): Promise<void> {
   await invoke({ action: 'delete', payload: { userId } })
+}
+
+export async function unlockAdminUser(userId: string): Promise<void> {
+  await invoke({ action: 'unlock', payload: { userId } })
+}
+
+export async function resetAdminUserPassword(
+  userId: string,
+  newPassword: string,
+): Promise<void> {
+  await invoke({ action: 'resetPassword', payload: { userId, newPassword } })
 }
 
 export function filterAdminUsers(

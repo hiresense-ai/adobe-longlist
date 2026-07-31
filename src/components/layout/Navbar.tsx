@@ -29,6 +29,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
+import { isAtLeastAdmin } from '@/lib/permissions'
 import { cn } from '@/lib/utils'
 
 export function Navbar() {
@@ -37,7 +38,7 @@ export function Navbar() {
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
   const isHome = location.pathname === ROUTES.home
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
 
   // Primary top-nav destinations, with their active-route matching. Purely
   // presentational — routing is unchanged; this only decides which pill

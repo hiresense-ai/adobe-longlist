@@ -2,7 +2,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   createAdminUser,
   deleteAdminUser,
+  resetAdminUserPassword,
   setAdminUserDisabled,
+  unlockAdminUser,
   updateAdminUser,
   type CreateAdminUserInput,
   type UpdateAdminUserInput,
@@ -44,6 +46,32 @@ export function useDeleteAdminUser() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (userId: string) => deleteAdminUser(userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers })
+    },
+  })
+}
+
+export function useUnlockAdminUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (userId: string) => unlockAdminUser(userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers })
+    },
+  })
+}
+
+export function useResetAdminUserPassword() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      userId,
+      newPassword,
+    }: {
+      userId: string
+      newPassword: string
+    }) => resetAdminUserPassword(userId, newPassword),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers })
     },

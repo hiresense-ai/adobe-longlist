@@ -6,7 +6,7 @@ import { Forbidden } from '@/pages/Forbidden'
 export function AdminRoute() {
   const { user } = useAuth()
 
-  if (user?.role !== 'admin') {
+  if (user?.role !== 'admin' && user?.role !== 'super_admin') {
     return <Forbidden />
   }
 
