@@ -13,16 +13,22 @@
 //
 // Role hierarchy (super_admin > admin > viewer) — enforced here, not just in
 // the UI, since this is the only place service-role writes actually happen:
+//   - list:     super_admin sees everyone. admin never sees a super_admin
+//     row at all — filtered out of the response itself (see listUsers), so
+//     it can't leak into search, filters, or pagination counts either,
+//     since all of those run client-side over this same array.
 //   - create:   super_admin -> admin | viewer.  admin -> viewer only.
-//   - unlock:   super_admin -> anyone locked.   admin -> viewer only.
-//   - resetPassword: super_admin only.
-//   - super_admin accounts can't be created, disabled, deleted, or demoted
-//     through this endpoint at all — that role is assigned by hand outside
-//     the application (see the account-security migration), so its
-//     lifecycle stays outside the app's own reach too.
-//   - an admin cannot disable or delete another admin — only super_admin can.
+//   - unlock:   super_admin -> admin | viewer.  admin -> viewer only.
+//   - resetPassword: super_admin -> admin | viewer.  admin -> viewer only.
+//   - super_admin accounts can't be created, disabled, deleted, demoted, or
+//     have their password reset through this endpoint at all — that role
+//     is assigned by hand outside the application (see the account-security
+//     migration), so its lifecycle stays outside the app's own reach too.
+//   - an admin cannot disable, delete, or reset the password of another
+//     admin — only super_admin can.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { isLockExpired } from '../_shared/lockout.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -220,7 +226,7 @@ Deno.serve(async (req: Request) => {
   try {
     switch (body.action) {
       case 'list':
-        return await listUsers(admin, cors)
+        return await listUsers(admin, callerRole, cors)
       case 'create':
         return await createUser(
           admin,
@@ -328,7 +334,11 @@ async function logAudit(
   if (error) console.error('audit log insert failed:', error)
 }
 
-async function listUsers(admin: SupabaseClient, cors: Record<string, string>) {
+async function listUsers(
+  admin: SupabaseClient,
+  callerRole: CallerRole,
+  cors: Record<string, string>,
+) {
   const [
     { data: authList, error: authError },
     { data: profiles, error: profilesError },
@@ -342,8 +352,34 @@ async function listUsers(admin: SupabaseClient, cors: Record<string, string>) {
 
   const profileById = new Map((profiles ?? []).map((p) => [p.id, p]))
 
-  const users = authList.users.map((u) => {
+  // Super Admin visibility: a Super Admin caller sees everyone; anyone else
+  // (a plain admin — the only other role that reaches this function) must
+  // never see a Super Admin account here, in search results built on top of
+  // this response, in filters, or in pagination counts, since all of those
+  // are client-side operations over this same array — excluding the rows
+  // here is what makes every one of those surfaces correct at once. This
+  // mirrors src/lib/permissions.ts's canViewUser.
+  const authUsers =
+    callerRole === 'super_admin'
+      ? authList.users
+      : authList.users.filter(
+          (u) => (profileById.get(u.id)?.role ?? 'viewer') !== 'super_admin',
+        )
+
+  const users = authUsers.map((u) => {
     const profile = profileById.get(u.id)
+    // A lock whose random timer has already passed reads as unlocked here
+    // without anyone having to explicitly unlock it — there's no scheduled
+    // sweep (see the lock_expires_at migration comment), so this list is
+    // one of the two places (auth-login is the other) that actually applies
+    // the expiry. Purely a read-time computation: this never writes to the
+    // row, so an account nobody has tried to log into since expiring stays
+    // showing "Locked" in the DB until the next read or login attempt
+    // re-derives it — that's fine, since nothing here depends on the raw
+    // column being eagerly cleared, only on what's displayed being correct.
+    const stillLocked =
+      Boolean(profile?.locked_at) &&
+      !isLockExpired(profile?.lock_expires_at ?? null)
     return {
       id: u.id,
       email: u.email ?? '',
@@ -356,11 +392,8 @@ async function listUsers(admin: SupabaseClient, cors: Record<string, string>) {
         u.banned_until && new Date(u.banned_until) > new Date(),
       ),
       emailConfirmed: Boolean(u.email_confirmed_at),
-      // super_admin rows never actually carry a set locked_at (the
-      // account-security migration's login path never writes one for that
-      // role), but this reads the raw state rather than re-deriving it, so
-      // the admin UI reflects the database exactly.
-      locked: Boolean(profile?.locked_at),
+      locked: stillLocked,
+      lockExpiresAt: stillLocked ? (profile?.lock_expires_at ?? null) : null,
       failedLoginAttempts: profile?.failed_login_attempts ?? 0,
     }
   })
@@ -704,7 +737,11 @@ async function unlockUser(
 
   const { error } = await admin
     .from('profiles')
-    .update({ locked_at: null, failed_login_attempts: 0 })
+    .update({
+      locked_at: null,
+      lock_expires_at: null,
+      failed_login_attempts: 0,
+    })
     .eq('id', userId)
   if (error) return json({ error: error.message }, 400, cors)
 
@@ -727,14 +764,6 @@ async function resetPassword(
   callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
-  if (callerRole !== 'super_admin') {
-    return json(
-      { error: "Only a Super Admin can reset another user's password." },
-      403,
-      cors,
-    )
-  }
-
   const { userId, newPassword } = payload ?? ({} as ResetPasswordPayload)
   if (!userId) return json({ error: 'userId is required.' }, 400, cors)
   const passwordError = validatePassword(newPassword ?? '')
@@ -742,11 +771,29 @@ async function resetPassword(
 
   const { data: target, error: targetError } = await admin
     .from('profiles')
-    .select('email')
+    .select('role, email')
     .eq('id', userId)
     .maybeSingle()
   if (targetError) return json({ error: targetError.message }, 400, cors)
   if (!target) return json({ error: 'User not found.' }, 404, cors)
+
+  // Same hierarchy as unlock/disable/delete: a Viewer target is resettable
+  // by an Admin or a Super Admin; an Admin target requires a Super Admin;
+  // a Super Admin target is off-limits through this endpoint entirely.
+  if (target.role === 'super_admin') {
+    return json(
+      { error: "Super Admin accounts' passwords can't be reset here." },
+      403,
+      cors,
+    )
+  }
+  if (target.role === 'admin' && callerRole !== 'super_admin') {
+    return json(
+      { error: "Only a Super Admin can reset an Admin's password." },
+      403,
+      cors,
+    )
+  }
 
   const { error } = await admin.auth.admin.updateUserById(userId, {
     password: newPassword,

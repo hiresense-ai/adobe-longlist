@@ -11,6 +11,16 @@ export function formatDate(
   }).format(date)
 }
 
+/** "X min" until a lock expires, rounded up and floored at 1 so an
+ * about-to-expire lock never reads as "0 min" — matches the server's own
+ * rounding in supabase/functions/_shared/lockout.ts's remainingLockMinutes,
+ * so the admin UI and the message a locked user sees never disagree. */
+export function formatRemainingLockMinutes(lockExpiresAt: string): string {
+  const ms = new Date(lockExpiresAt).getTime() - Date.now()
+  const minutes = Math.max(1, Math.ceil(ms / 60_000))
+  return `${minutes} min`
+}
+
 export function formatRelativeTime(value: string | Date): string {
   const date = typeof value === 'string' ? new Date(value) : value
   const diffMs = date.getTime() - Date.now()

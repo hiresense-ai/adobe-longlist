@@ -182,7 +182,7 @@ export function Login() {
                             placeholder="••••••••"
                             autoComplete="current-password"
                             className="h-11 border-white/15 bg-white/[0.03] pr-11 pl-10 text-white transition-colors duration-200 placeholder:text-white/30 focus-visible:border-white/30 focus-visible:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-white/20"
-                            toggleClassName="text-white/60 hover:bg-white/10 hover:text-white"
+                            toggleClassName="text-white/60 group-hover:bg-white/10 group-hover:text-white"
                             {...field}
                           />
                         </div>

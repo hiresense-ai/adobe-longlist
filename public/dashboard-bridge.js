@@ -278,6 +278,13 @@
   var STATUS_STYLES = {}
   var ACTION_OPTIONS = []
   var ACTION_STYLES = {}
+  // Candidate status/action edits are Super Admin only — the host tells us
+  // via longlist:init-config's canUpdateStatus flag. Starts false (fail
+  // closed) until that message actually arrives; the real enforcement is
+  // server-side (RLS + the host's own role check before it ever calls
+  // Supabase) regardless of what this flag is set to, so this only ever
+  // controls whether the controls in THIS document look/behave editable.
+  var EDITABLE = false
   var currentTheme = 'light'
   var selects = []
   var wired = false
@@ -534,6 +541,10 @@
 
   function handleChange(event) {
     var select = event.target
+    // Belt-and-suspenders: the select is also disabled in wireSelects()
+    // when !EDITABLE, which already blocks normal user interaction — this
+    // covers a change event dispatched some other way.
+    if (!EDITABLE) return
     // Recolor immediately on the user's own change, without waiting for the
     // save round-trip to Supabase to complete.
     applyStatusStyle(select)
@@ -571,6 +582,8 @@
     selects.forEach(function (select) {
       populateOptions(select)
       applyStatusStyle(select)
+      select.disabled = !EDITABLE
+      select.style.cursor = EDITABLE ? 'pointer' : 'not-allowed'
       select.addEventListener('change', handleChange)
     })
   }
@@ -712,6 +725,9 @@
   }
 
   function commitActionSelection(trigger, value) {
+    // Belt-and-suspenders alongside the trigger's own disabled state and
+    // the click/keydown guards below — see the EDITABLE comment above.
+    if (!EDITABLE) return
     setActionValue(trigger, value)
     var name = trigger.getAttribute(ACTION_NAME_ATTR)
     if (!name) return
@@ -1074,6 +1090,9 @@
     button.setAttribute(ACTION_ATTR, '')
     button.setAttribute('aria-haspopup', 'listbox')
     button.setAttribute('aria-expanded', 'false')
+    button.disabled = !EDITABLE
+    button.style.cursor = EDITABLE ? 'pointer' : 'not-allowed'
+    if (!EDITABLE) button.style.opacity = '0.6'
     if (name) {
       button.setAttribute(ACTION_NAME_ATTR, name)
       button.setAttribute('aria-label', 'Action for ' + name)
@@ -1110,6 +1129,7 @@
     })
 
     button.addEventListener('click', function () {
+      if (!EDITABLE) return
       if (button.getAttribute('aria-expanded') === 'true') {
         closeActionPopup()
       } else {
@@ -1118,6 +1138,7 @@
     })
 
     button.addEventListener('keydown', function (e) {
+      if (!EDITABLE) return
       if (
         e.key === 'ArrowDown' ||
         e.key === 'ArrowUp' ||
@@ -2162,6 +2183,7 @@
         STATUS_STYLES = data.statusStyles || {}
         ACTION_OPTIONS = Array.isArray(data.actionOrder) ? data.actionOrder : []
         ACTION_STYLES = data.actionStyles || {}
+        EDITABLE = data.canUpdateStatus === true
         wireSelects()
         syncActionColumns()
         return

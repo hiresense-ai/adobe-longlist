@@ -58,7 +58,7 @@ export function UserRowActions({
   // that, and the same hierarchy applies to Edit, so it's reused here too.
   const canManage = canDisableOrDelete(currentUserRole, user.role)
   const canUnlockThis = user.locked && canUnlock(currentUserRole, user.role)
-  const canSetPassword = canResetPassword(currentUserRole)
+  const canSetPassword = canResetPassword(currentUserRole, user.role)
 
   async function handleSendResetEmail() {
     setIsSendingReset(true)

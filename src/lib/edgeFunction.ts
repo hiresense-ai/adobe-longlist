@@ -18,7 +18,11 @@ export async function invokeEdgeFunction<T>(
 
   if (error) {
     const context = (error as { context?: Response }).context
-    let parsed: { error?: string; locked?: boolean } | null = null
+    let parsed: {
+      error?: string
+      locked?: boolean
+      remainingMinutes?: number | null
+    } | null = null
     if (context) {
       try {
         parsed = await context.clone().json()
@@ -27,10 +31,14 @@ export async function invokeEdgeFunction<T>(
       }
     }
     if (parsed?.error) {
-      // `locked` rides along on auth-login's response only — false (and
-      // unused) for every other function.
+      // `locked`/`remainingMinutes` ride along on auth-login's response
+      // only — false/null (and unused) for every other function. The
+      // message itself already has the minutes worked into its text; this
+      // is the same value exposed structurally too, for any caller that
+      // wants to build its own UI around the number instead of the string.
       throw Object.assign(new Error(parsed.error), {
         locked: Boolean(parsed.locked),
+        remainingMinutes: parsed.remainingMinutes ?? null,
       })
     }
     throw new Error(error.message)

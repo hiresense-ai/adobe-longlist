@@ -22,6 +22,12 @@
 //   that don't exist (actor_id is null there; there is no actor yet).
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import {
+  isLockExpired,
+  lockedMessage,
+  randomLockDurationMs,
+  remainingLockMinutes,
+} from '../_shared/lockout.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -41,7 +47,17 @@ function corsHeadersFor(req: Request): Record<string, string> {
 
   return {
     'Access-Control-Allow-Origin': allowed ? origin : 'null',
-    'Access-Control-Allow-Headers': 'content-type',
+    // supabase-js's client attaches apikey/authorization/x-client-info to
+    // every request it makes, including functions.invoke() calls to an
+    // endpoint like this one that doesn't need or use them — the SDK has
+    // no way to know that ahead of time. The browser's CORS preflight
+    // check requires every header the client will actually send to appear
+    // here, or it blocks the real request client-side before it's ever
+    // sent (a bare "Failed to fetch", indistinguishable from a network
+    // failure). Matches admin-users' already-correct, already-working
+    // allow-list exactly, for the same reason.
+    'Access-Control-Allow-Headers':
+      'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     Vary: 'Origin',
   }
@@ -65,7 +81,10 @@ const MAX_BODY_BYTES = 2_000
 // Generic on purpose — see the module comment. Used for: unknown email,
 // wrong password, and malformed input alike.
 const GENERIC_ERROR = 'Invalid email or password.'
-const LOCKED_ERROR =
+// Fallback only, for a lock that predates the lock_expires_at column (set by
+// an old build, or set directly some other way) and so has no timer to
+// report a duration from. Every lock created by this build always has one.
+const LOCKED_ERROR_NO_EXPIRY =
   'This account has been locked after multiple failed sign-in attempts. Contact your administrator to unlock it.'
 const DISABLED_ERROR =
   'This account has been disabled. Contact your administrator.'
@@ -185,6 +204,7 @@ interface ProfileLookup {
   role: 'super_admin' | 'admin' | 'viewer'
   failed_login_attempts: number
   locked_at: string | null
+  lock_expires_at: string | null
 }
 
 async function handleLogin(
@@ -196,7 +216,9 @@ async function handleLogin(
 ): Promise<Response> {
   const { data: profile } = await admin
     .from('profiles')
-    .select('id, email, role, failed_login_attempts, locked_at')
+    .select(
+      'id, email, role, failed_login_attempts, locked_at, lock_expires_at',
+    )
     .ilike('email', email)
     .maybeSingle<ProfileLookup>()
 
@@ -219,16 +241,55 @@ async function handleLogin(
   // Already locked: never even attempt authentication. Locking is an
   // administrative hold, not a rate limit — a correct password must not be
   // able to walk through it, or the lock is theater.
+  //
+  // Unless the random 10-20 minute timer has actually passed: then this is
+  // the moment that's discovered (there's no scheduled sweep — see the
+  // migration comment), so it's cleared here and the request falls through
+  // to a normal credential check below, exactly as if it had never locked.
   if (profile.locked_at && !isSuperAdmin) {
-    await logAudit(admin, {
-      actorId: profile.id,
-      targetId: profile.id,
-      targetEmail: profile.email,
-      action: 'login.failure',
-      success: false,
-      metadata: { ip: clientIp, reason: 'locked' },
-    })
-    return json({ error: LOCKED_ERROR, locked: true }, 403, cors)
+    if (isLockExpired(profile.lock_expires_at)) {
+      await admin
+        .from('profiles')
+        .update({
+          locked_at: null,
+          lock_expires_at: null,
+          failed_login_attempts: 0,
+        })
+        .eq('id', profile.id)
+      await logAudit(admin, {
+        actorId: profile.id,
+        targetId: profile.id,
+        targetEmail: profile.email,
+        action: 'account.unlocked',
+        success: true,
+        metadata: { ip: clientIp, reason: 'expired' },
+      })
+      profile.locked_at = null
+      profile.lock_expires_at = null
+      profile.failed_login_attempts = 0
+    } else {
+      await logAudit(admin, {
+        actorId: profile.id,
+        targetId: profile.id,
+        targetEmail: profile.email,
+        action: 'login.failure',
+        success: false,
+        metadata: { ip: clientIp, reason: 'locked' },
+      })
+      return json(
+        {
+          error: profile.lock_expires_at
+            ? lockedMessage(profile.lock_expires_at)
+            : LOCKED_ERROR_NO_EXPIRY,
+          locked: true,
+          remainingMinutes: profile.lock_expires_at
+            ? remainingLockMinutes(profile.lock_expires_at)
+            : null,
+        },
+        403,
+        cors,
+      )
+    }
   }
 
   // Disabled (admin-users' existing ban feature) is a separate concern from
@@ -266,7 +327,11 @@ async function handleLogin(
   if (!signInError && signInData.session) {
     await admin
       .from('profiles')
-      .update({ failed_login_attempts: 0, locked_at: null })
+      .update({
+        failed_login_attempts: 0,
+        locked_at: null,
+        lock_expires_at: null,
+      })
       .eq('id', profile.id)
 
     await logAudit(admin, {
@@ -289,16 +354,21 @@ async function handleLogin(
   }
 
   // Wrong password from here on. super_admin: log it, count it for
-  // visibility, but never lock — enforced by simply never writing locked_at
-  // in this branch, regardless of the new count.
+  // visibility, but never lock — enforced by simply never writing
+  // locked_at/lock_expires_at in this branch, regardless of the new count.
   const nextAttempts = profile.failed_login_attempts + 1
   const willLock = !isSuperAdmin && nextAttempts >= MAX_FAILED_ATTEMPTS
+  // Chosen fresh on every lock, per spec — not a fixed duration.
+  const lockExpiresAt = willLock
+    ? new Date(Date.now() + randomLockDurationMs()).toISOString()
+    : null
 
   await admin
     .from('profiles')
     .update({
       failed_login_attempts: nextAttempts,
       locked_at: willLock ? new Date().toISOString() : null,
+      lock_expires_at: lockExpiresAt,
       last_failed_login_at: new Date().toISOString(),
     })
     .eq('id', profile.id)
@@ -312,16 +382,29 @@ async function handleLogin(
     metadata: { ip: clientIp, attempts: nextAttempts },
   })
 
-  if (willLock) {
+  if (willLock && lockExpiresAt) {
     await logAudit(admin, {
       actorId: profile.id,
       targetId: profile.id,
       targetEmail: profile.email,
       action: 'account.locked',
       success: true,
-      metadata: { ip: clientIp, reason: 'max_failed_attempts' },
+      metadata: {
+        ip: clientIp,
+        reason: 'max_failed_attempts',
+        lockExpiresAt,
+        lockDurationMinutes: remainingLockMinutes(lockExpiresAt),
+      },
     })
-    return json({ error: LOCKED_ERROR, locked: true }, 403, cors)
+    return json(
+      {
+        error: lockedMessage(lockExpiresAt),
+        locked: true,
+        remainingMinutes: remainingLockMinutes(lockExpiresAt),
+      },
+      403,
+      cors,
+    )
   }
 
   return json({ error: GENERIC_ERROR }, 401, cors)

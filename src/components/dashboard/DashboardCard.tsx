@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { DeleteDashboardButton } from '@/components/dashboard/DeleteDashboardButton'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
-import { isAtLeastAdmin } from '@/lib/permissions'
+import { canManageDashboards } from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import type { DashboardWithThumbnail } from '@/services/dashboards.service'
 
@@ -16,7 +16,9 @@ export function DashboardCard({
   dashboard: DashboardWithThumbnail
 }) {
   const { user } = useAuth()
-  const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
+  // Deleting a dashboard is Super Admin only (see permissions.ts) —
+  // mirrored by the dashboards_delete_super_admin RLS policy.
+  const canManage = Boolean(user && canManageDashboards(user.role))
 
   return (
     <div className="group border-border bg-card shadow-soft dark:hover:shadow-elevated hover:border-primary/30 dark:hover:border-primary/50 relative flex flex-col overflow-hidden rounded-2xl border transition-all duration-[220ms] ease-out hover:-translate-y-1.5 hover:scale-[1.02] hover:cursor-pointer hover:shadow-lg motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:hover:scale-100">
@@ -74,7 +76,7 @@ export function DashboardCard({
             {formatDate(dashboard.created_at)}
           </span>
           <div className="relative z-20 flex items-center gap-2">
-            {isAdmin && <DeleteDashboardButton dashboard={dashboard} />}
+            {canManage && <DeleteDashboardButton dashboard={dashboard} />}
             <Button asChild size="sm">
               <Link to={ROUTES.dashboard(dashboard.id)}>
                 Open
