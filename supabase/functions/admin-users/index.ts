@@ -920,7 +920,16 @@ async function unlockUser(
     return json({ error: 'This account is not locked.' }, 400, cors)
   }
 
-  const { error } = await admin
+  // Compare-and-swap rather than a blind write. The `!target.locked_at`
+  // check above is only a friendly pre-check against a stale read; the
+  // authoritative decision is whether THIS statement actually cleared the
+  // lock. `.not('locked_at','is',null)` makes that conditional, so under
+  // concurrency exactly one caller updates a row and the rest update none.
+  //
+  // Without it, simultaneous unlock requests each wrote their own
+  // account.unlocked audit row for a single unlock — measured against the
+  // deployed function: 4 concurrent requests produced 2 entries.
+  const { data: unlockedRows, error } = await admin
     .from('profiles')
     .update({
       locked_at: null,
@@ -928,7 +937,16 @@ async function unlockUser(
       failed_login_attempts: 0,
     })
     .eq('id', userId)
+    .not('locked_at', 'is', null)
+    .select('id')
   if (error) return json({ error: error.message }, 400, cors)
+
+  // Lost the race: someone else unlocked this account moments ago. The
+  // caller's intent is already satisfied, so this is a success, not an
+  // error — but it must NOT write a second audit entry for one unlock.
+  if (!unlockedRows || unlockedRows.length === 0) {
+    return json({ ok: true, alreadyUnlocked: true }, 200, cors)
+  }
 
   await logAudit(admin, {
     actorId: callerId,

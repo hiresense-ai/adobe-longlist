@@ -33,5 +33,16 @@ dist-ssr
 # Supabase CLI local cache
 supabase/.temp
 
+# Deno lockfile. The only Deno tooling in this repo is `deno test` for the
+# Edge Function unit tests, and there is no deno.json declaring that
+# toolchain — `supabase functions deploy` bundles with its own. So this file
+# is a purely local artifact of running the tests. The tests pin an exact
+# std version in their import URLs, so nothing is unpinned by ignoring it.
+deno.lock
+
+# Claude Code local workspace config (dev-server launch settings). Machine
+# local, not part of the app.
+.claude/
+
 .vercel
 .env*

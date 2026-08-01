@@ -28,6 +28,7 @@ import {
   randomLockDurationMs,
   remainingLockMinutes,
 } from '../_shared/lockout.ts'
+import { AUTH_MESSAGES, classifySignInFailure } from '../_shared/authErrors.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -79,8 +80,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_BODY_BYTES = 2_000
 
 // Generic on purpose — see the module comment. Used for: unknown email,
-// wrong password, and malformed input alike.
-const GENERIC_ERROR = 'Invalid email or password.'
+// wrong password, and malformed input alike. Single-sourced from the shared
+// classifier so the message this function returns and the message that
+// module's tests assert on can never drift apart.
+const GENERIC_ERROR = AUTH_MESSAGES.invalidCredentials
 // Fallback only, for a lock that predates the lock_expires_at column (set by
 // an old build, or set directly some other way) and so has no timer to
 // report a duration from. Every lock created by this build always has one.
@@ -88,6 +91,22 @@ const LOCKED_ERROR_NO_EXPIRY =
   'This account has been locked after multiple failed sign-in attempts. Contact your administrator to unlock it.'
 const DISABLED_ERROR =
   'This account has been disabled. Contact your administrator.'
+// Shared verbatim by both rate-limit sources (our own IP counter below, and
+// GoTrue's own upstream limit further down) — same user-facing wording
+// either way, since the caller has no reason to know which layer tripped.
+const RATE_LIMIT_ERROR = AUTH_MESSAGES.rateLimited
+// Used for every non-credential failure (upstream 5xx, network failure,
+// anything unrecognized) — must never say "Invalid email or password", since
+// that specifically asserts the credentials were checked and found wrong,
+// which did not happen in any of those cases.
+const UPSTREAM_ERROR = AUTH_MESSAGES.unavailable
+
+// Audit action for authentication attempts that failed for a reason that is
+// NOT the caller's credentials — upstream rate limiting, a GoTrue 5xx, a
+// network failure. Deliberately distinct from 'login.failure' so these never
+// feed isIpRateLimited() below; see the comment there for why that
+// separation matters.
+const UPSTREAM_ERROR_ACTION = 'login.error'
 
 // Defense-in-depth against scripting this endpoint itself, independent of
 // the 3-attempt account lock: slows a burst against one address or from one
@@ -136,21 +155,35 @@ Deno.serve(async (req: Request) => {
   }
 
   if (await isIpRateLimited(admin, clientIp)) {
-    return json(
-      {
-        error:
-          'Too many sign-in attempts. Please wait a few minutes and try again.',
-      },
-      429,
-      cors,
-    )
+    logAttempt({
+      email,
+      supabaseErrorCode: null,
+      httpStatus: 429,
+      decision: 'rate_limited_ip',
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: false,
+    })
+    return json({ error: RATE_LIMIT_ERROR }, 429, cors)
   }
 
   try {
     return await handleLogin(admin, email, password, clientIp, userAgent, cors)
   } catch (err) {
     console.error('auth-login error:', err)
-    return json({ error: GENERIC_ERROR }, 500, cors)
+    // A genuine crash (not a signInWithPassword error result — those are
+    // handled inside handleLogin without throwing) must not claim the
+    // credentials were checked, for the same reason as UPSTREAM_ERROR below.
+    logAttempt({
+      email,
+      supabaseErrorCode: null,
+      httpStatus: 500,
+      decision: 'unexpected_exception',
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: false,
+    })
+    return json({ error: UPSTREAM_ERROR }, 500, cors)
   }
 })
 
@@ -162,6 +195,14 @@ async function isIpRateLimited(
   const since = new Date(
     Date.now() - IP_RATE_LIMIT_WINDOW_MINUTES * 60_000,
   ).toISOString()
+  // Counts 'login.failure' ONLY — i.e. genuine credential/authorization
+  // failures. Non-credential problems (GoTrue rate limiting, an upstream
+  // 5xx, a network blip) are deliberately logged under a different action
+  // (UPSTREAM_ERROR_ACTION) precisely so they can never land here: otherwise
+  // an upstream outage or an already-tripped GoTrue limit would compound
+  // into this app blocking the IP as well, punishing users for a failure
+  // that was never theirs and that no amount of waiting-and-retrying
+  // correctly would have avoided.
   const { count, error } = await admin
     .from('audit_logs')
     .select('id', { count: 'exact', head: true })
@@ -174,6 +215,39 @@ async function isIpRateLimited(
     return false // fail open — a logging hiccup shouldn't lock everyone out
   }
   return (count ?? 0) >= IP_RATE_LIMIT_MAX_ATTEMPTS
+}
+
+// Structured operational logging — one line per authentication attempt,
+// visible in the Edge Function logs. Originally added as temporary
+// instrumentation while diagnosing the invalid_credentials/rate-limit
+// misclassification bug; kept as permanent production logging because it is
+// the only place the DECISION (why this attempt was classified the way it
+// was, and whether that classification moved the counter or the lock) is
+// recorded in one line. That is exactly what was missing when this class of
+// bug had to be diagnosed from the outside.
+//
+// Safe for production: no password, no token, no session material is ever
+// passed in — only the email, the upstream error code, and the outcome. The
+// email is already stored in audit_logs for the same events, so this adds no
+// new category of data. Deliberately kept separate from logAudit(), which
+// writes the durable, queryable audit_logs trail; this is the ephemeral
+// operational view of the same events.
+function logAttempt(entry: {
+  email: string
+  supabaseErrorCode: string | null
+  httpStatus: number
+  decision: string
+  attemptsIncremented: boolean
+  accountLocked: boolean
+  loginSucceeded: boolean
+}) {
+  console.log(
+    JSON.stringify({
+      tag: 'auth-login-attempt',
+      timestamp: new Date().toISOString(),
+      ...entry,
+    }),
+  )
 }
 
 async function logAudit(
@@ -208,6 +282,16 @@ interface ProfileLookup {
   lock_expires_at: string | null
 }
 
+/** Post-increment lockout state returned by the register_failed_login SQL
+ * function (migration 20260731000008). `out_just_locked` is true only for
+ * the single call that flipped the account into a locked state. */
+interface FailedLoginCounter {
+  out_attempts: number
+  out_locked_at: string | null
+  out_lock_expires_at: string | null
+  out_just_locked: boolean
+}
+
 async function handleLogin(
   admin: SupabaseClient,
   email: string,
@@ -235,6 +319,15 @@ async function handleLogin(
       success: false,
       metadata: { ip: clientIp, userAgent, reason: 'no_such_account' },
     })
+    logAttempt({
+      email,
+      supabaseErrorCode: null,
+      httpStatus: 401,
+      decision: 'no_such_account',
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: false,
+    })
     return json({ error: GENERIC_ERROR }, 401, cors)
   }
 
@@ -250,7 +343,21 @@ async function handleLogin(
   // to a normal credential check below, exactly as if it had never locked.
   if (profile.locked_at && !isSuperAdmin) {
     if (isLockExpired(profile.lock_expires_at)) {
-      await admin
+      // Compare-and-swap, not a blind write: `.not('locked_at','is',null)`
+      // makes clearing the lock conditional on it still being set. Under
+      // Postgres' READ COMMITTED isolation a concurrent caller that blocks
+      // on this row re-evaluates that predicate against the winner's
+      // committed version, sees locked_at IS NULL, and updates zero rows.
+      // So exactly one request "discovers" the expiry and writes the audit
+      // entry, while the others simply proceed to the credential check.
+      //
+      // Without the guard every concurrent request wrote its own
+      // account.unlocked row for a single expiry event — measured against
+      // the deployed function: 4 simultaneous logins produced 2 entries.
+      // The column values converged correctly either way, so this was never
+      // data corruption; it was a false security-audit trail, which for an
+      // append-only audit log is its own kind of wrong.
+      const { data: unlockedRows } = await admin
         .from('profiles')
         .update({
           locked_at: null,
@@ -258,14 +365,20 @@ async function handleLogin(
           failed_login_attempts: 0,
         })
         .eq('id', profile.id)
-      await logAudit(admin, {
-        actorId: profile.id,
-        targetId: profile.id,
-        targetEmail: profile.email,
-        action: 'account.unlocked',
-        success: true,
-        metadata: { ip: clientIp, userAgent, reason: 'expired' },
-      })
+        .not('locked_at', 'is', null)
+        .select('id')
+
+      if (unlockedRows && unlockedRows.length > 0) {
+        await logAudit(admin, {
+          actorId: profile.id,
+          targetId: profile.id,
+          targetEmail: profile.email,
+          action: 'account.unlocked',
+          success: true,
+          metadata: { ip: clientIp, userAgent, reason: 'expired' },
+        })
+      }
+
       profile.locked_at = null
       profile.lock_expires_at = null
       profile.failed_login_attempts = 0
@@ -277,6 +390,15 @@ async function handleLogin(
         action: 'login.failure',
         success: false,
         metadata: { ip: clientIp, userAgent, reason: 'locked' },
+      })
+      logAttempt({
+        email: profile.email,
+        supabaseErrorCode: null,
+        httpStatus: 403,
+        decision: 'blocked_already_locked',
+        attemptsIncremented: false,
+        accountLocked: true,
+        loginSucceeded: false,
       })
       return json(
         {
@@ -311,6 +433,15 @@ async function handleLogin(
       success: false,
       metadata: { ip: clientIp, userAgent, reason: 'disabled' },
     })
+    logAttempt({
+      email: profile.email,
+      supabaseErrorCode: null,
+      httpStatus: 403,
+      decision: 'blocked_disabled',
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: false,
+    })
     return json({ error: DISABLED_ERROR }, 403, cors)
   }
 
@@ -327,14 +458,36 @@ async function handleLogin(
     })
 
   if (!signInError && signInData.session) {
-    await admin
-      .from('profiles')
-      .update({
-        failed_login_attempts: 0,
-        locked_at: null,
-        lock_expires_at: null,
-      })
-      .eq('id', profile.id)
+    // Every successful authentication clears the whole lockout state, per
+    // spec. This is an absolute write (not read-modify-write), so unlike the
+    // failure path it has no concurrency hazard — two simultaneous
+    // successful logins both write the same three values.
+    //
+    // The result is checked and retried rather than fired and forgotten: if
+    // this silently failed, the user would be let in (correctly — they did
+    // authenticate) but with a stale non-zero counter that could later lock
+    // a perfectly good account out of nowhere. A failure here never blocks
+    // the login itself; it is surfaced loudly instead, since the credentials
+    // were genuinely correct and refusing entry would be the worse outcome.
+    let resetOk = false
+    for (let attempt = 0; attempt < 2 && !resetOk; attempt++) {
+      const { error: resetError } = await admin
+        .from('profiles')
+        .update({
+          failed_login_attempts: 0,
+          locked_at: null,
+          lock_expires_at: null,
+        })
+        .eq('id', profile.id)
+      if (resetError) {
+        console.error(
+          `failed resetting lockout state on successful login (attempt ${attempt + 1}):`,
+          resetError,
+        )
+        continue
+      }
+      resetOk = true
+    }
 
     await logAudit(admin, {
       actorId: profile.id,
@@ -342,7 +495,16 @@ async function handleLogin(
       targetEmail: profile.email,
       action: 'login.success',
       success: true,
-      metadata: { ip: clientIp, userAgent },
+      metadata: { ip: clientIp, userAgent, counterReset: resetOk },
+    })
+    logAttempt({
+      email: profile.email,
+      supabaseErrorCode: null,
+      httpStatus: 200,
+      decision: resetOk ? 'success' : 'success_counter_reset_failed',
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: true,
     })
 
     return json(
@@ -355,25 +517,109 @@ async function handleLogin(
     )
   }
 
-  // Wrong password from here on. super_admin: log it, count it for
-  // visibility, but never lock — enforced by simply never writing
-  // locked_at/lock_expires_at in this branch, regardless of the new count.
-  const nextAttempts = profile.failed_login_attempts + 1
-  const willLock = !isSuperAdmin && nextAttempts >= MAX_FAILED_ATTEMPTS
-  // Chosen fresh on every lock, per spec — not a fixed duration.
-  const lockExpiresAt = willLock
-    ? new Date(Date.now() + randomLockDurationMs()).toISOString()
-    : null
+  // signInWithPassword can fail for reasons that have nothing to do with the
+  // password being wrong — most notably GoTrue's own per-IP sign-in rate
+  // limit (error code 'over_request_rate_limit', confirmed by hammering the
+  // real token endpoint: it trips after ~40 attempts in a short window from
+  // one IP and returns this code, completely distinct from
+  // 'invalid_credentials'). Two browsers on the same machine/network share
+  // that IP, so a burst of attempts in one can exhaust the budget the other
+  // is still relying on.
+  //
+  // Every branch below this point used to treat ANY signInError identically
+  // to a wrong password — incrementing failed_login_attempts and returning
+  // the generic "Invalid email or password" message even when GoTrue never
+  // actually evaluated the credentials at all. That meant a correct password
+  // could get counted as a failure (and could eventually lock a perfectly
+  // good account) purely because of upstream rate limiting or a transient
+  // GoTrue error. Only a confirmed 'invalid_credentials' result is treated
+  // as a real wrong-password attempt from here on; everything else is
+  // reported honestly and leaves failed_login_attempts/locked_at untouched.
+  //
+  // The decision itself lives in _shared/authErrors.ts as a pure function so
+  // every branch — including the 5xx and socket-failure cases that can't be
+  // provoked on demand against a live GoTrue — is directly unit-tested
+  // (authErrors.test.ts). `countsAsFailedAttempt` is true for exactly one
+  // classification, invalid_credentials, and it is the only thing standing
+  // between an upstream hiccup and a locked-out user.
+  //
+  // A null signInError reaching here would mean "no error and no session",
+  // which the classifier also treats as non-counting rather than trusting it.
+  const failure = classifySignInFailure(signInError)
 
-  await admin
-    .from('profiles')
-    .update({
-      failed_login_attempts: nextAttempts,
-      locked_at: willLock ? new Date().toISOString() : null,
-      lock_expires_at: lockExpiresAt,
-      last_failed_login_at: new Date().toISOString(),
+  if (!failure.countsAsFailedAttempt) {
+    await logAudit(admin, {
+      actorId: profile.id,
+      targetId: profile.id,
+      targetEmail: profile.email,
+      action: UPSTREAM_ERROR_ACTION,
+      success: false,
+      metadata: {
+        ip: clientIp,
+        userAgent,
+        reason: failure.kind,
+        upstreamCode: signInError?.code ?? null,
+        upstreamStatus: signInError?.status ?? null,
+        upstreamMessage: signInError?.message ?? null,
+      },
     })
-    .eq('id', profile.id)
+    logAttempt({
+      email: profile.email,
+      supabaseErrorCode: signInError?.code ?? null,
+      httpStatus: failure.httpStatus,
+      decision: failure.kind,
+      attemptsIncremented: false,
+      accountLocked: false,
+      loginSucceeded: false,
+    })
+    return json({ error: failure.userMessage }, failure.httpStatus, cors)
+  }
+
+  // Wrong password from here on — the ONE code path in this whole function
+  // that may increment failed_login_attempts.
+  //
+  // The increment and the lock decision are done by a single server-side
+  // statement (register_failed_login, see migration 20260731000008) rather
+  // than read-here/write-there. The previous read-modify-write lost
+  // concurrent increments: measured against the deployed function, 5
+  // simultaneous wrong passwords left the counter at 1 and the account
+  // unlocked, so firing guesses in parallel bypassed the 3-strike lock
+  // entirely. Postgres' row lock inside that function serializes concurrent
+  // callers, so each attempt now counts exactly once.
+  //
+  // super_admin still never locks — enforced by passing p_can_lock=false, so
+  // the counter still moves (for visibility) but no lock is ever stamped.
+  // Cast through `unknown`: the Supabase clients in these Edge Functions are
+  // created without a generated `Database` generic, so every table and RPC
+  // signature infers as `never` (the same reason the .update()/.insert()
+  // calls elsewhere in this file are untyped). Naming the shape here at
+  // least keeps this call site's contract with the SQL function explicit.
+  const { data: counterRows, error: counterError } = await (
+    admin.rpc as unknown as (
+      fn: string,
+      args: Record<string, unknown>,
+    ) => Promise<{ data: FailedLoginCounter[] | null; error: unknown }>
+  )('register_failed_login', {
+    p_user_id: profile.id,
+    p_max_attempts: MAX_FAILED_ATTEMPTS,
+    // Chosen fresh on every call, per spec — not a fixed duration. Only
+    // actually applied by the function on the transition into a lock.
+    p_lock_duration_ms: randomLockDurationMs(),
+    p_can_lock: !isSuperAdmin,
+  })
+
+  if (counterError) {
+    // The credentials WERE checked and were wrong, so this must not report
+    // success — but the attempt could not be recorded, which is a real
+    // integrity problem worth surfacing in logs rather than swallowing.
+    console.error('register_failed_login failed:', counterError)
+  }
+
+  const counter = counterRows?.[0]
+  const attempts: number | null = counter?.out_attempts ?? null
+  const lockExpiresAt: string | null = counter?.out_lock_expires_at ?? null
+  const justLocked: boolean = counter?.out_just_locked === true
+  const isLocked: boolean = counter?.out_locked_at != null
 
   await logAudit(admin, {
     actorId: profile.id,
@@ -381,10 +627,13 @@ async function handleLogin(
     targetEmail: profile.email,
     action: 'login.failure',
     success: false,
-    metadata: { ip: clientIp, userAgent, attempts: nextAttempts },
+    metadata: { ip: clientIp, userAgent, attempts },
   })
 
-  if (willLock && lockExpiresAt) {
+  // Only the call that actually flipped the account into a locked state
+  // writes the account.locked entry — otherwise a concurrent burst would
+  // write several duplicate lock entries for one single lock.
+  if (justLocked && lockExpiresAt) {
     await logAudit(admin, {
       actorId: profile.id,
       targetId: profile.id,
@@ -399,6 +648,20 @@ async function handleLogin(
         lockDurationMinutes: remainingLockMinutes(lockExpiresAt),
       },
     })
+  }
+
+  if (isLocked && lockExpiresAt) {
+    logAttempt({
+      email: profile.email,
+      supabaseErrorCode: 'invalid_credentials',
+      httpStatus: 403,
+      decision: justLocked
+        ? 'wrong_password_triggered_lock'
+        : 'wrong_password_while_locked',
+      attemptsIncremented: true,
+      accountLocked: true,
+      loginSucceeded: false,
+    })
     return json(
       {
         error: lockedMessage(lockExpiresAt),
@@ -410,5 +673,14 @@ async function handleLogin(
     )
   }
 
+  logAttempt({
+    email: profile.email,
+    supabaseErrorCode: 'invalid_credentials',
+    httpStatus: 401,
+    decision: 'wrong_password',
+    attemptsIncremented: true,
+    accountLocked: false,
+    loginSucceeded: false,
+  })
   return json({ error: GENERIC_ERROR }, 401, cors)
 }
