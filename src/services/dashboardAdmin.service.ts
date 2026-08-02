@@ -1,6 +1,7 @@
 import { supabase } from '@/supabase/client'
 import { downloadDashboardHtml } from '@/supabase/storage'
 import { mergeCandidatesIntoHtml } from '@/lib/dashboardCandidateMerge'
+import { normalizeToCanonicalHtml } from '@/lib/htmlNormalization'
 import {
   ALLOWED_CSV_MIME_TYPES,
   ALLOWED_HTML_MIME_TYPES,
@@ -21,7 +22,10 @@ export interface UploadDashboardInput {
   htmlFile: File
   thumbnailFile?: File | null
   createdBy: string
-  onProgress?: (stage: 'html' | 'thumbnail' | 'saving', percent: number) => void
+  onProgress?: (
+    stage: 'normalizing' | 'html' | 'thumbnail' | 'saving',
+    percent: number,
+  ) => void
 }
 
 export function validateHtmlFile(file: File): string | null {
@@ -76,6 +80,18 @@ export async function uploadDashboard(
     if (thumbnailError) throw new Error(thumbnailError)
   }
 
+  // Canonical HTML Normalization — the uploaded file is never stored (or
+  // rendered) as-is. It's parsed, sanitized, and validated against the
+  // production-tested canonical structure before anything touches Storage;
+  // see src/lib/htmlNormalization/pipeline.ts for the full extract ->
+  // sanitize -> canonicalize -> validate sequence and why each stage is
+  // scoped the way it is. Runs before any Storage write (this function's
+  // own try/catch below only exists to clean up PARTIAL uploads), so a
+  // rejected file never creates orphaned Storage objects to begin with.
+  input.onProgress?.('normalizing', 5)
+  const { html: canonicalHtml } = await normalizeToCanonicalHtml(input.htmlFile)
+  input.onProgress?.('normalizing', 10)
+
   const id = crypto.randomUUID()
   const storagePath = `${STORAGE_FOLDER}/${id}.html`
   const thumbnailPath = input.thumbnailFile
@@ -85,10 +101,12 @@ export async function uploadDashboard(
   const uploadedPaths: string[] = []
 
   try {
-    input.onProgress?.('html', 10)
+    input.onProgress?.('html', 15)
     const { error: htmlUploadError } = await supabase.storage
       .from(STORAGE_BUCKET)
-      .upload(storagePath, input.htmlFile, { contentType: 'text/html' })
+      .upload(storagePath, new Blob([canonicalHtml], { type: 'text/html' }), {
+        contentType: 'text/html',
+      })
     if (htmlUploadError) throw htmlUploadError
     uploadedPaths.push(storagePath)
     input.onProgress?.('html', 45)

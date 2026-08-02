@@ -43,6 +43,7 @@ const uploadSchema = z.object({
 type UploadFormValues = z.infer<typeof uploadSchema>
 
 const STAGE_LABEL: Record<string, string> = {
+  normalizing: 'Validating dashboard format…',
   html: 'Uploading HTML file…',
   thumbnail: 'Uploading thumbnail…',
   saving: 'Saving dashboard…',
