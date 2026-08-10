@@ -111,11 +111,19 @@ export function canViewUser(
   return true
 }
 
-/** Candidate status/action updates (the per-candidate select inside an
- * embedded dashboard) are Super Admin only — Admin and Viewer get
- * read-only dashboards. */
-export function canUpdateCandidateStatus(role: UserRole): boolean {
-  return role === 'super_admin'
+/** Candidate status/action updates (the per-candidate select/dropdown
+ * inside an embedded dashboard) — open to every authenticated role. This is
+ * the original design (see the dashboard_status RLS policies' own comment:
+ * "every authenticated user can view and update candidate status, that is
+ * the core purpose of the portal") and matches dashboard_status_insert/
+ * _update, which permit any authenticated caller. Deliberately distinct
+ * from canManageDashboards() below — managing the DASHBOARD itself (upload/
+ * replace/delete) stays Super Admin only; this only ever covers a
+ * candidate's status/action within one. The `role` parameter is unused
+ * today but kept so a future narrowing doesn't have to change every call
+ * site again. */
+export function canUpdateCandidateStatus(_role: UserRole): boolean {
+  return true
 }
 
 /** Uploading, replacing, and deleting dashboards — Super Admin only.

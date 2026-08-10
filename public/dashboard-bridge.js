@@ -278,31 +278,34 @@
   var STATUS_STYLES = {}
   var ACTION_OPTIONS = []
   var ACTION_STYLES = {}
-  // Candidate status/action EDITS are Super Admin only — the host tells us
-  // via longlist:init-config's canUpdateStatus flag. Starts false (fail
-  // closed) until that message actually arrives; the real enforcement is
-  // server-side (RLS + the host's own role check before it ever calls
-  // Supabase) regardless of what this flag is set to, so this only ever
-  // controls whether the controls in THIS document look/behave editable.
+  // Whether candidate status/action EDITS are currently allowed in this
+  // document — the host tells us via longlist:init-config's canUpdateStatus
+  // flag. Starts false (fail closed) until that message actually arrives.
+  // The real enforcement is server-side (dashboard_status's own RLS policies
+  // — currently: any authenticated user), regardless of what this flag is
+  // set to; this only ever controls whether the controls in THIS document
+  // look/behave editable. The host decides who gets canUpdateStatus: true
+  // (see canUpdateCandidateStatus() in the app's own source) — this script
+  // has no opinion on roles, only on rendering.
   //
   // Status <select>: when false, the uploaded HTML's own <select> is
   // REPLACED with a static badge (replaceStatusWithReadonly) — no listener,
   // not just `disabled` (a disabled control is still a control: present in
   // the DOM, inspectable, re-enablable from devtools).
   //
-  // Action button: rendered the SAME real button for every authenticated
-  // role, never swapped for a different element — only its `disabled` state
-  // (and cursor/opacity) tracks EDITABLE, exactly like a plain native
-  // form control. This one control was briefly regressed to the
+  // Action button: rendered the SAME real button regardless of EDITABLE,
+  // never swapped for a different element — only its `disabled` state (and
+  // cursor/opacity) tracks the flag, exactly like a plain native form
+  // control. This one control was briefly regressed to the
   // replace-with-inert-span treatment above (matching the status select's
-  // model), which had a real bug: it also replaced the ACTION_READONLY
-  // trigger with a bare, non-interactive span instead of a real disabled
-  // button — collapsing it down to "no control" rather than "control
-  // present but inert", so a role with no assigned action value saw a lone
-  // "—" and nothing that looked like a dropdown ever existed. Restored to
-  // the disabled-button treatment here. In both cases, read access to
-  // candidate status/action is intentionally open to every role — only the
-  // ability to CHANGE it is gated.
+  // model), which had a real bug: it also replaced the trigger with a bare,
+  // non-interactive span instead of a real disabled button — collapsing it
+  // down to "no control" rather than "control present but inert", so
+  // canUpdateStatus: false rendered a lone "—" and nothing that looked like
+  // a dropdown ever existed. Restored to the disabled-button treatment
+  // here. In both cases, read access to candidate status/action is
+  // intentionally open whenever this flag is false — only the ability to
+  // CHANGE it is gated by it.
   var EDITABLE = false
   var STATUS_READONLY_ATTR = 'data-longlist-status-readonly'
   var currentTheme = 'light'

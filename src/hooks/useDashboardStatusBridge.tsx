@@ -42,12 +42,14 @@ export function useDashboardStatusBridge({
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
   const { user } = useAuth()
-  // Candidate status/action updates are Super Admin only (see
-  // src/lib/permissions.ts) — everyone else gets a read-only dashboard.
-  // Checked here, not just left to RLS, so a non-Super-Admin gets an
-  // immediate, clear ack/toast instead of a raw Postgres error, and so the
-  // iframe is told up front (via longlist:init-config below) to render its
-  // own controls disabled rather than silently rejecting every attempt.
+  // Candidate status/action updates are open to every authenticated role
+  // (see src/lib/permissions.ts) — the original design, and what
+  // dashboard_status's own RLS policies permit. Still routed through
+  // canUpdateCandidateStatus() rather than inlined as `true`, so there is
+  // one place to change if this is ever narrowed again, and so the iframe
+  // is told up front (via longlist:init-config below) whether to render its
+  // own controls as editable at all, rather than relying solely on a
+  // rejected write to find out.
   const canEdit = canUpdateCandidateStatus(user?.role ?? 'viewer')
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
   const modalOpenRef = useRef(false)
@@ -214,7 +216,7 @@ export function useDashboardStatusBridge({
             type: 'longlist:status-ack',
             success: false,
             candidateName: payload.candidateName,
-            error: 'Only a Super Admin can update candidate status.',
+            error: 'You must be signed in to update candidate status.',
           })
           return
         }
@@ -283,7 +285,7 @@ export function useDashboardStatusBridge({
             type: 'longlist:action-ack',
             success: false,
             candidateName: payload.candidateName,
-            error: 'Only a Super Admin can update candidate status.',
+            error: 'You must be signed in to update candidate status.',
           })
           return
         }
