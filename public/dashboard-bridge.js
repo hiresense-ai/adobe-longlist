@@ -278,23 +278,33 @@
   var STATUS_STYLES = {}
   var ACTION_OPTIONS = []
   var ACTION_STYLES = {}
-  // Candidate status/action edits are Super Admin only — the host tells us
+  // Candidate status/action EDITS are Super Admin only — the host tells us
   // via longlist:init-config's canUpdateStatus flag. Starts false (fail
   // closed) until that message actually arrives; the real enforcement is
   // server-side (RLS + the host's own role check before it ever calls
-  // Supabase) regardless of what this flag is set to.
+  // Supabase) regardless of what this flag is set to, so this only ever
+  // controls whether the controls in THIS document look/behave editable.
   //
-  // When false the interactive controls are not rendered AT ALL — the
-  // uploaded HTML's <select> is REPLACED with a static badge and the Action
-  // cell gets a plain <span> instead of a combobox button. Deliberately not
-  // `disabled`: a disabled control is still a control in the DOM (visible,
-  // inspectable, re-enablable from devtools), and the requirement is that
-  // the feature be absent for non-Super-Admins, not merely inert. The
-  // current value is still displayed as text, since read access to
-  // candidate status is intentionally open to every role.
+  // Status <select>: when false, the uploaded HTML's own <select> is
+  // REPLACED with a static badge (replaceStatusWithReadonly) — no listener,
+  // not just `disabled` (a disabled control is still a control: present in
+  // the DOM, inspectable, re-enablable from devtools).
+  //
+  // Action button: rendered the SAME real button for every authenticated
+  // role, never swapped for a different element — only its `disabled` state
+  // (and cursor/opacity) tracks EDITABLE, exactly like a plain native
+  // form control. This one control was briefly regressed to the
+  // replace-with-inert-span treatment above (matching the status select's
+  // model), which had a real bug: it also replaced the ACTION_READONLY
+  // trigger with a bare, non-interactive span instead of a real disabled
+  // button — collapsing it down to "no control" rather than "control
+  // present but inert", so a role with no assigned action value saw a lone
+  // "—" and nothing that looked like a dropdown ever existed. Restored to
+  // the disabled-button treatment here. In both cases, read access to
+  // candidate status/action is intentionally open to every role — only the
+  // ability to CHANGE it is gated.
   var EDITABLE = false
   var STATUS_READONLY_ATTR = 'data-longlist-status-readonly'
-  var ACTION_READONLY_ATTR = 'data-longlist-action-readonly'
   var currentTheme = 'light'
   var selects = []
   // Static status badges rendered in place of the selects when !EDITABLE.
@@ -337,14 +347,6 @@
       '[' +
       ACTION_ATTR +
       ']:hover { box-shadow: 0 2px 5px 0 rgba(0,0,0,0.08); }' +
-      // Read-only Action cell (non-Super-Admin): strip every affordance that
-      // says "interactive" — no pointer cursor, no shadow, no hover lift.
-      '[' +
-      ACTION_READONLY_ATTR +
-      '] { cursor: default; box-shadow: none; }' +
-      '[' +
-      ACTION_READONLY_ATTR +
-      ']:hover { box-shadow: none; }' +
       '[' +
       ACTION_ATTR +
       ']:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--action-ring-color, rgba(0,0,0,0.18)); }' +
@@ -770,14 +772,9 @@
 
   function setActionValue(trigger, value) {
     trigger.setAttribute('data-value', value || '')
-    // "Select Action" is an invitation to act — wrong for a read-only cell,
-    // which shows an em dash when no action has been recorded yet.
-    var empty = trigger.hasAttribute(ACTION_READONLY_ATTR)
-      ? '—'
-      : 'Select Action'
     var label = trigger.querySelector('[' + ACTION_LABEL_ATTR + ']')
-    if (label) label.textContent = value || empty
-    trigger.title = value || empty
+    if (label) label.textContent = value || 'Select Action'
+    trigger.title = value || 'Select Action'
     applyActionStyle(trigger)
   }
 
@@ -1157,25 +1154,7 @@
     'touchend',
   ]
 
-  // Read-only counterpart of the Action combobox: a plain <span> with no
-  // popup, no listeners, no aria-haspopup, and nothing focusable. Not a
-  // disabled <button> — see the EDITABLE note at the top of this file.
-  function createActionReadonly(name) {
-    actionUidCounter += 1
-    var span = document.createElement('span')
-    span.id = 'll-action-' + actionUidCounter
-    span.setAttribute(ACTION_ATTR, '')
-    span.setAttribute(ACTION_READONLY_ATTR, '')
-    if (name) span.setAttribute(ACTION_NAME_ATTR, name)
-    var label = document.createElement('span')
-    label.setAttribute(ACTION_LABEL_ATTR, '')
-    span.appendChild(label)
-    return span
-  }
-
   function createActionTrigger(name) {
-    if (!EDITABLE) return createActionReadonly(name)
-
     actionUidCounter += 1
     var button = document.createElement('button')
     button.type = 'button'
@@ -1183,6 +1162,9 @@
     button.setAttribute(ACTION_ATTR, '')
     button.setAttribute('aria-haspopup', 'listbox')
     button.setAttribute('aria-expanded', 'false')
+    button.disabled = !EDITABLE
+    button.style.cursor = EDITABLE ? 'pointer' : 'not-allowed'
+    if (!EDITABLE) button.style.opacity = '0.6'
     if (name) {
       button.setAttribute(ACTION_NAME_ATTR, name)
       button.setAttribute('aria-label', 'Action for ' + name)
