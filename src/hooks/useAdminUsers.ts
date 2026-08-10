@@ -5,6 +5,26 @@ import { supabase } from '@/supabase/client'
 import { QUERY_KEYS } from '@/constants'
 
 /**
+ * A one-time (non-realtime) read of the same admin-users list, for callers
+ * that just need to populate a picker — e.g. the dashboard assignment
+ * dialogs. Deliberately NOT useAdminUsers(): that hook opens a
+ * `admin-users-sync` Realtime channel keyed by a fixed name, which is only
+ * safe with a single mounted instance (the Users Management page). Multiple
+ * concurrent instances — e.g. one per open dashboard dialog — collide on
+ * that shared channel name and throw ("cannot add postgres_changes
+ * callbacks ... after subscribe()"). Sharing QUERY_KEYS.adminUsers still
+ * lets this reuse a cache already warmed by useAdminUsers(), without adding
+ * a second subscription.
+ */
+export function useAssignableUsers(enabled: boolean) {
+  return useQuery({
+    queryKey: QUERY_KEYS.adminUsers,
+    queryFn: listAdminUsers,
+    enabled,
+  })
+}
+
+/**
  * The Users list, kept honest against changes this tab didn't make.
  *
  * The account set can move underneath an open page in ways a plain cached

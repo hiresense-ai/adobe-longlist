@@ -1,12 +1,17 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, LayoutDashboard } from 'lucide-react'
+import { ArrowUpRight, LayoutDashboard, Users } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { DeleteDashboardButton } from '@/components/dashboard/DeleteDashboardButton'
+import { ManageAccessDialog } from '@/components/dashboard/ManageAccessDialog'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
-import { canManageDashboards } from '@/lib/permissions'
+import {
+  canManageDashboardAssignments,
+  canManageDashboards,
+} from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import type { DashboardWithThumbnail } from '@/services/dashboards.service'
 
@@ -19,6 +24,13 @@ export function DashboardCard({
   // Deleting a dashboard is Super Admin only (see permissions.ts) —
   // mirrored by the dashboards_delete_super_admin RLS policy.
   const canManage = Boolean(user && canManageDashboards(user.role))
+  // Manage Access: Super Admin (every dashboard) and Admin (only dashboards
+  // they can see at all, which — post assignment migration — is exactly the
+  // set they're assigned to; see canManageDashboardAssignments).
+  const canManageAccess = Boolean(
+    user && canManageDashboardAssignments(user.role),
+  )
+  const [isManageAccessOpen, setIsManageAccessOpen] = useState(false)
 
   return (
     <div className="group border-border bg-card shadow-soft dark:hover:shadow-elevated hover:border-primary/30 dark:hover:border-primary/50 relative flex flex-col overflow-hidden rounded-2xl border transition-all duration-[220ms] ease-out hover:-translate-y-1.5 hover:scale-[1.02] hover:cursor-pointer hover:shadow-lg motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:hover:scale-100">
@@ -76,6 +88,20 @@ export function DashboardCard({
             {formatDate(dashboard.created_at)}
           </span>
           <div className="relative z-20 flex items-center gap-2">
+            {canManageAccess && (
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                aria-label={`Manage access to ${dashboard.title}`}
+                onClick={(event) => {
+                  event.preventDefault()
+                  setIsManageAccessOpen(true)
+                }}
+              >
+                <Users className="size-3.5" />
+              </Button>
+            )}
             {canManage && <DeleteDashboardButton dashboard={dashboard} />}
             <Button asChild size="sm">
               <Link to={ROUTES.dashboard(dashboard.id)}>
@@ -86,6 +112,14 @@ export function DashboardCard({
           </div>
         </div>
       </div>
+
+      {canManageAccess && isManageAccessOpen && (
+        <ManageAccessDialog
+          dashboard={dashboard}
+          open={isManageAccessOpen}
+          onOpenChange={setIsManageAccessOpen}
+        />
+      )}
     </div>
   )
 }

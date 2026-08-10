@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
-import { Loader2, Upload } from 'lucide-react'
+import { Loader2, Plus, Upload, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -26,13 +27,24 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useUploadDashboard } from '@/hooks/useUploadDashboard'
+import { useAssignableUsers } from '@/hooks/useAdminUsers'
 import { useAuth } from '@/hooks/useAuth'
 import {
   validateHtmlFile,
   validateThumbnailFile,
 } from '@/services/dashboardAdmin.service'
+import { assignDashboardUser } from '@/services/dashboardAssignments.service'
 import { getErrorMessage } from '@/lib/errors'
+import { assignableDashboardRoles, roleLabel } from '@/lib/permissions'
+import type { AdminUserRow } from '@/types'
 
 const uploadSchema = z.object({
   title: z.string().min(1, 'Dashboard name is required'),
@@ -58,6 +70,7 @@ export function UploadDashboardDialog({
 }) {
   const { user } = useAuth()
   const uploadMutation = useUploadDashboard()
+  const { data: allUsers } = useAssignableUsers(open)
   const [htmlFile, setHtmlFile] = useState<File | null>(null)
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null)
   const [fileErrors, setFileErrors] = useState<{
@@ -68,6 +81,41 @@ export function UploadDashboardDialog({
     stage: string
     percent: number
   } | null>(null)
+
+  // A new dashboard starts with zero rows in dashboard_assignments, so
+  // (post assignment migration) nobody but a Super Admin can see it until
+  // someone is granted access — either here, or afterward via the
+  // "Manage Access" button on the card. Staged locally since the dashboard
+  // doesn't have an id yet; actually granted only once the upload succeeds.
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState('')
+  const [pendingAssignees, setPendingAssignees] = useState<AdminUserRow[]>([])
+
+  const eligibleRoles = assignableDashboardRoles(user?.role ?? 'viewer')
+  const pendingIds = useMemo(
+    () => new Set(pendingAssignees.map((assignee) => assignee.id)),
+    [pendingAssignees],
+  )
+  const eligibleToAssign = useMemo(
+    () =>
+      (allUsers ?? []).filter(
+        (candidate) =>
+          eligibleRoles.includes(candidate.role) &&
+          !pendingIds.has(candidate.id),
+      ),
+    [allUsers, eligibleRoles, pendingIds],
+  )
+
+  function handleAddAssignee() {
+    if (!selectedAssigneeId) return
+    const candidate = (allUsers ?? []).find((u) => u.id === selectedAssigneeId)
+    if (!candidate) return
+    setPendingAssignees((prev) => [...prev, candidate])
+    setSelectedAssigneeId('')
+  }
+
+  function handleRemoveAssignee(userId: string) {
+    setPendingAssignees((prev) => prev.filter((a) => a.id !== userId))
+  }
 
   const form = useForm<UploadFormValues>({
     resolver: zodResolver(uploadSchema),
@@ -80,6 +128,8 @@ export function UploadDashboardDialog({
     setThumbnailFile(null)
     setFileErrors({})
     setProgress(null)
+    setPendingAssignees([])
+    setSelectedAssigneeId('')
   }
 
   function handleOpenChange(next: boolean) {
@@ -106,7 +156,7 @@ export function UploadDashboardDialog({
 
     try {
       setProgress({ stage: 'html', percent: 5 })
-      await uploadMutation.mutateAsync({
+      const created = await uploadMutation.mutateAsync({
         title: values.title,
         description: values.description,
         category: values.category,
@@ -115,6 +165,21 @@ export function UploadDashboardDialog({
         createdBy: user.id,
         onProgress: (stage, percent) => setProgress({ stage, percent }),
       })
+
+      if (pendingAssignees.length > 0) {
+        const results = await Promise.allSettled(
+          pendingAssignees.map((assignee) =>
+            assignDashboardUser(created.id, assignee.id),
+          ),
+        )
+        const failed = results.filter((r) => r.status === 'rejected').length
+        if (failed > 0) {
+          toast.warning(
+            `${values.title} uploaded, but couldn't grant access to ${failed} user(s). Use "Manage Access" on the card to retry.`,
+          )
+        }
+      }
+
       toast.success(`${values.title} uploaded successfully`)
       resetAll()
       onOpenChange(false)
@@ -235,6 +300,69 @@ export function UploadDashboardDialog({
                   {fileErrors.thumbnail}
                 </p>
               )}
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Grant access (optional)</Label>
+              <p className="text-muted-foreground text-xs">
+                Only you can see this dashboard until someone is granted access.
+                You can also do this later from the card.
+              </p>
+              {pendingAssignees.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {pendingAssignees.map((assignee) => (
+                    <Badge
+                      key={assignee.id}
+                      variant="secondary"
+                      className="gap-1 pr-1"
+                    >
+                      {assignee.name || assignee.email}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${assignee.email}`}
+                        disabled={isSubmitting}
+                        onClick={() => handleRemoveAssignee(assignee.id)}
+                        className="hover:bg-background/60 rounded-full p-0.5"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Select
+                  value={selectedAssigneeId}
+                  onValueChange={setSelectedAssigneeId}
+                  disabled={isSubmitting}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Add a user…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {eligibleToAssign.length === 0 ? (
+                      <div className="text-muted-foreground px-2 py-1.5 text-sm">
+                        No eligible users left to add.
+                      </div>
+                    ) : (
+                      eligibleToAssign.map((candidate) => (
+                        <SelectItem key={candidate.id} value={candidate.id}>
+                          {`${candidate.name || candidate.email} — ${roleLabel(candidate.role)}`}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleAddAssignee}
+                  disabled={!selectedAssigneeId || isSubmitting}
+                >
+                  <Plus className="size-4" />
+                  Add
+                </Button>
+              </div>
             </div>
 
             {progress && (

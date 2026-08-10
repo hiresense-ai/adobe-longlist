@@ -135,6 +135,32 @@ export function canManageDashboards(role: UserRole): boolean {
   return role === 'super_admin'
 }
 
+/** Whether a caller may open the "Manage Access" UI on a dashboard card at
+ * all. Real authorization (which dashboard, which target role) is enforced
+ * fresh server-side on every call by the dashboard-assignments Edge
+ * Function — this only decides whether the entry point is worth showing.
+ * Viewer never gets it. An Admin gets it on every dashboard they can see,
+ * because post-assignment-migration visibility itself IS the assignment
+ * check (dashboards_select requires a dashboard_assignments row for any
+ * non-super_admin caller) — there is no dashboard an Admin can see in their
+ * list that they aren't already assigned to. */
+export function canManageDashboardAssignments(role: UserRole): boolean {
+  return role === 'admin' || role === 'super_admin'
+}
+
+/** Roles a caller may ADD to a dashboard's assignment list. Mirrors the
+ * dashboard-assignments Edge Function: super_admin may assign any role
+ * (including another super_admin, e.g. for shared ownership); admin may
+ * only add a viewer; viewer may not assign at all. Deliberately separate
+ * from assignableRoles() above — that one governs which role a NEW ACCOUNT
+ * may be created with, a different question from who may be granted
+ * access to an EXISTING dashboard. */
+export function assignableDashboardRoles(callerRole: UserRole): UserRole[] {
+  if (callerRole === 'super_admin') return ['super_admin', 'admin', 'viewer']
+  if (callerRole === 'admin') return ['viewer']
+  return []
+}
+
 export function roleLabel(role: UserRole): string {
   if (role === 'super_admin') return 'Super Admin'
   if (role === 'admin') return 'Admin'

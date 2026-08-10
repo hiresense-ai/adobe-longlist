@@ -54,4 +54,6 @@ export const QUERY_KEYS = {
     ['dashboard-statuses', dashboardId] as const,
   profile: (userId: string) => ['profile', userId] as const,
   adminUsers: ['admin-users'] as const,
+  dashboardAssignments: (dashboardId: string) =>
+    ['dashboard-assignments', dashboardId] as const,
 }
