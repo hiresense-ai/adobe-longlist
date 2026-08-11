@@ -143,6 +143,7 @@ interface ResetPasswordPayload {
 
 type ActionBody =
   | { action: 'list' }
+  | { action: 'listOrphans' }
   | { action: 'create'; payload: CreateUserPayload }
   | { action: 'update'; payload: UpdateUserPayload }
   | { action: 'setDisabled'; payload: SetDisabledPayload }
@@ -239,8 +240,9 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Invalid JSON body' }, 400, cors)
   }
 
-  // `list` is read-only and not rate-limited; every mutating action is.
-  if (body.action !== 'list') {
+  // `list`/`listOrphans` are read-only and not rate-limited; every mutating
+  // action is.
+  if (body.action !== 'list' && body.action !== 'listOrphans') {
     const limited = await isRateLimited(admin, caller.id)
     if (limited) {
       return json(
@@ -258,6 +260,8 @@ Deno.serve(async (req: Request) => {
     switch (body.action) {
       case 'list':
         return await listUsers(admin, callerRole, cors)
+      case 'listOrphans':
+        return await listOrphans(admin, callerRole, cors)
       case 'create':
         return await createUser(
           admin,
@@ -503,6 +507,62 @@ async function listUsers(
   })
 
   return json({ users }, 200, cors)
+}
+
+/**
+ * Surfaces exactly the accounts listUsers() deliberately hides: a live
+ * auth.users row with no profiles row behind it. That combination can't
+ * arise through this application's own create/delete flows (createUser
+ * rolls back the auth user if the profile step fails; deleteUser removes
+ * auth first and then verifies+sweeps the profile) — it only happens when
+ * something outside the app deletes a profiles row directly (e.g. the
+ * Supabase Dashboard's table editor), which cascades nothing back up to
+ * auth.users. Such an account can't sign in (auth-login resolves the caller
+ * through profiles) and blocks its own email from ever being used again,
+ * with no way to reach it through the normal Users list — this is the read
+ * side of that fix; deleteUser (unchanged) already handles removing one
+ * once its id is known, since it treats "no profile row" as an
+ * unprivileged (viewer-equivalent) target rather than refusing to act.
+ *
+ * Super Admin only: this is raw auth.users data with no RBAC role attached
+ * to it at all, a more sensitive read than the normal list (which already
+ * excludes Super Admin rows for a plain Admin caller).
+ */
+async function listOrphans(
+  admin: SupabaseClient,
+  callerRole: CallerRole,
+  cors: Record<string, string>,
+) {
+  if (callerRole !== 'super_admin') {
+    return json(
+      { error: 'Only a Super Admin can view orphaned accounts.' },
+      403,
+      cors,
+    )
+  }
+
+  const [
+    { data: authList, error: authError },
+    { data: profiles, error: profilesError },
+  ] = await Promise.all([
+    admin.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+    admin.from('profiles').select('id'),
+  ])
+
+  if (authError) throw authError
+  if (profilesError) throw profilesError
+
+  const profileIds = new Set((profiles ?? []).map((p) => p.id as string))
+  const orphans = authList.users
+    .filter((u) => !u.deleted_at && !profileIds.has(u.id))
+    .map((u) => ({
+      id: u.id,
+      email: u.email ?? '',
+      createdAt: u.created_at,
+      lastSignInAt: u.last_sign_in_at ?? null,
+    }))
+
+  return json({ orphans }, 200, cors)
 }
 
 async function createUser(

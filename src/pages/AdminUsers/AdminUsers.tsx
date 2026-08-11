@@ -12,6 +12,7 @@ import { CreateUserDialog } from '@/components/admin/CreateUserDialog'
 import { EditUserDialog } from '@/components/admin/EditUserDialog'
 import { DeleteUserDialog } from '@/components/admin/DeleteUserDialog'
 import { ResetPasswordDialog } from '@/components/admin/ResetPasswordDialog'
+import { OrphanedAccountsPanel } from '@/components/admin/OrphanedAccountsPanel'
 import { UserRowActions } from '@/components/admin/UserRowActions'
 import { UsersBackground } from '@/components/admin/UsersBackground'
 import { useAdminUsers } from '@/hooks/useAdminUsers'
@@ -72,6 +73,10 @@ export function AdminUsers() {
             Create user
           </Button>
         </div>
+
+        <OrphanedAccountsPanel
+          isSuperAdmin={currentUserRole === 'super_admin'}
+        />
 
         <div className="relative mb-5 max-w-xs">
           <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
