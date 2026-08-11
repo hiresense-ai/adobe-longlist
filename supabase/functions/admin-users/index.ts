@@ -566,9 +566,17 @@ async function createUser(
   // handle_new_user() trigger already created a default 'viewer' profile row
   // (it now clamps any client-supplied role to admin/viewer regardless, so
   // this update is what actually assigns the role requested here).
+  //
+  // force_password_change is unconditionally true here: the frontend never
+  // offers an administrator a manual-password option anymore (see
+  // CreateUserDialog) — every account is created with a generated password,
+  // so every new account requires the owner to set their own before using
+  // the app, exactly like an administrator's Reset Password. There is no
+  // payload flag to trust here; this account's password source is a fact
+  // about how it was created, not something the client gets to assert.
   const { error: profileError } = await admin
     .from('profiles')
-    .update({ name, role })
+    .update({ name, role, force_password_change: true })
     .eq('id', newUserId)
 
   if (profileError) {
@@ -597,6 +605,7 @@ async function createUser(
     targetType: 'user',
     targetId: newUserId,
     targetEmail: email,
+    // Never the password itself.
     metadata: { role },
     success: true,
   })
