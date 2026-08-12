@@ -7,7 +7,10 @@ import eslintConfigPrettier from 'eslint-config-prettier'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'node_modules', 'build']),
+  // supabase/.temp is the local Supabase stack's scratch space (`supabase
+  // start` drops generated runtime files there) — machine-generated, already
+  // gitignored, never ours to lint.
+  globalIgnores(['dist', 'node_modules', 'build', 'supabase/.temp']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

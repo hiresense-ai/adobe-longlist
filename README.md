@@ -100,16 +100,24 @@ Requires Node.js 20+.
 
 ## Environment variables
 
-Copy `.env.example` to `.env.local` and fill in your Supabase project's values (**Project Settings → API** in the Supabase dashboard):
+> **LOCAL and PRODUCTION are fully isolated environments** — local
+> development runs against a local Dockerized Supabase stack, production
+> runs against the hosted project via Vercel env vars. **NEVER point local
+> .env files to the Production Supabase project** (the app refuses to start
+> in dev mode if you do). Full setup + deployment workflow:
+> **[docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md)**.
+
+For local development (see docs/ENVIRONMENTS.md for the full steps):
 
 ```bash
-cp .env.example .env.local
+npm run local:start    # boot the local Supabase stack (Docker)
+npm run local:status   # shows the local URL + anon key for .env.local
 ```
 
 | Variable | Description |
 |---|---|
-| `VITE_SUPABASE_URL` | Your Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Your Supabase anon/public key — safe to expose client-side, access is enforced by RLS |
+| `VITE_SUPABASE_URL` | LOCAL: `http://127.0.0.1:54321` · PRODUCTION: set in Vercel only |
+| `VITE_SUPABASE_ANON_KEY` | LOCAL: from `npm run local:status` · PRODUCTION: set in Vercel only |
 
 `.env.local` is git-ignored. Never commit real keys.
 

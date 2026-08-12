@@ -1,4 +1,9 @@
-project_id = "lomiqhcbjivdgophreiw"
+# LOCAL workspace identifier — names the local Docker containers only.
+# This is deliberately NOT the production project ref: the CLI is kept
+# UNLINKED from production, so every production-targeting command must
+# spell out --project-ref explicitly (see scripts/prod-deploy.mjs, the
+# only sanctioned path for production deploys).
+project_id = "adobe-longlist-local"
 
 # admin-users does its own caller-identity check (verifies the JWT and reads
 # profiles.role before anything runs), but the platform-level JWT gate is a

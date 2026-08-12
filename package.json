@@ -17,7 +17,14 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview",
-    "prepare": "husky"
+    "prepare": "husky",
+    "local:start": "supabase start",
+    "local:stop": "supabase stop",
+    "local:status": "supabase status",
+    "local:reset": "supabase db reset",
+    "local:seed-admin": "node scripts/seed-local-admin.mjs",
+    "prod:db-push": "node scripts/prod-deploy.mjs db-push",
+    "prod:functions-deploy": "node scripts/prod-deploy.mjs functions-deploy"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
