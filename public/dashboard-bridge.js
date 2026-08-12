@@ -790,13 +790,20 @@
     el.style.position = 'sticky'
     el.style.right = '0'
     el.style.zIndex = isHeader ? '3' : '2'
-    // Deliberately no background here: the row/header's own background
-    // (default, hover, selected, whatever theme the dashboard uses) is
-    // painted behind every other cell in the row already — this cell must
-    // stay transparent to show the same thing, rather than looking
-    // detached with its own fixed color. Only the trigger button itself
-    // (applyActionStyle) keeps its own background.
-    el.style.background = 'transparent'
+    if (!isHeader) {
+      // Body cells deliberately get no background of their own: hover/
+      // selected/zebra state is painted on the <tr> behind every other
+      // cell in the row, and this cell must stay transparent to show the
+      // same thing rather than looking detached with its own fixed color.
+      // Only the trigger button itself (applyActionStyle) keeps a fill.
+      el.style.background = 'transparent'
+    }
+    // Header cells are the opposite case: these dashboards paint the
+    // header fill per-CELL (`th{background:var(--gray-light)}`), not on
+    // the <tr> — an inline transparent here would override that rule and
+    // leave this one cell showing the white page behind it. Setting no
+    // inline background lets the dashboard's own th rule paint it exactly
+    // like its siblings.
     el.style.boxShadow =
       '-8px 0 8px -8px rgba(0,0,0,' + (isHeader ? '0.12' : '0.1') + ')'
   }
