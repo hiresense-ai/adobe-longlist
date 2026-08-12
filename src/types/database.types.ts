@@ -17,8 +17,8 @@ export type CandidateAction =
   | 'Interview stage - HireSense'
   | 'Offer - Adobe'
   | 'Offer - HireSense'
-  | 'Screen Select'
-  | 'Screen Reject'
+  | 'Screen Select - HireSense'
+  | 'Screen Reject - HireSense'
 
 export type UserRole = 'super_admin' | 'admin' | 'viewer'
 
