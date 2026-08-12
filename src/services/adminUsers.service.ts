@@ -12,6 +12,24 @@ export async function listAdminUsers(): Promise<AdminUserRow[]> {
   return result.users
 }
 
+/** A live auth.users account with no profiles row behind it — invisible in
+ * the normal Users list (see listAdminUsers/listUsers) because it has no
+ * role and can't sign in, but still occupying its email. Super Admin only —
+ * see admin-users' listOrphans. */
+export interface OrphanedAuthUser {
+  id: string
+  email: string
+  createdAt: string
+  lastSignInAt: string | null
+}
+
+export async function listOrphanedAuthUsers(): Promise<OrphanedAuthUser[]> {
+  const result = await invoke<{ orphans: OrphanedAuthUser[] }>({
+    action: 'listOrphans',
+  })
+  return result.orphans
+}
+
 export interface CreateAdminUserInput {
   firstName: string
   lastName: string
