@@ -68,16 +68,16 @@ export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
     dark: { background: '#022C22', text: '#6EE7B7', border: '#065F46' },
     sortOrder: 6,
   },
-  'Screen Select': {
-    value: 'Screen Select',
-    label: 'Screen Select',
+  'Screen Select - HireSense': {
+    value: 'Screen Select - HireSense',
+    label: 'Screen Select - HireSense',
     light: { background: '#F0FDFA', text: '#0F766E', border: '#99F6E4' },
     dark: { background: '#042F2E', text: '#5EEAD4', border: '#115E59' },
     sortOrder: 7,
   },
-  'Screen Reject': {
-    value: 'Screen Reject',
-    label: 'Screen Reject',
+  'Screen Reject - HireSense': {
+    value: 'Screen Reject - HireSense',
+    label: 'Screen Reject - HireSense',
     light: { background: '#FFF1F2', text: '#BE123C', border: '#FECDD3' },
     dark: { background: '#4C0519', text: '#FDA4AF', border: '#9F1239' },
     sortOrder: 8,
