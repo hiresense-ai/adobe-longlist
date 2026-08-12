@@ -30,8 +30,9 @@ dist-ssr
 *.sln
 *.sw?
 
-# Supabase CLI local cache
+# Supabase CLI local cache / local-stack state
 supabase/.temp
+supabase/.branches
 
 # Deno lockfile. The only Deno tooling in this repo is `deno test` for the
 # Edge Function unit tests, and there is no deno.json declaring that

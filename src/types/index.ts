@@ -8,6 +8,9 @@ export type {
   DashboardStatus,
   DashboardStatusInsert,
   DashboardStatusUpdate,
+  CandidateNote,
+  CandidateNoteInsert,
+  CandidateNoteUpdate,
 } from './database.types'
 
 export interface AppUser {
@@ -72,6 +75,21 @@ export type DashboardBridgeMessage =
         action: import('./database.types').CandidateAction | null
       }
     }
+  /**
+   * Standalone candidate Note. Independent feature, independent table
+   * (candidate_notes), independent identity key ((dashboardId,
+   * candidateName), same pair dashboard_status already uses since
+   * candidates have no id of their own here). `note` is always sent
+   * (including empty string, to support clearing).
+   */
+  | {
+      type: 'longlist:note-update'
+      payload: {
+        dashboardId: string
+        candidateName: string
+        note: string
+      }
+    }
   | { type: 'longlist:ready' }
   | {
       type: 'longlist:resize'
@@ -131,6 +149,25 @@ export type DashboardHostMessage =
   | { type: 'longlist:action-ack'; success: true; candidateName: string }
   | {
       type: 'longlist:action-ack'
+      success: false
+      candidateName: string
+      error: string
+    }
+  /**
+   * Every candidate's current Note for this dashboard, sent once alongside
+   * longlist:init-statuses (same "load everything for the dashboard up
+   * front" pattern) and re-sent whenever candidate_notes changes via
+   * Realtime — same shape as init-statuses's own re-send-on-change
+   * behavior. Independent of statuses/actions: a candidate with no note
+   * row yet simply has no entry here.
+   */
+  | {
+      type: 'longlist:init-notes'
+      notes: Array<{ candidateName: string; note: string }>
+    }
+  | { type: 'longlist:note-ack'; success: true; candidateName: string }
+  | {
+      type: 'longlist:note-ack'
       success: false
       candidateName: string
       error: string
