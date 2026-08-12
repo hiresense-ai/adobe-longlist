@@ -6,11 +6,22 @@
 -- behavior change.
 --
 -- A true rename, not an add-alongside: existing dashboard_status rows using
--- the old values are updated in place BEFORE the CHECK constraint is
--- tightened, so no row is ever left holding a value the constraint (or the
--- app's actionConfig.ts, which no longer has an entry for the old strings)
--- doesn't recognize. Order matters — updating data first means the second
--- ALTER TABLE's implicit revalidation of every row always passes.
+-- the old values are updated in place, so no row is ever left holding a
+-- value the app's actionConfig.ts (which no longer has an entry for the old
+-- strings) doesn't recognize.
+--
+-- Ordering (this is the part that matters): the OLD constraint — still
+-- active at the start of this migration — only allows the OLD bare values
+-- ('Screen Select', 'Screen Reject'), not the new "- HireSense" strings.
+-- Postgres validates every UPDATE against whichever constraint is active
+-- AT THAT STATEMENT, not the one this migration is about to install — so
+-- an UPDATE that writes the new value while the old constraint is still in
+-- place fails immediately, before touching a single row. The old
+-- constraint must be dropped (or relaxed) FIRST; only then can the data be
+-- updated; only then can the final, tightened constraint be added.
+
+alter table public.dashboard_status
+  drop constraint if exists dashboard_status_action_check;
 
 update public.dashboard_status
 set action = 'Screen Select - HireSense'
@@ -19,9 +30,6 @@ where action = 'Screen Select';
 update public.dashboard_status
 set action = 'Screen Reject - HireSense'
 where action = 'Screen Reject';
-
-alter table public.dashboard_status
-  drop constraint if exists dashboard_status_action_check;
 
 alter table public.dashboard_status
   add constraint dashboard_status_action_check check (
