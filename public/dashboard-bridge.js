@@ -1052,6 +1052,23 @@
         naturalHeight = popup.offsetHeight
       }
       var visible = getVisibleRect()
+      // The clamp below keeps the popup inside the visible slice no matter
+      // where the trigger is — which is right for small nudges, but once
+      // the trigger itself has scrolled fully OUT of the visible slice
+      // there is nothing left to dock to, and clamping would pin the popup
+      // to the viewport edge floating over unrelated content. Close it
+      // instead, like a native select. No trigger.focus() here: focusing
+      // would scroll the trigger straight back into view, fighting the
+      // very scroll that closed it.
+      if (
+        r.bottom < visible.top ||
+        r.top > visible.bottom ||
+        r.right < visible.left ||
+        r.left > visible.right
+      ) {
+        closeActionPopup()
+        return
+      }
       var viewTop = visible.top + EDGE_MARGIN
       var viewBottom = visible.bottom - EDGE_MARGIN
       var viewLeft = visible.left + EDGE_MARGIN
