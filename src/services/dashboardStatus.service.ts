@@ -50,9 +50,11 @@ export async function upsertCandidateStatus(
 }
 
 /**
- * Upserts only the `action` column — leaves `status`/`remarks` untouched on
- * an existing row, and lets them take their normal defaults on a fresh one.
- * Action tracking works even for dashboards with no `status` select at all.
+ * Upserts only the `action` column. Supabase's upsert only touches the
+ * columns present in the object it's given, so `status`/`remarks` are left
+ * out here and never touched — an action change never clobbers whatever
+ * status/remarks a row already has, so action tracking keeps working even
+ * for dashboards with no `status` select at all.
  */
 export async function upsertCandidateAction(
   input: UpsertCandidateActionInput,

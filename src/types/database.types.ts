@@ -17,6 +17,8 @@ export type CandidateAction =
   | 'Interview stage - HireSense'
   | 'Offer - Adobe'
   | 'Offer - HireSense'
+  | 'Screen Select'
+  | 'Screen Reject'
 
 export type UserRole = 'super_admin' | 'admin' | 'viewer'
 
@@ -157,6 +159,61 @@ export interface Database {
           },
         ]
       }
+      candidate_notes: {
+        Row: {
+          id: string
+          dashboard_id: string
+          candidate_name: string
+          note: string | null
+          created_by: string | null
+          created_at: string
+          updated_by: string | null
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          dashboard_id: string
+          candidate_name: string
+          note?: string | null
+          created_by?: string | null
+          created_at?: string
+          updated_by?: string | null
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          dashboard_id?: string
+          candidate_name?: string
+          note?: string | null
+          created_by?: string | null
+          created_at?: string
+          updated_by?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'candidate_notes_dashboard_id_fkey'
+            columns: ['dashboard_id']
+            isOneToOne: false
+            referencedRelation: 'dashboards'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'candidate_notes_created_by_fkey'
+            columns: ['created_by']
+            isOneToOne: false
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'candidate_notes_updated_by_fkey'
+            columns: ['updated_by']
+            isOneToOne: false
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
     }
     Views: Record<string, never>
     Functions: {
@@ -178,3 +235,9 @@ export type DashboardStatusInsert =
   Database['public']['Tables']['dashboard_status']['Insert']
 export type DashboardStatusUpdate =
   Database['public']['Tables']['dashboard_status']['Update']
+export type CandidateNote =
+  Database['public']['Tables']['candidate_notes']['Row']
+export type CandidateNoteInsert =
+  Database['public']['Tables']['candidate_notes']['Insert']
+export type CandidateNoteUpdate =
+  Database['public']['Tables']['candidate_notes']['Update']

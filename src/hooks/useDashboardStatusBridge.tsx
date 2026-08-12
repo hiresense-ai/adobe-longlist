@@ -8,6 +8,10 @@ import {
   upsertCandidateAction,
   upsertCandidateStatus,
 } from '@/services/dashboardStatus.service'
+import {
+  listNotesForDashboard,
+  upsertCandidateNote,
+} from '@/services/candidateNotes.service'
 import { StatusBadge } from '@/components/status/StatusBadge'
 import { ActionBadge } from '@/components/status/ActionBadge'
 import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
@@ -16,7 +20,11 @@ import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { useAuth } from '@/hooks/useAuth'
 import { canUpdateCandidateStatus } from '@/lib/permissions'
-import type { DashboardBridgeMessage, DashboardStatus } from '@/types'
+import type {
+  DashboardBridgeMessage,
+  DashboardStatus,
+  CandidateNote,
+} from '@/types'
 
 interface UseDashboardStatusBridgeOptions {
   dashboardId: string | undefined
@@ -71,6 +79,10 @@ export function useDashboardStatusBridge({
     const id = dashboardId
 
     const queryKey = QUERY_KEYS.dashboardStatuses(id)
+    // Independent of queryKey above — candidate_notes is its own table,
+    // fetched and cached separately from dashboard_status (see
+    // candidateNotes.service.ts / the candidate_notes migration for why).
+    const notesQueryKey = QUERY_KEYS.candidateNotes(id)
 
     function postToIframe(message: unknown) {
       iframeRef.current?.contentWindow?.postMessage(message, '*')
@@ -84,6 +96,18 @@ export function useDashboardStatusBridge({
           candidateName: s.candidate_name,
           status: s.status,
           action: s.action,
+        })),
+      })
+    }
+
+    function postCurrentNotes() {
+      const list =
+        queryClient.getQueryData<CandidateNote[]>(notesQueryKey) ?? []
+      postToIframe({
+        type: 'longlist:init-notes',
+        notes: list.map((n) => ({
+          candidateName: n.candidate_name,
+          note: n.note ?? '',
         })),
       })
     }
@@ -199,6 +223,14 @@ export function useDashboardStatusBridge({
         })
         queryClient.setQueryData(queryKey, statuses)
         postCurrentStatuses()
+
+        const notes = await queryClient.fetchQuery({
+          queryKey: notesQueryKey,
+          queryFn: () => listNotesForDashboard(id),
+        })
+        queryClient.setQueryData(notesQueryKey, notes)
+        postCurrentNotes()
+
         postToIframe({
           type: 'longlist:theme-change',
           theme: resolvedTheme === 'dark' ? 'dark' : 'light',
@@ -323,6 +355,51 @@ export function useDashboardStatusBridge({
           })
         }
       }
+
+      if (data.type === 'longlist:note-update') {
+        const { payload } = data
+        if (payload.dashboardId !== id) return
+
+        if (!canEdit) {
+          postToIframe({
+            type: 'longlist:note-ack',
+            success: false,
+            candidateName: payload.candidateName,
+            error: 'You must be signed in to update candidate notes.',
+          })
+          return
+        }
+
+        try {
+          const updated = await upsertCandidateNote(payload)
+          queryClient.setQueryData<CandidateNote[]>(notesQueryKey, (prev) => {
+            const rest = (prev ?? []).filter((n) => n.id !== updated.id)
+            return [...rest, updated]
+          })
+          postToIframe({
+            type: 'longlist:note-ack',
+            success: true,
+            candidateName: payload.candidateName,
+          })
+          // No success toast here (unlike status/action) — the inline
+          // Saving.../Saved state next to the Save button in the Notes
+          // panel itself is this feature's own established save-state
+          // affordance (see dashboard-bridge.js), and a note edit is a
+          // frequent, low-stakes action compared to a status/action change
+          // worth surfacing globally.
+        } catch (error) {
+          const message = getErrorMessage(error, 'Failed to save note')
+          postToIframe({
+            type: 'longlist:note-ack',
+            success: false,
+            candidateName: payload.candidateName,
+            error: message,
+          })
+          toast.error(`Couldn't save ${payload.candidateName}'s note`, {
+            description: message,
+          })
+        }
+      }
     }
 
     window.addEventListener('message', handleMessage)
@@ -357,11 +434,42 @@ export function useDashboardStatusBridge({
       )
       .subscribe()
 
+    // Separate channel from `channel` above — candidate_notes is its own
+    // table, independent of dashboard_status (see the migration for why).
+    const notesChannel = supabase
+      .channel(`candidate-notes-${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'candidate_notes',
+          filter: `dashboard_id=eq.${id}`,
+        },
+        (change) => {
+          queryClient.setQueryData<CandidateNote[]>(notesQueryKey, (prev) => {
+            const list = prev ?? []
+
+            if (change.eventType === 'DELETE') {
+              const removed = change.old as Partial<CandidateNote>
+              return list.filter((n) => n.id !== removed.id)
+            }
+
+            const incoming = change.new as CandidateNote
+            const rest = list.filter((n) => n.id !== incoming.id)
+            return [...rest, incoming]
+          })
+          postCurrentNotes()
+        },
+      )
+      .subscribe()
+
     return () => {
       window.removeEventListener('message', handleMessage)
       window.removeEventListener('scroll', scheduleViewportSlice, true)
       window.removeEventListener('resize', scheduleViewportSlice)
       supabase.removeChannel(channel)
+      supabase.removeChannel(notesChannel)
       // Don't leave the page permanently unscrollable if the user
       // navigates away (or the dashboard changes) while the modal is
       // still open — there's no longlist:modal-close coming once this

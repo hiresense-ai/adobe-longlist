@@ -110,20 +110,31 @@
   }
 
   // ---------------------------------------------------------------------
-  // CSV export: inject the Action column.
+  // CSV export: inject the Action and Notes columns.
   //
   // exportCSV() (private to the dashboard's own closure, in every uploaded
   // template) builds its CSV from window.__ROWS with every field always
   // double-quoted and internal quotes doubled to escape them — e.g.
   //   const q = s => '"' + String(s==null?'':s).replace(/"/g,'""') + '"'
-  // — and has no idea the Action column (a HireSense feature layered on
-  // top, tracked here and in Supabase, never part of the dashboard's own
-  // data) exists at all. Since that function can't be reached or edited
-  // (closure-private, and baked into every already-uploaded file), the
-  // column is added here instead: parse the CSV text this same quoting
-  // convention produced, append an Action field to every row, and
-  // re-serialize with the identical convention so every pre-existing
-  // column round-trips byte-for-byte unchanged.
+  // — and has no idea the Action/Notes columns (HireSense features layered
+  // on top, tracked here and in Supabase, never part of the dashboard's
+  // own data) exist at all. Since that function can't be reached or
+  // edited (closure-private, and baked into every already-uploaded file),
+  // the columns are added here instead: parse the CSV text this same
+  // quoting convention produced, append Action and Notes fields to every
+  // row, and re-serialize with the identical convention so every
+  // pre-existing column round-trips byte-for-byte unchanged. Both values
+  // come from actionValuesByName/NOTES_BY_NAME — persisted-from-Supabase
+  // maps kept in sync via longlist:init-statuses/init-notes, never from
+  // any transient UI state — so export is correct after a refresh, a
+  // re-login, or without ever opening the Action dropdown or the Notes
+  // panel at all.
+  //
+  // This previously exported dashboard_status.remarks as "HR Comment"
+  // instead — removed at the product owner's explicit request in favor of
+  // Notes (candidate_notes.note), which is what HR actually wants exported
+  // now. remarks itself, and the Status flow's own Remarks input that
+  // writes it, are untouched — only this export column changed.
   // ---------------------------------------------------------------------
 
   function parseCsv(text) {
@@ -186,8 +197,9 @@
 
   // Matches candidates the same way the Action column itself does
   // everywhere else in this file: by name, lowercased, against
-  // actionValuesByName — no separate identity scheme for export.
-  function injectActionColumn(text) {
+  // actionValuesByName/NOTES_BY_NAME — no separate identity scheme for
+  // export.
+  function injectExportColumns(text) {
     var rows = parseCsv(text)
     if (rows.length === 0) return text
     var header = rows[0]
@@ -204,12 +216,14 @@
     // the export exactly as the dashboard built it rather than guess.
     if (nameIdx === -1) return text
 
-    var out = [header.concat(['Action'])]
+    var out = [header.concat(['Action', 'Notes'])]
     for (var i = 1; i < rows.length; i++) {
       var row = rows[i]
       var name = row[nameIdx] || ''
-      var action = actionValuesByName[name.toLowerCase()] || ''
-      out.push(row.concat([action]))
+      var key = name.toLowerCase()
+      var action = actionValuesByName[key] || ''
+      var note = NOTES_BY_NAME[key] || ''
+      out.push(row.concat([action, note]))
     }
     return out
       .map(function (r) {
@@ -243,7 +257,7 @@
       blob.text().then(function (text) {
         var augmented
         try {
-          augmented = injectActionColumn(text)
+          augmented = injectExportColumns(text)
         } catch (e) {
           // Never let a parsing bug turn into a broken/missing export —
           // fall back to sending the file exactly as the dashboard built
@@ -315,6 +329,25 @@
   var wired = false
   // candidate name (lowercased) -> current action value ('' / null = unset)
   var actionValuesByName = {}
+
+  // ---------------------------------------------------------------------
+  // Candidate Notes — a standalone feature, independent of the Status
+  // flow's Remarks field (separate table, separate identity map, separate
+  // postMessage types: longlist:init-notes/note-update/note-ack). This is
+  // also what the CSV export's "Notes" column reads from (see
+  // injectExportColumns above) — dashboard_status.remarks (the Status
+  // flow's own Remarks input) is no longer exported at all.
+  // See src/services/candidateNotes.service.ts.
+  // ---------------------------------------------------------------------
+  // candidate name (lowercased) -> current note ('' = none/cleared)
+  var NOTES_BY_NAME = {}
+  // False until longlist:init-notes has arrived at least once. A Notes
+  // panel built before then renders a disabled "Loading notes…" state
+  // instead of an empty textarea, so a note that does exist can never
+  // read as "no note" just because it hasn't loaded yet — see
+  // syncNotesPanels() below, which re-fills any panel still in that state
+  // once this flips true.
+  var notesReady = false
 
   function getRow(select) {
     return select.closest('[' + ATTR_ROW + ']') || select
@@ -475,7 +508,35 @@
       '.pg-nav[disabled] { opacity: .45; cursor: default; }' +
       '.pg-num.on { background-color: var(--ll-primary); border-color: var(--ll-primary); color: var(--ll-primary-fg); font-weight: 700; }' +
       '.pg-num:hover:not(.on), .pg-nav:hover:not([disabled]) { border-color: var(--ll-primary); color: var(--ll-primary); background-color: var(--ll-accent); }' +
-      '.pg-gap { padding: 0 2px; color: var(--ll-muted-fg); }'
+      '.pg-gap { padding: 0 2px; color: var(--ll-muted-fg); }' +
+      // Candidate Notes panel — appended by syncNotesPanels() as a sibling
+      // of the dashboard's own detail-row content, never replacing it.
+      // Same --ll-* tokens as pagination above, so it looks native
+      // regardless of which uploaded dashboard it's injected into.
+      // Stacked vertically (main content, then Notes below, both full
+      // width) rather than side by side — a plain block stack needs no
+      // responsive breakpoint of its own to stay usable at any width.
+      '.ll-notes-row { display: flex; flex-direction: column; gap: 16px; width: 100%; box-sizing: border-box; }' +
+      '.ll-notes-main { min-width: 0; }' +
+      '.ll-notes-panel { width: 100%; box-sizing: border-box; background: var(--ll-card); border: 1px solid var(--ll-border); border-radius: 10px; padding: 14px; }' +
+      '.ll-notes-title { font-weight: 600; font-size: 13px; color: var(--ll-fg); margin-bottom: 8px; }' +
+      // height is the DEFAULT/initial size only (~2 lines) — resize:
+      // vertical (kept) still lets the user drag it taller via the native
+      // resize handle; neither rule caps that, min-height just stops a
+      // drag from going smaller than one line.
+      '.ll-notes-textarea { display: block; width: 100%; box-sizing: border-box; height: 52px; min-height: 36px; resize: vertical; font: inherit; font-size: 13px; padding: 8px; border-radius: 8px; border: 1px solid var(--ll-border); background: var(--ll-bg); color: var(--ll-fg); }' +
+      '.ll-notes-textarea::placeholder { color: var(--ll-muted-fg); }' +
+      '.ll-notes-textarea:disabled { opacity: .6; cursor: default; }' +
+      '.ll-notes-textarea:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 3px var(--ll-ring); }' +
+      '.ll-notes-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }' +
+      '.ll-notes-counter { font-size: 11px; color: var(--ll-muted-fg); }' +
+      '.ll-notes-counter[data-over="true"] { color: var(--ll-primary); font-weight: 600; }' +
+      '.ll-notes-save-group { display: flex; align-items: center; gap: 8px; }' +
+      '.ll-notes-save { font: inherit; font-size: 13px; font-weight: 500; height: 34px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--ll-primary); background: var(--ll-primary); color: var(--ll-primary-fg); cursor: pointer; flex-shrink: 0; transition: opacity .15s ease; }' +
+      '.ll-notes-save:hover:not(:disabled) { opacity: .9; }' +
+      '.ll-notes-save:disabled { opacity: .5; cursor: default; }' +
+      '.ll-notes-save:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
+      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }'
     document.head.appendChild(style)
   }
 
@@ -748,6 +809,18 @@
     th.setAttribute(ACTION_HEADER_ATTR, '')
     th.textContent = 'Action'
     stickyCellStyle(th, true)
+    // A bare "Action" text node has no reason to be anywhere near as wide
+    // as the 200px trigger button each body cell contains (see the
+    // [ACTION_ATTR] rule in injectBaseStyles) — in ordinary table layout
+    // the browser would still widen this column to match the widest cell
+    // in it (the button), but position: sticky cells are measured for
+    // layout independently of that column-width negotiation in some
+    // engines, so this header cell can end up narrower than the column it
+    // actually heads. That leaves a gap between where its own background
+    // ends and where the column (and the sticky-pinned button below it)
+    // actually sits — explicitly matching the button's width closes it.
+    th.style.width = '200px'
+    th.style.boxSizing = 'border-box'
     headRow.appendChild(th)
   }
 
@@ -1042,7 +1115,9 @@
         e.preventDefault()
         closeActionPopup()
         trigger.focus()
-      } else if (e.key === 'ArrowDown') {
+        return
+      }
+      if (e.key === 'ArrowDown') {
         e.preventDefault()
         var next = Math.min(optionEls.length - 1, activeIndex() + 1)
         setActiveOption(next)
@@ -1072,7 +1147,8 @@
         optionEls[pagePrev].scrollIntoView({ block: 'nearest' })
       } else if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
-        commitActionSelection(trigger, optionValues[activeIndex()])
+        var chosen = optionValues[activeIndex()]
+        commitActionSelection(trigger, chosen)
         closeActionPopup()
         trigger.focus()
       } else if (e.key === 'Tab') {
@@ -1320,6 +1396,355 @@
     window.requestAnimationFrame(function () {
       syncScheduled = false
       syncActionColumns()
+    })
+  }
+
+  // ---------------------------------------------------------------------
+  // Candidate Notes panel.
+  //
+  // Injected into the dashboard's OWN inline candidate-detail row — every
+  // real uploaded dashboard checked this session renders this the same
+  // way: clicking a candidate row inserts a fresh `<tr class="detail">`
+  // directly after it, containing a single `<td colspan="...">` with the
+  // dashboard's own Assessment/Outreach content (never a `div#detail`
+  // fixed-overlay modal — none of them use that shape). Detected here
+  // structurally (single td, has colspan, immediately preceded by a real
+  // candidate row with the table's own full column count) rather than by
+  // any dashboard-specific class name, so a dashboard shaped differently
+  // is simply left alone rather than guessed at — the same reasoning
+  // looksLikeGenericCandidateTable() already uses for the Action column.
+  //
+  // The existing content is never removed, rewritten, or reparented out of
+  // the detail row — only wrapped in a flex row alongside a new sibling
+  // panel, so the dashboard's own tab-switching JS (querySelectorAll on
+  // '.dtab'/'.dpane' scoped to the row) keeps working unchanged;
+  // querySelectorAll finds its targets through an extra wrapper div fine.
+  //
+  // Independent of the Action dropdown and the Status flow's Remarks field
+  // in every respect: own table (candidate_notes), own identity map
+  // (NOTES_BY_NAME), own postMessage types (init-notes/note-update/
+  // note-ack), own DOM (never touches the Action trigger or its popup).
+  // ---------------------------------------------------------------------
+
+  var NOTES_PANEL_ATTR = 'data-longlist-notes-panel'
+  // Own attribute, distinct from the Action trigger's ACTION_NAME_ATTR —
+  // same underlying idea (remember which candidate this control belongs
+  // to) but kept separate so a query scoped to one never accidentally
+  // matches the other.
+  var NOTES_NAME_ATTR = 'data-longlist-notes-name'
+
+  function findDetailRows(table, headerCellCount) {
+    var tbody = table.querySelector('tbody')
+    if (!tbody) return []
+    var out = []
+    var rows = tbody.children
+    for (var i = 0; i < rows.length; i++) {
+      var tr = rows[i]
+      if (tr.tagName !== 'TR' || tr.children.length !== 1) continue
+      var td = tr.children[0]
+      if (td.tagName !== 'TD' || !td.hasAttribute('colspan')) continue
+      var prev = tr.previousElementSibling
+      if (
+        !prev ||
+        prev.tagName !== 'TR' ||
+        prev.children.length !== headerCellCount
+      ) {
+        // No real candidate row immediately before this one — e.g. a
+        // colspan "no results" notice, the same shape a detail row has.
+        continue
+      }
+      // The uploaded dashboard's own colspan only ever accounts for ITS
+      // OWN columns — it has no idea the bridge appends an extra Action
+      // column (see ensureActionHeader), so this cell otherwise falls one
+      // column short of the table's real width. Since this <td> is what
+      // carries the dashboard's own detail-row background (e.g. its
+      // `.detail { background: ... }` rule), stopping short leaves a
+      // plain white gap under the injected Action column instead of that
+      // same background continuing — exactly the strip this widens away.
+      // Purely structural: never touches the cell's content, colors, or
+      // any class, and never narrows an already-correct/wider colspan, so
+      // it's safe to run on every sync pass regardless of Notes state.
+      var currentSpan = parseInt(td.getAttribute('colspan'), 10) || 1
+      if (currentSpan < headerCellCount) {
+        td.setAttribute('colspan', String(headerCellCount))
+      }
+      if (td.querySelector('[' + NOTES_PANEL_ATTR + ']')) continue // already enhanced
+      out.push({ td: td, candidateRow: prev })
+    }
+    return out
+  }
+
+  function buildNotesPanel(name) {
+    var panel = document.createElement('div')
+    panel.className = 'll-notes-panel'
+    panel.setAttribute(NOTES_PANEL_ATTR, '')
+    if (name) panel.setAttribute(NOTES_NAME_ATTR, name)
+
+    var title = document.createElement('div')
+    title.className = 'll-notes-title'
+    title.textContent = 'Notes'
+    panel.appendChild(title)
+
+    var textarea = document.createElement('textarea')
+    textarea.className = 'll-notes-textarea'
+    textarea.maxLength = 2000
+    panel.appendChild(textarea)
+
+    // Counter and Save share one row (space-between, see .ll-notes-footer)
+    // instead of Save sitting on its own line below — same information,
+    // less vertical space.
+    var footer = document.createElement('div')
+    footer.className = 'll-notes-footer'
+    var counter = document.createElement('div')
+    counter.className = 'll-notes-counter'
+    footer.appendChild(counter)
+
+    // Save and its indicator are grouped together (own flex row) rather
+    // than appended as separate footer children — .ll-notes-footer's own
+    // space-between is built for exactly two items (counter, this group);
+    // a third direct child would get pushed to its own far edge instead
+    // of sitting next to Save.
+    var saveGroup = document.createElement('div')
+    saveGroup.className = 'll-notes-save-group'
+
+    var saveBtn = document.createElement('button')
+    saveBtn.type = 'button'
+    saveBtn.className = 'll-notes-save'
+    saveBtn.textContent = 'Save'
+    saveGroup.appendChild(saveBtn)
+
+    // Persistent "Saved"/error indicator, distinct from showFeedback()'s
+    // transient auto-hiding badge used elsewhere (Action/Status): this one
+    // reflects an ongoing STATE (is there anything to save right now?),
+    // not a one-off "a save just happened" event, so it must stay visible
+    // for as long as that state holds rather than fading after a fixed
+    // delay.
+    var savedIndicator = document.createElement('span')
+    savedIndicator.className = 'll-notes-saved-indicator'
+    saveGroup.appendChild(savedIndicator)
+
+    footer.appendChild(saveGroup)
+    panel.appendChild(footer)
+
+    function updateCounter() {
+      var len = textarea.value.length
+      counter.textContent = len + '/2000'
+      counter.setAttribute('data-over', len >= 2000 ? 'true' : 'false')
+    }
+
+    // The single source of truth for "is there anything to save right
+    // now": the last value this panel actually persisted, compared
+    // against the textarea's CURRENT value on every keystroke — never a
+    // one-shot "has this been edited at all" flag, so typing back to the
+    // exact saved value correctly disables Save again (see
+    // hasUnsavedChanges() below), and switching candidates never leaks
+    // this state since every panel is a fresh instance with its own
+    // closure over these variables.
+    var savedNote = ''
+    var saving = false
+    // The exact value handed to postMessage when the current save started
+    // — not textarea.value read fresh at ack time, which may have moved on
+    // if the user kept typing while the request was in flight (the
+    // textarea itself isn't disabled during a save, only the button is).
+    // Read back in _llNotesAck below so a success only marks THAT value as
+    // saved, never whatever happens to be in the box by the time the ack
+    // arrives.
+    var pendingNote = null
+
+    function hasUnsavedChanges() {
+      return textarea.value !== savedNote
+    }
+
+    function updateSaveButtonState() {
+      saveBtn.disabled =
+        saving ||
+        !EDITABLE ||
+        !hasUnsavedChanges() ||
+        textarea.value.length > 2000
+    }
+
+    function updateSavedIndicator() {
+      if (saving) {
+        savedIndicator.textContent = ''
+        savedIndicator.removeAttribute('data-state')
+        return
+      }
+      if (hasUnsavedChanges()) {
+        // Deliberately blank rather than an "(unsaved)" label — the
+        // enabled Save button already communicates that; an indicator
+        // here would just be noise while actively typing.
+        savedIndicator.textContent = ''
+        savedIndicator.removeAttribute('data-state')
+      } else {
+        savedIndicator.textContent = 'Saved'
+        savedIndicator.setAttribute('data-state', 'saved')
+      }
+    }
+
+    textarea.addEventListener('input', function () {
+      updateCounter()
+      updateSaveButtonState()
+      updateSavedIndicator()
+    })
+
+    // True once this panel has actually shown a real (possibly empty)
+    // note. Guards applyLoadedState() below from re-running after that
+    // point: syncNotesPanels() calls it on every DOM sync cycle to
+    // backfill panels still stuck on "Loading notes…", but updateCounter()
+    // above changes the counter's textContent on every keystroke — itself
+    // a DOM mutation the bridge's own MutationObserver picks up — so
+    // without this guard, every keystroke would trigger a sync cycle that
+    // stomps the textarea back to its last-saved value mid-edit. Once
+    // loaded, this panel is left alone by the backfill path entirely; a
+    // successful save updates NOTES_BY_NAME directly (see the ack handler
+    // below) rather than going through here again.
+    var loaded = false
+
+    // Called on first build, and again by syncNotesPanels() (a no-op once
+    // `loaded` is true — see above) once longlist:init-notes arrives if
+    // this panel was built before that — never leaves a stale/previous
+    // candidate's note showing (each panel is built fresh per detail row,
+    // never reused across candidates) and never leaves a real note
+    // reading as "no note" just because it hadn't loaded yet.
+    function applyLoadedState() {
+      if (loaded) return
+      if (!notesReady) {
+        textarea.value = ''
+        textarea.placeholder = 'Loading notes…'
+        textarea.disabled = true
+        saveBtn.disabled = true
+        updateCounter()
+        return
+      }
+      var candidateName = panel.getAttribute(NOTES_NAME_ATTR)
+      var known = candidateName
+        ? NOTES_BY_NAME[candidateName.toLowerCase()]
+        : undefined
+      // savedNote and the textarea start EQUAL, always — this is what
+      // keeps Save correctly disabled the moment a note finishes loading,
+      // never briefly (or accidentally) enabled just because a value was
+      // just assigned.
+      savedNote = known || ''
+      textarea.value = savedNote
+      textarea.placeholder = 'Add a note...'
+      textarea.disabled = !EDITABLE
+      loaded = true
+      updateCounter()
+      updateSaveButtonState()
+      updateSavedIndicator()
+    }
+
+    saveBtn.addEventListener('click', function () {
+      if (saving || !EDITABLE || !hasUnsavedChanges()) return
+      var candidateName = panel.getAttribute(NOTES_NAME_ATTR)
+      if (!candidateName) return
+      saving = true
+      pendingNote = textarea.value
+      saveBtn.disabled = true
+      saveBtn.textContent = 'Saving...'
+      updateSavedIndicator()
+      window.parent.postMessage(
+        {
+          type: 'longlist:note-update',
+          payload: {
+            dashboardId: DASHBOARD_ID,
+            candidateName: candidateName,
+            note: pendingNote,
+          },
+        },
+        '*',
+      )
+    })
+
+    applyLoadedState()
+
+    panel._llNotesApply = applyLoadedState
+    panel._llNotesAck = function (ok, message) {
+      saving = false
+      saveBtn.textContent = 'Save'
+      if (ok) {
+        // The value that was actually in flight (see pendingNote above),
+        // not textarea.value read now — if the user kept typing while the
+        // request was in the air, this correctly leaves THAT newer edit
+        // marked unsaved rather than mistakenly treating it as persisted
+        // too. Falls back to the current value only in the (never
+        // expected in practice) case an ack arrives with no save having
+        // been started from this panel instance.
+        savedNote = pendingNote !== null ? pendingNote : textarea.value
+        pendingNote = null
+        var candidateName = panel.getAttribute(NOTES_NAME_ATTR)
+        if (candidateName) {
+          NOTES_BY_NAME[candidateName.toLowerCase()] = savedNote
+        }
+        updateSaveButtonState()
+        updateSavedIndicator()
+      } else {
+        pendingNote = null
+        // Save stays enabled (if there's still a diff from savedNote) and
+        // the user's text is never touched — showFeedback() below is the
+        // existing, established error-display convention (a transient
+        // badge), reused as-is for the failure case only; the persistent
+        // Saved/blank indicator above is deliberately left alone here so
+        // a failed save doesn't get mislabeled "Saved".
+        updateSaveButtonState()
+        showFeedback(saveBtn, ok, message)
+      }
+    }
+    return panel
+  }
+
+  function injectNotesPanel(td, candidateRow, nameIdx) {
+    var name = extractRowIdentity(candidateRow, nameIdx)
+
+    // The dashboard's own existing content — never rewritten, just moved
+    // into a wrapper so it can sit beside the new panel in a flex row.
+    var main = document.createElement('div')
+    main.className = 'll-notes-main'
+    while (td.firstChild) main.appendChild(td.firstChild)
+
+    var wrap = document.createElement('div')
+    wrap.className = 'll-notes-row'
+    wrap.appendChild(main)
+    wrap.appendChild(buildNotesPanel(name))
+
+    td.appendChild(wrap)
+  }
+
+  function syncNotesPanels() {
+    document.querySelectorAll('table').forEach(function (table) {
+      var headerCells = getHeaderCells(table)
+      if (!headerCells.length) return
+      // Same "is this the candidate table" gate syncActionColumns() uses.
+      if (
+        findColumnIndex(headerCells, isStatusHeader) === -1 &&
+        !looksLikeGenericCandidateTable(table, headerCells)
+      ) {
+        return
+      }
+      var nameIdx = findColumnIndex(headerCells, isNameHeader)
+      findDetailRows(table, headerCells.length).forEach(function (entry) {
+        injectNotesPanel(entry.td, entry.candidateRow, nameIdx)
+      })
+    })
+
+    // Backfill any panel still showing "Loading notes…" now that data has
+    // actually arrived — covers a detail row opened before init-notes.
+    if (notesReady) {
+      document
+        .querySelectorAll('[' + NOTES_PANEL_ATTR + ']')
+        .forEach(function (panel) {
+          if (panel._llNotesApply) panel._llNotesApply()
+        })
+    }
+  }
+
+  var notesSyncScheduled = false
+  function scheduleSyncNotesPanels() {
+    if (notesSyncScheduled) return
+    notesSyncScheduled = true
+    window.requestAnimationFrame(function () {
+      notesSyncScheduled = false
+      syncNotesPanels()
     })
   }
 
@@ -2262,6 +2687,7 @@
       // pass instead of the stale ones.
       schedulePaginationSync()
       scheduleSyncActionColumns()
+      scheduleSyncNotesPanels()
       scheduleReportHeight()
     }).observe(document.body, {
       childList: true,
@@ -2297,8 +2723,8 @@
       ) {
         data.statuses.forEach(function (entry) {
           if (entry.candidateName) {
-            actionValuesByName[entry.candidateName.toLowerCase()] =
-              entry.action || null
+            var key = entry.candidateName.toLowerCase()
+            actionValuesByName[key] = entry.action || null
           }
           selects.forEach(function (select) {
             var row = getRow(select)
@@ -2338,6 +2764,28 @@
           .forEach(function (trigger) {
             if (trigger.getAttribute(ACTION_NAME_ATTR) === data.candidateName) {
               showFeedback(trigger, data.success, data.error)
+            }
+          })
+      }
+
+      if (data.type === 'longlist:init-notes' && Array.isArray(data.notes)) {
+        data.notes.forEach(function (entry) {
+          if (!entry.candidateName) return
+          NOTES_BY_NAME[entry.candidateName.toLowerCase()] = entry.note || ''
+        })
+        notesReady = true
+        syncNotesPanels()
+      }
+
+      if (data.type === 'longlist:note-ack') {
+        document
+          .querySelectorAll('[' + NOTES_PANEL_ATTR + ']')
+          .forEach(function (panel) {
+            if (
+              panel.getAttribute(NOTES_NAME_ATTR) === data.candidateName &&
+              panel._llNotesAck
+            ) {
+              panel._llNotesAck(data.success, data.error)
             }
           })
       }
