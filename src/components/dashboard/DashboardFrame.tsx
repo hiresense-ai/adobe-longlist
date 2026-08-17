@@ -94,9 +94,26 @@ export function DashboardFrame({
         // the parent's cookies/localStorage. Without it the iframe gets an
         // opaque origin, so it can never read this app's storage, and no
         // `allow-top-navigation` means it can't navigate the parent tab
-        // either. No `allow-popups` — none of the dashboard templates open
-        // popups, so it's dropped rather than left as unused attack surface.
-        sandbox="allow-scripts allow-forms allow-modals"
+        // either.
+        //
+        // `allow-popups` IS required, not optional: every dashboard's
+        // candidate-name link is a plain `<a href="…linkedin…" target="_blank"
+        // rel="noopener">` (see the generator's own drawList() — not
+        // anything this app renders), and per the HTML sandboxing spec,
+        // `target="_blank"`/`window.open()` both count as "popups" — without
+        // this flag the browser silently blocks the navigation, with no
+        // console error and no code anywhere doing anything wrong to debug.
+        // `allow-popups-to-escape-sandbox` goes with it for a reason: popups
+        // opened from a sandboxed frame are themselves sandboxed by default
+        // unless this is set, which would otherwise leave the newly opened
+        // LinkedIn tab crippled (broken scripts/storage) even though it's a
+        // completely unrelated, fully external page. The already-present
+        // `rel="noopener"` on that link is what keeps this safe — the opened
+        // tab gets no `window.opener` back into the sandboxed iframe, so
+        // this doesn't hand a malicious/compromised dashboard anything more
+        // than "can open a new tab on a genuine user click," same as any
+        // ordinary website's target="_blank" link.
+        sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"
         className="bg-background size-full border-0"
       />
     </div>
