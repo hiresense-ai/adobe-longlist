@@ -1,16 +1,26 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, LayoutDashboard, Users } from 'lucide-react'
+import {
+  ArrowUpRight,
+  BarChart3,
+  LayoutDashboard,
+  Pencil,
+  Users,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { DeleteDashboardButton } from '@/components/dashboard/DeleteDashboardButton'
 import { ManageAccessDialog } from '@/components/dashboard/ManageAccessDialog'
+import { DashboardAnalyticsDialog } from '@/components/dashboard/DashboardAnalyticsDialog'
+import { EditDashboardDialog } from '@/components/dashboard/EditDashboardDialog'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import {
+  canEditDashboard,
   canManageDashboardAssignments,
   canManageDashboards,
+  canViewDashboardAnalytics,
 } from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import type { DashboardWithThumbnail } from '@/services/dashboards.service'
@@ -30,7 +40,18 @@ export function DashboardCard({
   const canManageAccess = Boolean(
     user && canManageDashboardAssignments(user.role),
   )
+  // Dashboard Analytics: Super Admin (every dashboard) and Admin (only
+  // dashboards assigned to them — enforced server-side by the
+  // dashboard-analytics Edge Function, same split as Manage Access).
+  const canViewAnalytics = Boolean(user && canViewDashboardAnalytics(user.role))
+  // Edit Dashboard: Super Admin (every dashboard, full field set including
+  // thumbnail) and Admin (only dashboards assigned to them, name/
+  // description/category only — enforced server-side by the dashboard-edit
+  // Edge Function, same split as Manage Access/Analytics).
+  const canEdit = Boolean(user && canEditDashboard(user.role))
   const [isManageAccessOpen, setIsManageAccessOpen] = useState(false)
+  const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false)
+  const [isEditOpen, setIsEditOpen] = useState(false)
 
   return (
     <div className="group border-border bg-card shadow-soft dark:hover:shadow-elevated hover:border-primary/30 dark:hover:border-primary/50 relative flex flex-col overflow-hidden rounded-2xl border transition-all duration-[220ms] ease-out hover:-translate-y-1.5 hover:scale-[1.02] hover:cursor-pointer hover:shadow-lg motion-reduce:transition-none motion-reduce:hover:translate-y-0 motion-reduce:hover:scale-100">
@@ -53,7 +74,7 @@ export function DashboardCard({
           }
         }}
       />
-      <div className="bg-muted relative aspect-video w-full overflow-hidden">
+      <div className="bg-muted relative aspect-[7/3] w-full overflow-hidden">
         {dashboard.thumbnailUrl ? (
           <img
             src={dashboard.thumbnailUrl}
@@ -75,7 +96,7 @@ export function DashboardCard({
         )}
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 p-5">
+      <div className="flex flex-1 flex-col gap-1.5 p-4">
         <h3 className="text-foreground line-clamp-1 text-base font-semibold">
           {dashboard.title}
         </h3>
@@ -83,33 +104,69 @@ export function DashboardCard({
           {dashboard.description || 'No description provided.'}
         </p>
 
-        <div className="mt-3 flex items-center justify-between">
-          <span className="text-muted-foreground text-xs">
-            {formatDate(dashboard.created_at)}
-          </span>
-          <div className="relative z-20 flex items-center gap-2">
-            {canManageAccess && (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                aria-label={`Manage access to ${dashboard.title}`}
-                onClick={(event) => {
-                  event.preventDefault()
-                  setIsManageAccessOpen(true)
-                }}
-              >
-                <Users className="size-3.5" />
-              </Button>
-            )}
-            {canManage && <DeleteDashboardButton dashboard={dashboard} />}
-            <Button asChild size="sm">
-              <Link to={ROUTES.dashboard(dashboard.id)}>
-                Open
-                <ArrowUpRight className="size-3.5" />
-              </Link>
-            </Button>
+        {/* Spacing here comes only from the parent's gap-1.5 — no extra
+            margin-top — so the description-to-actions gap isn't accidentally
+            doubled on top of it. */}
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-y-2">
+            <span className="text-muted-foreground text-xs">
+              {formatDate(dashboard.created_at)}
+            </span>
+            <div className="relative z-20 flex items-center gap-2">
+              {canViewAnalytics && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  aria-label={`View analytics for ${dashboard.title}`}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    setIsAnalyticsOpen(true)
+                  }}
+                >
+                  <BarChart3 className="size-3.5" />
+                </Button>
+              )}
+              {canManageAccess && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  aria-label={`Manage access to ${dashboard.title}`}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    setIsManageAccessOpen(true)
+                  }}
+                >
+                  <Users className="size-3.5" />
+                </Button>
+              )}
+              {canEdit && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  aria-label={`Edit ${dashboard.title} dashboard`}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    setIsEditOpen(true)
+                  }}
+                >
+                  <Pencil className="size-3.5" />
+                </Button>
+              )}
+              {canManage && <DeleteDashboardButton dashboard={dashboard} />}
+            </div>
           </div>
+          {/* Primary action on its own full-width row — the icon actions
+              above it can vary from zero (Viewer) to four (Super Admin), so
+              this can never be crowded out of the card regardless of role. */}
+          <Button asChild size="sm" className="relative z-20 box-border w-full">
+            <Link to={ROUTES.dashboard(dashboard.id)}>
+              Open
+              <ArrowUpRight className="size-3.5" />
+            </Link>
+          </Button>
         </div>
       </div>
 
@@ -118,6 +175,20 @@ export function DashboardCard({
           dashboard={dashboard}
           open={isManageAccessOpen}
           onOpenChange={setIsManageAccessOpen}
+        />
+      )}
+      {canViewAnalytics && isAnalyticsOpen && (
+        <DashboardAnalyticsDialog
+          dashboard={dashboard}
+          open={isAnalyticsOpen}
+          onOpenChange={setIsAnalyticsOpen}
+        />
+      )}
+      {canEdit && isEditOpen && (
+        <EditDashboardDialog
+          dashboard={dashboard}
+          open={isEditOpen}
+          onOpenChange={setIsEditOpen}
         />
       )}
     </div>

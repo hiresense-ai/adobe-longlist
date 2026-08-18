@@ -161,6 +161,29 @@ export function assignableDashboardRoles(callerRole: UserRole): UserRole[] {
   return []
 }
 
+/** Whether a caller may open the Dashboard Analytics view at all. Real
+ * authorization (which dashboard) is enforced fresh server-side on every
+ * call by the dashboard-analytics Edge Function — same split as
+ * canManageDashboardAssignments: this only decides whether the entry point
+ * is worth showing. Viewer never gets it. */
+export function canViewDashboardAnalytics(role: UserRole): boolean {
+  return role === 'admin' || role === 'super_admin'
+}
+
+/** Whether a caller may open the Edit Dashboard UI at all. Real
+ * authorization (which dashboard, which fields) is enforced fresh
+ * server-side on every call by the dashboard-edit Edge Function — same
+ * split as canManageDashboardAssignments/canViewDashboardAnalytics: this
+ * only decides whether the entry point is worth showing. Viewer never gets
+ * it. An Admin gets it on every dashboard they can see, because visibility
+ * itself already implies assignment (see canManageDashboardAssignments) —
+ * the Edge Function still re-checks assignment on every call regardless.
+ * Thumbnail controls inside the dialog are gated separately, by
+ * canManageDashboards (Super Admin only). */
+export function canEditDashboard(role: UserRole): boolean {
+  return role === 'admin' || role === 'super_admin'
+}
+
 export function roleLabel(role: UserRole): string {
   if (role === 'super_admin') return 'Super Admin'
   if (role === 'admin') return 'Admin'

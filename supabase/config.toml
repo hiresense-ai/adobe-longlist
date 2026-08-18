@@ -23,3 +23,16 @@ verify_jwt = true
 # shape, rate limiting, generic error messages).
 [functions.auth-login]
 verify_jwt = false
+
+# dashboard-analytics is read-only, but the roster/breakdown it returns
+# still requires a verified caller identity + role before anything runs
+# (see the function's own module comment for why RLS alone can't gate this).
+[functions.dashboard-analytics]
+verify_jwt = true
+
+# dashboard-edit does its own caller-identity + role + assignment check (see
+# the function's own module comment for why field-level restriction by role
+# can't be expressed through RLS alone). The platform JWT gate stays on for
+# the same reason as the other functions above.
+[functions.dashboard-edit]
+verify_jwt = true

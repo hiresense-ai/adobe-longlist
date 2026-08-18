@@ -59,4 +59,6 @@ export const QUERY_KEYS = {
   orphanedAuthUsers: ['admin-users', 'orphans'] as const,
   dashboardAssignments: (dashboardId: string) =>
     ['dashboard-assignments', dashboardId] as const,
+  dashboardAnalytics: (dashboardId: string) =>
+    ['dashboard-analytics', dashboardId] as const,
 }
