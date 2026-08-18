@@ -2,6 +2,7 @@ import { supabase } from '@/supabase/client'
 import { downloadDashboardHtml } from '@/supabase/storage'
 import { mergeCandidatesIntoHtml } from '@/lib/dashboardCandidateMerge'
 import { normalizeToCanonicalHtml } from '@/lib/htmlNormalization'
+import { invokeEdgeFunction } from '@/lib/edgeFunction'
 import {
   ALLOWED_CSV_MIME_TYPES,
   ALLOWED_HTML_MIME_TYPES,
@@ -14,6 +15,8 @@ import {
   THUMBNAIL_STORAGE_FOLDER,
 } from '@/constants'
 import type { Dashboard } from '@/types'
+
+const EDIT_FUNCTION_NAME = 'dashboard-edit'
 
 export interface UploadDashboardInput {
   title: string
@@ -63,7 +66,7 @@ export function validateThumbnailFile(file: File): string | null {
   return null
 }
 
-function extensionFor(file: File): string {
+export function extensionFor(file: File): string {
   const fromName = file.name.split('.').pop()
   if (fromName) return fromName.toLowerCase()
   return file.type.split('/').pop() ?? 'bin'
@@ -308,4 +311,94 @@ export async function deleteDashboard(
     .delete()
     .eq('id', dashboard.id)
   if (error) throw error
+}
+
+export interface UpdateDashboardInput {
+  dashboardId: string
+  title: string
+  description?: string | null
+  category?: string | null
+  /**
+   * Omit entirely to leave the thumbnail untouched. A string replaces it
+   * with that storage path; `null` removes it. Only a Super Admin request
+   * may include this key at all — the dashboard-edit Edge Function rejects
+   * it outright for Admin callers, even if the value would be a no-op.
+   */
+  thumbnail?: string | null
+}
+
+/**
+ * Updates a dashboard's editable metadata via the dashboard-edit Edge
+ * Function, which enforces (server-side, never trusting this call alone)
+ * that an Admin may only edit dashboards assigned to them and may never
+ * touch `thumbnail`, while a Super Admin may edit any dashboard including
+ * its thumbnail. See that function's own module comment for the full rule
+ * set. This call only ever updates the `dashboards` table row — the actual
+ * Storage object for a Super Admin's thumbnail replace/remove is handled by
+ * uploadDashboardThumbnail()/removeDashboardThumbnail() below, same as the
+ * existing upload flow's direct-Storage-call pattern.
+ */
+export async function updateDashboard(
+  input: UpdateDashboardInput,
+): Promise<Dashboard> {
+  const { dashboard } = await invokeEdgeFunction<{ dashboard: Dashboard }>(
+    EDIT_FUNCTION_NAME,
+    {
+      action: 'update',
+      payload: {
+        dashboardId: input.dashboardId,
+        title: input.title,
+        description: input.description ?? '',
+        category: input.category ?? '',
+        // Conditionally spread: JSON.stringify drops an `undefined`-valued
+        // key entirely, so omitting `thumbnail` here means the key never
+        // reaches the Edge Function at all — the only way an Admin
+        // caller's request can stay clean of it.
+        ...(input.thumbnail !== undefined
+          ? { thumbnail: input.thumbnail }
+          : {}),
+      },
+    },
+  )
+  return dashboard
+}
+
+/**
+ * Uploads a replacement thumbnail for an already-existing dashboard
+ * (Super Admin only — client-side, RLS-permitted the same way the initial
+ * upload's thumbnail write already is). Always writes to a brand-new path
+ * rather than overwriting the dashboard's existing one, for the same
+ * stale-Cache-Control reason documented on updateDashboardCandidates: the
+ * caller is responsible for pointing the dashboard row at this new path
+ * (via updateDashboard) and then best-effort deleting the old one on
+ * success.
+ */
+export async function uploadDashboardThumbnail(
+  dashboardId: string,
+  file: File,
+): Promise<string> {
+  const error = validateThumbnailFile(file)
+  if (error) throw new Error(error)
+
+  const path = `${THUMBNAIL_STORAGE_FOLDER}/${dashboardId}-${crypto.randomUUID()}.${extensionFor(file)}`
+  const { error: uploadError } = await supabase.storage
+    .from(STORAGE_BUCKET)
+    .upload(path, file, { contentType: file.type })
+  if (uploadError) throw uploadError
+
+  return path
+}
+
+/** Best-effort removal of a previous thumbnail Storage object — failure
+ * here doesn't matter to the caller: the dashboard row has already been
+ * repointed (or cleared) by the time this runs, so a leftover old object is
+ * just harmless storage bloat, same reasoning as updateDashboardCandidates'
+ * own cleanup step. */
+export async function removeDashboardThumbnailObject(
+  path: string,
+): Promise<void> {
+  await supabase.storage
+    .from(STORAGE_BUCKET)
+    .remove([path])
+    .catch(() => undefined)
 }
