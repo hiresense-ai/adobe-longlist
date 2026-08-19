@@ -184,6 +184,43 @@ export function canEditDashboard(role: UserRole): boolean {
   return role === 'admin' || role === 'super_admin'
 }
 
+/** Whether a caller may CHANGE a requirement's status (Pending → Contacted
+ * → In Progress → Completed, plus corrections/reopens) — Super Admin only.
+ * The entire lifecycle after creation belongs to Super Admin: Admin and
+ * Viewer can never contact, progress, complete, or reopen a requirement.
+ * Enforced fresh server-side on every call by the requirements Edge
+ * Function; this only decides whether the action buttons are worth
+ * showing. */
+export function canManageRequirementLifecycle(role: UserRole): boolean {
+  return role === 'super_admin'
+}
+
+/** Whether a caller may edit a requirement's fields right now. Super Admin
+ * edits anything at any stage. Admin edits any requirement, and a Viewer
+ * only their own — but both ONLY while it is still 'Pending': from
+ * Contacted onward they are read-only. `isOwner` is the caller-vs-creator
+ * check, `isPending` the status check; both are re-verified server-side by
+ * the requirements Edge Function, so this is a UI affordance, not the
+ * boundary. */
+export function canEditRequirement(
+  role: UserRole,
+  { isOwner, isPending }: { isOwner: boolean; isPending: boolean },
+): boolean {
+  if (role === 'super_admin') return true
+  if (!isPending) return false
+  if (role === 'admin') return true
+  return isOwner
+}
+
+/** Deleting requirements — Super Admin only, the same split as dashboard
+ * deletion. Deliberately NOT extended to Admin/Viewer: allowing a creator
+ * to delete would let them sidestep the post-Contacted read-only lock by
+ * deleting and recreating. Mirrored server-side by the requirements Edge
+ * Function. */
+export function canDeleteRequirements(role: UserRole): boolean {
+  return role === 'super_admin'
+}
+
 export function roleLabel(role: UserRole): string {
   if (role === 'super_admin') return 'Super Admin'
   if (role === 'admin') return 'Admin'
