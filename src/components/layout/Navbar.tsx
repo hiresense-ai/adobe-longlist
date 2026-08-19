@@ -5,6 +5,7 @@ import {
   useSearchParams,
 } from 'react-router-dom'
 import {
+  ClipboardList,
   LayoutDashboard,
   LogOut,
   Search,
@@ -52,6 +53,14 @@ export function Navbar() {
       isActive:
         location.pathname === ROUTES.home ||
         location.pathname.startsWith('/dashboards'),
+    },
+    // Every role: creation is open to all, and the requirements Edge
+    // Function scopes what each caller sees once inside.
+    {
+      to: ROUTES.requirements,
+      label: 'Requirements',
+      icon: ClipboardList,
+      isActive: location.pathname.startsWith(ROUTES.requirements),
     },
     ...(isAdmin
       ? [
@@ -156,6 +165,12 @@ export function Navbar() {
                 <Link to={ROUTES.profile}>
                   <UserIcon className="size-4" />
                   Profile
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild className="md:hidden">
+                <Link to={ROUTES.requirements}>
+                  <ClipboardList className="size-4" />
+                  Requirements
                 </Link>
               </DropdownMenuItem>
               {isAdmin && (

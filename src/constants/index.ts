@@ -12,6 +12,7 @@ export const ROUTES = {
   dashboard: (id: string) => `/dashboards/${id}`,
   profile: '/profile',
   adminUsers: '/admin/users',
+  requirements: '/requirements',
   notFound: '*',
 } as const
 
@@ -61,4 +62,5 @@ export const QUERY_KEYS = {
     ['dashboard-assignments', dashboardId] as const,
   dashboardAnalytics: (dashboardId: string) =>
     ['dashboard-analytics', dashboardId] as const,
+  requirements: ['requirements'] as const,
 }

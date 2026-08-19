@@ -36,3 +36,11 @@ verify_jwt = true
 # the same reason as the other functions above.
 [functions.dashboard-edit]
 verify_jwt = true
+
+# requirements is the ONLY access path to the requirements table (deny-all
+# RLS — see the requirements migration): it verifies the caller and shapes
+# every response per role/status, including stripping the JD fields from a
+# Viewer's view once a requirement has been contacted. The platform JWT
+# gate stays on for the same reason as the other functions above.
+[functions.requirements]
+verify_jwt = true
