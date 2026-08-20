@@ -15,7 +15,10 @@
 //   admin       — only a dashboard they have a dashboard_assignments row on
 //                 (checked fresh against the table on every call, never
 //                 trusted from the request).
-//   viewer      — 403 on every call. No analytics access at all.
+//   viewer      — same rule as admin: only a dashboard they are assigned
+//                 to, which is exactly the set they can see at all. Same
+//                 numbers, same response shape as an Admin caller — the
+//                 analytics themselves are not scoped by role.
 //
 // No writes happen anywhere in this function — it never touches dashboards,
 // dashboard_assignments, dashboard_status, or storage except to read.
@@ -119,16 +122,6 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Forbidden' }, 403, cors)
   }
 
-  // Viewer has zero analytics access — rejected before anything else, same
-  // shape as dashboard-assignments' viewer rejection.
-  if (callerRole === 'viewer') {
-    return json(
-      { error: 'Viewers cannot view dashboard analytics.' },
-      403,
-      cors,
-    )
-  }
-
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   })
@@ -218,8 +211,10 @@ async function getAnalytics(
   const dashboard = await getDashboard(admin, dashboardId)
   if (!dashboard) return json({ error: 'Dashboard not found.' }, 404, cors)
 
+  // Admin and Viewer alike: only dashboards they hold an assignment row
+  // on, checked fresh on every call. Only Super Admin skips this.
   if (
-    callerRole === 'admin' &&
+    callerRole !== 'super_admin' &&
     !(await isAssigned(admin, dashboardId, caller.id))
   ) {
     return json(
@@ -261,7 +256,8 @@ interface AssignedUsersPayload {
   /** The CALLING Super Admin's own identity — sourced from their verified
    * session/profile, never from a dashboard_assignments row (a Super Admin
    * doesn't need one to have full access; see the module comment). Null for
-   * an Admin caller — Admins never see the Super Admin here at all. */
+   * an Admin or Viewer caller — only a Super Admin ever sees the Super
+   * Admin here at all. */
   superAdmin: AssignedUserSummary | null
   admins: AssignedUserSummary[]
   viewers: AssignedUserSummary[]
@@ -270,9 +266,10 @@ interface AssignedUsersPayload {
 /** Dashboard-specific roster, split by role, for the CURRENT dashboard only
  * — one query against dashboard_assignments filtered by dashboard_id, same
  * table/shape listAssignments() in dashboard-assignments/index.ts already
- * reads for Manage Access, just grouped differently. An Admin only ever
- * gets here after the isAssigned() check above already passed, so nothing
- * further needs filtering by caller — every row IS this dashboard's roster. */
+ * reads for Manage Access, just grouped differently. An Admin or Viewer
+ * only ever gets here after the isAssigned() check above already passed, so
+ * nothing further needs filtering by caller — every row IS this dashboard's
+ * roster. */
 async function getAssignedUsers(
   admin: SupabaseClient,
   dashboardId: string,

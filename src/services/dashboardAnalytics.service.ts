@@ -14,7 +14,7 @@ export interface DashboardAssignedUsers {
   total: number
   /** The viewing Super Admin's own identity — sourced from their session,
    * never from a dashboard_assignments row. Null when the caller is an
-   * Admin: Admins never see the Super Admin here at all. */
+   * Admin or Viewer: only a Super Admin ever sees the Super Admin here. */
   superAdmin: DashboardAssignedUser | null
   admins: DashboardAssignedUser[]
   viewers: DashboardAssignedUser[]

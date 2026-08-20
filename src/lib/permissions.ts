@@ -163,11 +163,14 @@ export function assignableDashboardRoles(callerRole: UserRole): UserRole[] {
 
 /** Whether a caller may open the Dashboard Analytics view at all. Real
  * authorization (which dashboard) is enforced fresh server-side on every
- * call by the dashboard-analytics Edge Function — same split as
- * canManageDashboardAssignments: this only decides whether the entry point
- * is worth showing. Viewer never gets it. */
-export function canViewDashboardAnalytics(role: UserRole): boolean {
-  return role === 'admin' || role === 'super_admin'
+ * call by the dashboard-analytics Edge Function — this only decides
+ * whether the entry point is worth showing. Open to every authenticated
+ * role: Super Admin (any dashboard), Admin and Viewer (only dashboards
+ * assigned to them — which is exactly the set they can see at all). The
+ * `role` parameter is kept so a future narrowing doesn't have to change
+ * every call site again, same convention as canUpdateCandidateStatus. */
+export function canViewDashboardAnalytics(_role: UserRole): boolean {
+  return true
 }
 
 /** Whether a caller may open the Edit Dashboard UI at all. Real
