@@ -40,9 +40,10 @@ export function DashboardCard({
   const canManageAccess = Boolean(
     user && canManageDashboardAssignments(user.role),
   )
-  // Dashboard Analytics: Super Admin (every dashboard) and Admin (only
-  // dashboards assigned to them — enforced server-side by the
-  // dashboard-analytics Edge Function, same split as Manage Access).
+  // Dashboard Analytics: every role — Super Admin (every dashboard), Admin
+  // and Viewer (only dashboards assigned to them, which is exactly the set
+  // they can see at all; enforced server-side by the dashboard-analytics
+  // Edge Function on every call).
   const canViewAnalytics = Boolean(user && canViewDashboardAnalytics(user.role))
   // Edit Dashboard: Super Admin (every dashboard, full field set including
   // thumbnail) and Admin (only dashboards assigned to them, name/
