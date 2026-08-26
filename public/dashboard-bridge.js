@@ -321,6 +321,16 @@
   // intentionally open whenever this flag is false — only the ability to
   // CHANGE it is gated by it.
   var EDITABLE = false
+  // Whether the host wants the in-dashboard Analytics entry point rendered
+  // — longlist:init-config's canViewAnalytics flag, computed host-side by
+  // the same canViewDashboardAnalytics() helper that already gates the
+  // dashboard card's Analytics button, so both entry points always agree.
+  // Starts false (fail closed) until the config actually arrives.
+  // Rendering-only: the injected button does nothing but ask the host to
+  // open its existing Dashboard Analytics dialog; the analytics data is
+  // fetched by the host from the dashboard-analytics Edge Function, which
+  // re-checks access server-side on every call regardless of this flag.
+  var ANALYTICS_ENABLED = false
   var STATUS_READONLY_ATTR = 'data-longlist-status-readonly'
   var currentTheme = 'light'
   var selects = []
@@ -2617,9 +2627,48 @@
     span.textContent = 'No filters, showing all ' + actual + ' candidates'
   }
 
+  // Injects an "Analytics" button into the Candidates toolbar, right after
+  // the dashboard's own "Export filtered to CSV" button — same .btn class,
+  // so it inherits the dashboard's existing button styling, and the
+  // toolbar's own flex gap/wrap handles spacing and responsive layout.
+  // Clicking only posts longlist:open-analytics up to the host, which
+  // opens its EXISTING Dashboard Analytics dialog — no analytics UI, data,
+  // or calculations live in this document. Anchored strictly to the
+  // verified .list-toolbar/.btn export markup both dashboard formats
+  // share; a dashboard without that toolbar is left untouched, never
+  // guessed at. Idempotent — runs on every observer-driven pass.
+  function ensureAnalyticsButton() {
+    var existing = document.querySelector('[data-longlist-analytics]')
+    if (!ANALYTICS_ENABLED) {
+      if (existing) existing.remove()
+      return
+    }
+    if (existing) return
+    var exportBtn = null
+    document.querySelectorAll('.list-toolbar .btn').forEach(function (btn) {
+      if (!exportBtn && /export/i.test(btn.textContent || '')) exportBtn = btn
+    })
+    if (!exportBtn) return
+    var btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = exportBtn.className
+    btn.setAttribute('data-longlist-analytics', '')
+    btn.setAttribute('aria-label', 'Open dashboard analytics')
+    btn.innerHTML =
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1px"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg> Analytics'
+    btn.addEventListener('click', function () {
+      window.parent.postMessage(
+        { type: 'longlist:open-analytics', dashboardId: DASHBOARD_ID },
+        '*',
+      )
+    })
+    exportBtn.insertAdjacentElement('afterend', btn)
+  }
+
   function syncExplorerPagination() {
     document.querySelectorAll('table').forEach(syncTablePagination)
     syncChipbarCount()
+    ensureAnalyticsButton()
   }
 
   var pgSyncScheduled = false
@@ -3081,8 +3130,10 @@
         ACTION_OPTIONS = Array.isArray(data.actionOrder) ? data.actionOrder : []
         ACTION_STYLES = data.actionStyles || {}
         EDITABLE = data.canUpdateStatus === true
+        ANALYTICS_ENABLED = data.canViewAnalytics === true
         wireSelects()
         syncActionColumns()
+        ensureAnalyticsButton()
         return
       }
 

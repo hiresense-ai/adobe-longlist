@@ -19,7 +19,10 @@ import { ACTION_LIST, serializeActionStyles } from '@/config/actionConfig'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { useAuth } from '@/hooks/useAuth'
-import { canUpdateCandidateStatus } from '@/lib/permissions'
+import {
+  canUpdateCandidateStatus,
+  canViewDashboardAnalytics,
+} from '@/lib/permissions'
 import type {
   DashboardBridgeMessage,
   DashboardStatus,
@@ -29,6 +32,12 @@ import type {
 interface UseDashboardStatusBridgeOptions {
   dashboardId: string | undefined
   iframeRef: RefObject<HTMLIFrameElement | null>
+  /** Called when the iframe's bridge-injected Analytics button is clicked
+   * (longlist:open-analytics) — the page uses it to open the existing
+   * DashboardAnalyticsDialog. Only ever invoked for users who pass
+   * canViewDashboardAnalytics, the same helper gating the dashboard card's
+   * Analytics button. */
+  onOpenAnalytics?: () => void
 }
 
 /**
@@ -46,6 +55,7 @@ interface UseDashboardStatusBridgeOptions {
 export function useDashboardStatusBridge({
   dashboardId,
   iframeRef,
+  onOpenAnalytics,
 }: UseDashboardStatusBridgeOptions) {
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
@@ -59,9 +69,21 @@ export function useDashboardStatusBridge({
   // own controls as editable at all, rather than relying solely on a
   // rejected write to find out.
   const canEdit = canUpdateCandidateStatus(user?.role ?? 'viewer')
+  // Same helper the dashboard card's Analytics button uses — the iframe is
+  // told this flag via longlist:init-config so it only renders its
+  // Analytics entry point for users the card would show one to, and the
+  // longlist:open-analytics handler below re-checks it before opening.
+  const canViewAnalytics = canViewDashboardAnalytics(user?.role ?? 'viewer')
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
   const modalOpenRef = useRef(false)
   const bodyOverflowBeforeModalRef = useRef<string>('')
+  // Ref, not a dependency: the callback's identity changes every render in
+  // the caller, and re-running the whole bridge effect (re-subscribing
+  // Realtime channels etc.) for that would be wasteful.
+  const onOpenAnalyticsRef = useRef(onOpenAnalytics)
+  useEffect(() => {
+    onOpenAnalyticsRef.current = onOpenAnalytics
+  })
 
   // Resets the reported height when switching to a different dashboard, so
   // it doesn't briefly render the new iframe at the previous one's height
@@ -215,6 +237,7 @@ export function useDashboardStatusBridge({
           actionOrder: ACTION_LIST.map((a) => a.value),
           actionStyles: serializeActionStyles(),
           canUpdateStatus: canEdit,
+          canViewAnalytics,
         })
 
         const statuses = await queryClient.fetchQuery({
@@ -305,6 +328,12 @@ export function useDashboardStatusBridge({
       if (data.type === 'longlist:modal-close') {
         modalOpenRef.current = false
         document.body.style.overflow = bodyOverflowBeforeModalRef.current
+        return
+      }
+
+      if (data.type === 'longlist:open-analytics') {
+        if (data.dashboardId !== id) return
+        if (canViewAnalytics) onOpenAnalyticsRef.current?.()
         return
       }
 
@@ -479,7 +508,14 @@ export function useDashboardStatusBridge({
         modalOpenRef.current = false
       }
     }
-  }, [dashboardId, iframeRef, queryClient, resolvedTheme, canEdit])
+  }, [
+    dashboardId,
+    iframeRef,
+    queryClient,
+    resolvedTheme,
+    canEdit,
+    canViewAnalytics,
+  ])
 
   // Theme can change independently of any bridge message (user toggles the
   // app's theme while a dashboard is already open) — push it down live so

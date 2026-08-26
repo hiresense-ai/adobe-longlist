@@ -99,6 +99,12 @@ export type DashboardBridgeMessage =
   | { type: 'longlist:modal-open' }
   | { type: 'longlist:modal-close' }
   /**
+   * The user clicked the bridge-injected Analytics button in the
+   * Candidates toolbar. The host opens its existing Dashboard Analytics
+   * dialog — the iframe carries no analytics UI or data of its own.
+   */
+  | { type: 'longlist:open-analytics'; dashboardId: string | null }
+  /**
    * A file the dashboard wants saved. The iframe can't do this itself:
    * sandboxed without allow-same-origin, its object URLs are
    * `blob:null/...`, which the browser won't resolve as a download. The
