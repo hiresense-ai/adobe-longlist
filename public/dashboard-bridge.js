@@ -341,84 +341,83 @@
   var actionValuesByName = {}
 
   // ---------------------------------------------------------------------
-  // Action column search + sort — bridge-owned view state, applied INSIDE
-  // the existing pagination pipeline (both paths) as a post-pass over the
-  // result set the dashboard's own filters/sort already produced. The
-  // dashboard's own filtering (F/apply()/passes()) and its own header
-  // sorting (SORT/userSorted) live in its private closure and are never
-  // called, read, or reimplemented — this composes AFTER them: whatever
-  // rows the dashboard decided to show, this narrows by Action text and/or
-  // re-orders by Action text, exactly like pagination already re-slices
-  // them. Clearing the search returns to precisely the dashboard's own
-  // filtered set. Every Action value participates via the same
-  // actionValuesByName map the Action column itself renders from — no
-  // action name is special-cased anywhere here, and an unset value is
-  // normalized to "No Action" for COMPARISON ONLY (the stored null and
-  // the dropdown's own display are untouched).
+  // Action column priority ordering — bridge-owned view state, applied
+  // INSIDE the existing pagination pipeline (both paths) as a re-ordering
+  // post-pass over the result set the dashboard's own filters/sort already
+  // produced. The dashboard's own filtering (F/apply()/passes()) and its
+  // own header sorting (SORT/userSorted) live in its private closure and
+  // are never called, read, or reimplemented — this composes AFTER them.
+  //
+  // Clicking the injected Action header cycles three states:
+  //   default order
+  //   → "Action ▴": Screen Select group, then Screen Reject group, then
+  //     everything else
+  //   → "Action ▾": Screen Reject group, then Screen Select group, then
+  //     everything else
+  //   → default …
+  // Exactly those two action values are special, per product spec — the
+  // two Screen groups ALWAYS sit together at the top when a state is
+  // active (never separated by other rows), and the two clicks only swap
+  // which of the two leads. No other action (current or future) gets a
+  // priority state or any alphabetical ordering. Rows are only
+  // re-ordered, never filtered or hidden: within each of the three groups
+  // the dashboard's own relative order is preserved (stable partition).
+  // Restoring the default state returns to precisely the dashboard's own
+  // order. Pure view state — the stored action values (actionValuesByName,
+  // the same map the Action column renders from) are read-only here and
+  // never written.
   // ---------------------------------------------------------------------
-  var actionSearchQuery = ''
-  var actionSortDir = 0 // 0 = off, 1 = A→Z, -1 = Z→A
+  // 0 = dashboard default order, 1 = "▴" (Select → Reject → rest),
+  // 2 = "▾" (Reject → Select → rest).
+  var actionPriorityMode = 0
+  var ACTION_SCREEN_SELECT = 'Screen Select - HireSense'
+  var ACTION_SCREEN_REJECT = 'Screen Reject - HireSense'
   // Bumped whenever actionValuesByName changes (a selection commit or an
-  // init-statuses sync), so an active search/sort re-evaluates against the
-  // new values instead of a stale view.
+  // init-statuses sync), so an active priority order re-evaluates against
+  // the new values instead of a stale view.
   var actionDataVersion = 0
 
-  var NO_ACTION_TEXT = 'No Action'
-
-  function actionTextForName(name) {
-    if (!name) return NO_ACTION_TEXT
-    return actionValuesByName[String(name).toLowerCase()] || NO_ACTION_TEXT
+  /** The active mode's leading pair, or null when default. Index in the
+   * returned array = the row's group: 0 and 1 are the two Screen groups
+   * in their current display order, everything else is group 2. */
+  function actionPriorityOrder() {
+    if (actionPriorityMode === 1) {
+      return [ACTION_SCREEN_SELECT, ACTION_SCREEN_REJECT]
+    }
+    if (actionPriorityMode === 2) {
+      return [ACTION_SCREEN_REJECT, ACTION_SCREEN_SELECT]
+    }
+    return null
   }
 
   function actionViewKey() {
-    return (
-      actionSearchQuery.trim().toLowerCase() +
-      '|' +
-      actionSortDir +
-      '|' +
-      actionDataVersion
-    )
+    return actionPriorityMode + '|' + actionDataVersion
   }
 
   function actionViewActive() {
-    return actionSearchQuery.trim() !== '' || actionSortDir !== 0
+    return actionPriorityMode !== 0
   }
 
-  // Case-insensitive, locale-aware, and stable: ties keep the order the
-  // dashboard's own sort produced (Array#sort is stable, and the generic
-  // path additionally tiebreaks on original index explicitly).
-  function compareActionTexts(a, b) {
-    return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  function actionValueForName(name) {
+    if (!name) return null
+    return actionValuesByName[String(name).toLowerCase()] || null
   }
 
-  /** Explorer/reconstruct path: filter+sort the dashboard's own result
-   * array (window.__ROWS) without mutating it — the caller paginates over
-   * the returned array exactly as it already paginated over rows. */
+  /** Explorer/reconstruct path: stable-partition the dashboard's own
+   * result array (window.__ROWS) without mutating it — the leading Screen
+   * group, then the other Screen group, then everything else, each group
+   * in its existing relative order. The caller paginates over the
+   * returned array exactly as it already paginated over rows. */
   function applyActionViewToArray(rows) {
-    var query = actionSearchQuery.trim().toLowerCase()
-    var out = rows
-    if (query) {
-      out = out.filter(function (c) {
-        return (
-          actionTextForName(c && c.name)
-            .toLowerCase()
-            .indexOf(query) !== -1
-        )
-      })
-    }
-    if (actionSortDir !== 0) {
-      if (out === rows) out = rows.slice()
-      out.sort(function (a, b) {
-        return (
-          actionSortDir *
-          compareActionTexts(
-            actionTextForName(a && a.name),
-            actionTextForName(b && b.name),
-          )
-        )
-      })
-    }
-    return out
+    var order = actionPriorityOrder()
+    if (!order) return rows
+    var groups = [[], [], []]
+    rows.forEach(function (c) {
+      var value = actionValueForName(c && c.name)
+      var group = order.indexOf(value)
+      groups[group === -1 ? 2 : group].push(c)
+    })
+    return groups[0].concat(groups[1], groups[2])
   }
 
   // ---------------------------------------------------------------------
@@ -627,21 +626,7 @@
       '.ll-notes-save:hover:not(:disabled) { opacity: .9; }' +
       '.ll-notes-save:disabled { opacity: .5; cursor: default; }' +
       '.ll-notes-save:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
-      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }' +
-      // Action header search + sort — bridge-owned controls inside the
-      // injected Action <th>, same --ll-* tokens as everything above.
-      // font-weight/text-transform reset because dashboard <th> styling
-      // (bold/uppercase in some generators) would otherwise leak into the
-      // input's typed text and placeholder.
-      '.ll-action-head { display: flex; flex-direction: column; gap: 5px; font-weight: 600; text-align: left; }' +
-      '.ll-action-head-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }' +
-      '.ll-action-sort { font: inherit; font-size: 12px; line-height: 1; height: 22px; min-width: 24px; padding: 0 5px; border: 1px solid var(--ll-border); border-radius: 6px; background: var(--ll-card); color: var(--ll-muted-fg); cursor: pointer; transition: border-color .15s ease, color .15s ease, background-color .15s ease; }' +
-      '.ll-action-sort:hover { border-color: var(--ll-primary); color: var(--ll-primary); background-color: var(--ll-accent); }' +
-      '.ll-action-sort.on { background: var(--ll-primary); border-color: var(--ll-primary); color: var(--ll-primary-fg); }' +
-      '.ll-action-sort:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
-      '.ll-action-search { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: normal; height: 26px; padding: 0 8px; border: 1px solid var(--ll-border); border-radius: 6px; background: var(--ll-bg); color: var(--ll-fg); }' +
-      '.ll-action-search::placeholder { color: var(--ll-muted-fg); opacity: 1; }' +
-      '.ll-action-search:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 2px var(--ll-ring); }'
+      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }'
     document.head.appendChild(style)
   }
 
@@ -913,73 +898,61 @@
       '-8px 0 8px -8px rgba(0,0,0,' + (isHeader ? '0.12' : '0.1') + ')'
   }
 
-  // The search input + sort toggle inside the injected Action header.
-  // Recreated whenever the dashboard rebuilds its table (state lives in the
-  // closure vars above, so the controls always come back showing the
-  // current query/direction). Every interaction stops propagation for the
-  // same reason the Action trigger does — it must never bubble into a
-  // dashboard's own header/row click handlers.
-  function buildActionHeaderControls(th) {
-    var wrap = document.createElement('div')
-    wrap.className = 'll-action-head'
-
-    var top = document.createElement('div')
-    top.className = 'll-action-head-top'
-    var label = document.createElement('span')
-    label.textContent = 'Action'
-    top.appendChild(label)
-
-    var sortBtn = document.createElement('button')
-    sortBtn.type = 'button'
-    sortBtn.className = 'll-action-sort'
-    sortBtn.setAttribute('data-longlist-action-sort', '')
-    function renderSortState() {
-      sortBtn.textContent =
-        actionSortDir === 1 ? '↑' : actionSortDir === -1 ? '↓' : '↕'
-      var labelText =
-        actionSortDir === 1
-          ? 'Sorted by action A to Z — click for Z to A'
-          : actionSortDir === -1
-            ? 'Sorted by action Z to A — click to clear'
-            : 'Sort by action'
-      sortBtn.title = labelText
-      sortBtn.setAttribute('aria-label', labelText)
-      sortBtn.classList.toggle('on', actionSortDir !== 0)
+  // The injected Action header renders like the dashboard's own sortable
+  // headers (YRS etc): the same " ▴"/" ▾" glyph appended when a state is
+  // active, and the dashboard's own `sorted` class (th.sorted colors it
+  // var(--red) in both verified formats). Clicking cycles the three
+  // priority states: default → "Action ▴" (Screen Select first) →
+  // "Action ▾" (Screen Reject first) → default. The arrow is ONLY a state
+  // indicator for those two priorities — this is not alphabetical ASC/
+  // DESC (see the priority block above). Keyboard-accessible via
+  // role=button/tabindex (a bare <th> isn't focusable), with aria-sort
+  // tracking the state and the aria-label/title always describing what
+  // the NEXT click does. stopPropagation for the same reason the Action
+  // trigger does — it must never bubble into a dashboard's own header
+  // click handlers.
+  function wireActionHeaderCycle(th) {
+    function render() {
+      th.textContent =
+        actionPriorityMode === 1
+          ? 'Action ▴'
+          : actionPriorityMode === 2
+            ? 'Action ▾'
+            : 'Action'
+      th.classList.toggle('sorted', actionPriorityMode !== 0)
+      th.setAttribute(
+        'aria-sort',
+        actionPriorityMode === 1
+          ? 'ascending'
+          : actionPriorityMode === 2
+            ? 'descending'
+            : 'none',
+      )
+      var next =
+        actionPriorityMode === 0
+          ? 'show "Screen Select" then "Screen Reject" first'
+          : actionPriorityMode === 1
+            ? 'show "Screen Reject" then "Screen Select" first'
+            : 'restore the default order'
+      var label = 'Action — click to ' + next
+      th.title = label
+      th.setAttribute('aria-label', label)
     }
-    renderSortState()
-    sortBtn.addEventListener('click', function (event) {
+    render()
+    th.setAttribute('role', 'button')
+    th.setAttribute('tabindex', '0')
+    th.style.cursor = 'pointer'
+    function cycle(event) {
       event.stopPropagation()
       event.preventDefault()
-      // asc -> desc -> off, the conventional three-state header cycle.
-      actionSortDir = actionSortDir === 0 ? 1 : actionSortDir === 1 ? -1 : 0
-      renderSortState()
+      actionPriorityMode = (actionPriorityMode + 1) % 3
+      render()
       schedulePaginationSync()
+    }
+    th.addEventListener('click', cycle)
+    th.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') cycle(event)
     })
-    top.appendChild(sortBtn)
-    wrap.appendChild(top)
-
-    var input = document.createElement('input')
-    input.type = 'search'
-    input.className = 'll-action-search'
-    input.setAttribute('data-longlist-action-search', '')
-    input.placeholder = 'Search action…'
-    input.setAttribute('aria-label', 'Search by action')
-    input.value = actionSearchQuery
-    input.addEventListener('input', function () {
-      actionSearchQuery = input.value
-      schedulePaginationSync()
-    })
-    ;['click', 'mousedown', 'pointerdown', 'keydown'].forEach(function (type) {
-      input.addEventListener(type, function (event) {
-        event.stopPropagation()
-      })
-      wrap.addEventListener(type, function (event) {
-        event.stopPropagation()
-      })
-    })
-    wrap.appendChild(input)
-
-    th.appendChild(wrap)
   }
 
   function ensureActionHeader(table) {
@@ -988,14 +961,13 @@
     if (headRow.querySelector('[' + ACTION_HEADER_ATTR + ']')) return
     var th = document.createElement('th')
     th.setAttribute(ACTION_HEADER_ATTR, '')
-    // Search/sort only makes sense where the pagination pipeline (which
-    // implements the actual filtering/ordering) can run — both its paths
+    th.textContent = 'Action'
+    // The priority cycle only makes sense where the pagination pipeline
+    // (which implements the actual re-ordering) can run — both its paths
     // require the dashboard's own window.__ROWS result array. A dashboard
-    // without one keeps the plain header exactly as before.
+    // without one keeps the plain, inert header exactly as before.
     if (Array.isArray(window.__ROWS)) {
-      buildActionHeaderControls(th)
-    } else {
-      th.textContent = 'Action'
+      wireActionHeaderCycle(th)
     }
     stickyCellStyle(th, true)
     // A bare "Action" text node has no reason to be anywhere near as wide
@@ -2378,8 +2350,8 @@
       state.page = 1
       state.dirty = true
     }
-    // Action search/sort participates exactly like a result-set change:
-    // any change to the query, direction, or the action values themselves
+    // The Action priority order participates exactly like a result-set
+    // change: any change to the mode or the action values themselves
     // re-derives the view and resets to page 1.
     var viewKey = actionViewKey()
     if (state.lastActionViewKey !== viewKey) {
@@ -2457,8 +2429,8 @@
       state.page = 1
       state.dirty = true
     }
-    // Action search/sort participates exactly like a result-set change —
-    // see syncTablePaginationReconstruct for the same check.
+    // The Action priority order participates exactly like a result-set
+    // change — see syncTablePaginationReconstruct for the same check.
     var viewKey = actionViewKey()
     if (state.lastActionViewKey !== viewKey) {
       state.lastActionViewKey = viewKey
@@ -2516,67 +2488,63 @@
     }
 
     // Identity comes from the row's own rendered name cell — the exact
-    // same extraction the Action column itself keys its values by, so
-    // search/sort can never disagree with what the dropdown displays.
+    // same extraction the Action column itself keys its values by, so the
+    // priority order can never disagree with what the dropdown displays.
     var nameIdx = findColumnIndex(headerCells, isNameHeader)
-    var query = actionSearchQuery.trim().toLowerCase()
+    var order = actionPriorityOrder()
     var entries = candidateRows.map(function (tr, index) {
-      var action = actionTextForName(extractRowIdentity(tr, nameIdx))
+      var value = actionValueForName(extractRowIdentity(tr, nameIdx))
+      var group = order ? order.indexOf(value) : -1
       return {
         tr: tr,
         index: index,
-        action: action,
         details: collectDetailSiblings(tr),
-        matches: !query || action.toLowerCase().indexOf(query) !== -1,
+        group: group === -1 ? 2 : group,
       }
     })
 
-    if (actionSortDir !== 0) {
-      var tbody = table.querySelector('tbody')
-      // Stamp each row's pre-reorder position once (fresh dashboard
-      // renders produce fresh nodes, so a stamp always reflects the
-      // dashboard's own current order), so clearing the sort can restore
-      // that order without waiting for the dashboard's next render.
-      entries.forEach(function (entry) {
-        if (typeof entry.tr.__llOrigIndex === 'undefined') {
-          entry.tr.__llOrigIndex = entry.index
-        }
-      })
-      state.actionReordered = true
-      var ordered = entries.slice().sort(function (a, b) {
-        return (
-          actionSortDir * compareActionTexts(a.action, b.action) ||
-          a.index - b.index
-        )
-      })
-      // Moving (never rebuilding) the dashboard's own nodes: listeners,
-      // the injected Action cells, and any open Notes panel all survive.
-      // The dashboard never reads DOM order back — its own next render
-      // rebuilds the tbody from its data, and this pass then re-applies.
-      ordered.forEach(function (entry) {
-        tbody.appendChild(entry.tr)
-        entry.details.forEach(function (detail) {
-          tbody.appendChild(detail)
-        })
-      })
-      entries = ordered
-    }
-
-    var visible = entries.filter(function (entry) {
-      return entry.matches
+    var tbody = table.querySelector('tbody')
+    // Stamp each row's pre-reorder position once (fresh dashboard renders
+    // produce fresh nodes, so a stamp always reflects the dashboard's own
+    // current order), so returning to the default state can restore that
+    // order without waiting for the dashboard's next render.
+    entries.forEach(function (entry) {
+      if (typeof entry.tr.__llOrigIndex === 'undefined') {
+        entry.tr.__llOrigIndex = entry.index
+      }
     })
-    var calcView = pgCalc(visible.length, state.page, state.size)
+    state.actionReordered = true
+    // Stable partition into the three groups (leading Screen group, other
+    // Screen group, everything else) — each group keeping the DASHBOARD'S
+    // OWN relative order, which is the stamped original index, NOT the
+    // current DOM order: when cycling straight from ▴ to ▾, the DOM is
+    // still in the previous state's order, and partitioning that would
+    // scramble the groups instead of deriving them from the original
+    // slots. No row is ever filtered out; this only re-orders.
+    var inOriginalOrder = entries.slice().sort(function (a, b) {
+      return a.tr.__llOrigIndex - b.tr.__llOrigIndex
+    })
+    var groups = [[], [], []]
+    inOriginalOrder.forEach(function (entry) {
+      groups[entry.group].push(entry)
+    })
+    var ordered = groups[0].concat(groups[1], groups[2])
+    // Moving (never rebuilding) the dashboard's own nodes: listeners,
+    // the injected Action cells, and any open Notes panel all survive.
+    // The dashboard never reads DOM order back — its own next render
+    // rebuilds the tbody from its data, and this pass then re-applies.
+    ordered.forEach(function (entry) {
+      tbody.appendChild(entry.tr)
+      entry.details.forEach(function (detail) {
+        tbody.appendChild(detail)
+      })
+    })
+
+    var calcView = pgCalc(ordered.length, state.page, state.size)
     state.page = calcView.page
 
-    var shownFrom = calcView.start
-    var shownTo = calcView.end
-    var visibleIndex = 0
-    entries.forEach(function (entry) {
-      var show = false
-      if (entry.matches) {
-        show = visibleIndex >= shownFrom && visibleIndex < shownTo
-        visibleIndex++
-      }
+    ordered.forEach(function (entry, position) {
+      var show = position >= calcView.start && position < calcView.end
       entry.tr.style.display = show ? '' : 'none'
       entry.details.forEach(function (detail) {
         detail.style.display = show ? '' : 'none'
