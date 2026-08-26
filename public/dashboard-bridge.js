@@ -2588,8 +2588,38 @@
     }
   }
 
+  // The dashboards' own chip bar renders "No filters, showing all N
+  // candidates" with N hardcoded to the RAW embedded candidate count
+  // (NTOTAL = CAND.length) — but their default filter state includes
+  // chip-less screening toggles (hideOver/hideOff/hideOutCity, all true on
+  // load), so the table can legitimately show fewer rows while the chip bar
+  // still claims the raw total. window.__ROWS is that same dashboard's own
+  // filtered result — the exact array behind its adjacent "N candidates
+  // match" line and this bridge's pager — so the count is corrected to
+  // __ROWS.length whenever the two disagree. Text-only, scoped to the
+  // verified #activeChips/.nochip markup and exact wording both dashboard
+  // formats emit; anything else is left untouched, never guessed at. The
+  // dashboard rewrites the span on every drawChips(), which the body
+  // MutationObserver turns into another pass through here — and the
+  // early-return when the number already agrees keeps that loop finite.
+  function syncChipbarCount() {
+    if (!Array.isArray(window.__ROWS)) return
+    var chipbar = document.getElementById('activeChips')
+    if (!chipbar) return
+    var span = chipbar.querySelector('.nochip')
+    if (!span) return
+    var match = /^No filters, showing all (\d+) candidates$/.exec(
+      (span.textContent || '').trim(),
+    )
+    if (!match) return
+    var actual = String(window.__ROWS.length)
+    if (match[1] === actual) return
+    span.textContent = 'No filters, showing all ' + actual + ' candidates'
+  }
+
   function syncExplorerPagination() {
     document.querySelectorAll('table').forEach(syncTablePagination)
+    syncChipbarCount()
   }
 
   var pgSyncScheduled = false
