@@ -7,18 +7,28 @@ import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { DashboardFrame } from '@/components/dashboard/DashboardFrame'
+import { DashboardAnalyticsDialog } from '@/components/dashboard/DashboardAnalyticsDialog'
 import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
+import { useAuth } from '@/hooks/useAuth'
 import { useDashboard } from '@/hooks/useDashboard'
 import { useDashboardHtml } from '@/hooks/useDashboardHtml'
 import { useDashboardStatusBridge } from '@/hooks/useDashboardStatusBridge'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
+import { canViewDashboardAnalytics } from '@/lib/permissions'
 
 export function DashboardViewer() {
   const { id } = useParams<{ id: string }>()
+  const { user } = useAuth()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const fullBleedRef = useRef<HTMLDivElement>(null)
   const [minAvailableHeight, setMinAvailableHeight] = useState(0)
+  // Same entry-point gate as the dashboard card's Analytics button (see
+  // DashboardCard.tsx) — the dialog itself is the card's exact component,
+  // and the data comes from the same dashboard-analytics Edge Function,
+  // which enforces real access server-side on every call.
+  const canViewAnalytics = Boolean(user && canViewDashboardAnalytics(user.role))
+  const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false)
 
   const {
     data: dashboard,
@@ -39,6 +49,7 @@ export function DashboardViewer() {
   const { iframeHeight } = useDashboardStatusBridge({
     dashboardId: dashboard?.id,
     iframeRef,
+    onOpenAnalytics: () => setIsAnalyticsOpen(true),
   })
 
   // Sizing policy (a product decision, not a workaround): a short dashboard
@@ -202,6 +213,14 @@ export function DashboardViewer() {
           )}
         </div>
       </div>
+
+      {canViewAnalytics && (
+        <DashboardAnalyticsDialog
+          dashboard={dashboard}
+          open={isAnalyticsOpen}
+          onOpenChange={setIsAnalyticsOpen}
+        />
+      )}
     </div>
   )
 }
