@@ -331,6 +331,87 @@
   var actionValuesByName = {}
 
   // ---------------------------------------------------------------------
+  // Action column search + sort — bridge-owned view state, applied INSIDE
+  // the existing pagination pipeline (both paths) as a post-pass over the
+  // result set the dashboard's own filters/sort already produced. The
+  // dashboard's own filtering (F/apply()/passes()) and its own header
+  // sorting (SORT/userSorted) live in its private closure and are never
+  // called, read, or reimplemented — this composes AFTER them: whatever
+  // rows the dashboard decided to show, this narrows by Action text and/or
+  // re-orders by Action text, exactly like pagination already re-slices
+  // them. Clearing the search returns to precisely the dashboard's own
+  // filtered set. Every Action value participates via the same
+  // actionValuesByName map the Action column itself renders from — no
+  // action name is special-cased anywhere here, and an unset value is
+  // normalized to "No Action" for COMPARISON ONLY (the stored null and
+  // the dropdown's own display are untouched).
+  // ---------------------------------------------------------------------
+  var actionSearchQuery = ''
+  var actionSortDir = 0 // 0 = off, 1 = A→Z, -1 = Z→A
+  // Bumped whenever actionValuesByName changes (a selection commit or an
+  // init-statuses sync), so an active search/sort re-evaluates against the
+  // new values instead of a stale view.
+  var actionDataVersion = 0
+
+  var NO_ACTION_TEXT = 'No Action'
+
+  function actionTextForName(name) {
+    if (!name) return NO_ACTION_TEXT
+    return actionValuesByName[String(name).toLowerCase()] || NO_ACTION_TEXT
+  }
+
+  function actionViewKey() {
+    return (
+      actionSearchQuery.trim().toLowerCase() +
+      '|' +
+      actionSortDir +
+      '|' +
+      actionDataVersion
+    )
+  }
+
+  function actionViewActive() {
+    return actionSearchQuery.trim() !== '' || actionSortDir !== 0
+  }
+
+  // Case-insensitive, locale-aware, and stable: ties keep the order the
+  // dashboard's own sort produced (Array#sort is stable, and the generic
+  // path additionally tiebreaks on original index explicitly).
+  function compareActionTexts(a, b) {
+    return a.localeCompare(b, undefined, { sensitivity: 'base' })
+  }
+
+  /** Explorer/reconstruct path: filter+sort the dashboard's own result
+   * array (window.__ROWS) without mutating it — the caller paginates over
+   * the returned array exactly as it already paginated over rows. */
+  function applyActionViewToArray(rows) {
+    var query = actionSearchQuery.trim().toLowerCase()
+    var out = rows
+    if (query) {
+      out = out.filter(function (c) {
+        return (
+          actionTextForName(c && c.name)
+            .toLowerCase()
+            .indexOf(query) !== -1
+        )
+      })
+    }
+    if (actionSortDir !== 0) {
+      if (out === rows) out = rows.slice()
+      out.sort(function (a, b) {
+        return (
+          actionSortDir *
+          compareActionTexts(
+            actionTextForName(a && a.name),
+            actionTextForName(b && b.name),
+          )
+        )
+      })
+    }
+    return out
+  }
+
+  // ---------------------------------------------------------------------
   // Candidate Notes — a standalone feature, independent of the Status
   // flow's Remarks field (separate table, separate identity map, separate
   // postMessage types: longlist:init-notes/note-update/note-ack). This is
@@ -536,7 +617,21 @@
       '.ll-notes-save:hover:not(:disabled) { opacity: .9; }' +
       '.ll-notes-save:disabled { opacity: .5; cursor: default; }' +
       '.ll-notes-save:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
-      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }'
+      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }' +
+      // Action header search + sort — bridge-owned controls inside the
+      // injected Action <th>, same --ll-* tokens as everything above.
+      // font-weight/text-transform reset because dashboard <th> styling
+      // (bold/uppercase in some generators) would otherwise leak into the
+      // input's typed text and placeholder.
+      '.ll-action-head { display: flex; flex-direction: column; gap: 5px; font-weight: 600; text-align: left; }' +
+      '.ll-action-head-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }' +
+      '.ll-action-sort { font: inherit; font-size: 12px; line-height: 1; height: 22px; min-width: 24px; padding: 0 5px; border: 1px solid var(--ll-border); border-radius: 6px; background: var(--ll-card); color: var(--ll-muted-fg); cursor: pointer; transition: border-color .15s ease, color .15s ease, background-color .15s ease; }' +
+      '.ll-action-sort:hover { border-color: var(--ll-primary); color: var(--ll-primary); background-color: var(--ll-accent); }' +
+      '.ll-action-sort.on { background: var(--ll-primary); border-color: var(--ll-primary); color: var(--ll-primary-fg); }' +
+      '.ll-action-sort:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
+      '.ll-action-search { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: normal; height: 26px; padding: 0 8px; border: 1px solid var(--ll-border); border-radius: 6px; background: var(--ll-bg); color: var(--ll-fg); }' +
+      '.ll-action-search::placeholder { color: var(--ll-muted-fg); opacity: 1; }' +
+      '.ll-action-search:focus-visible { outline: none; border-color: var(--ll-primary); box-shadow: 0 0 0 2px var(--ll-ring); }'
     document.head.appendChild(style)
   }
 
@@ -808,13 +903,90 @@
       '-8px 0 8px -8px rgba(0,0,0,' + (isHeader ? '0.12' : '0.1') + ')'
   }
 
+  // The search input + sort toggle inside the injected Action header.
+  // Recreated whenever the dashboard rebuilds its table (state lives in the
+  // closure vars above, so the controls always come back showing the
+  // current query/direction). Every interaction stops propagation for the
+  // same reason the Action trigger does — it must never bubble into a
+  // dashboard's own header/row click handlers.
+  function buildActionHeaderControls(th) {
+    var wrap = document.createElement('div')
+    wrap.className = 'll-action-head'
+
+    var top = document.createElement('div')
+    top.className = 'll-action-head-top'
+    var label = document.createElement('span')
+    label.textContent = 'Action'
+    top.appendChild(label)
+
+    var sortBtn = document.createElement('button')
+    sortBtn.type = 'button'
+    sortBtn.className = 'll-action-sort'
+    sortBtn.setAttribute('data-longlist-action-sort', '')
+    function renderSortState() {
+      sortBtn.textContent =
+        actionSortDir === 1 ? '↑' : actionSortDir === -1 ? '↓' : '↕'
+      var labelText =
+        actionSortDir === 1
+          ? 'Sorted by action A to Z — click for Z to A'
+          : actionSortDir === -1
+            ? 'Sorted by action Z to A — click to clear'
+            : 'Sort by action'
+      sortBtn.title = labelText
+      sortBtn.setAttribute('aria-label', labelText)
+      sortBtn.classList.toggle('on', actionSortDir !== 0)
+    }
+    renderSortState()
+    sortBtn.addEventListener('click', function (event) {
+      event.stopPropagation()
+      event.preventDefault()
+      // asc -> desc -> off, the conventional three-state header cycle.
+      actionSortDir = actionSortDir === 0 ? 1 : actionSortDir === 1 ? -1 : 0
+      renderSortState()
+      schedulePaginationSync()
+    })
+    top.appendChild(sortBtn)
+    wrap.appendChild(top)
+
+    var input = document.createElement('input')
+    input.type = 'search'
+    input.className = 'll-action-search'
+    input.setAttribute('data-longlist-action-search', '')
+    input.placeholder = 'Search action…'
+    input.setAttribute('aria-label', 'Search by action')
+    input.value = actionSearchQuery
+    input.addEventListener('input', function () {
+      actionSearchQuery = input.value
+      schedulePaginationSync()
+    })
+    ;['click', 'mousedown', 'pointerdown', 'keydown'].forEach(function (type) {
+      input.addEventListener(type, function (event) {
+        event.stopPropagation()
+      })
+      wrap.addEventListener(type, function (event) {
+        event.stopPropagation()
+      })
+    })
+    wrap.appendChild(input)
+
+    th.appendChild(wrap)
+  }
+
   function ensureActionHeader(table) {
     var headRow = (table.querySelector('thead') || table).querySelector('tr')
     if (!headRow) return
     if (headRow.querySelector('[' + ACTION_HEADER_ATTR + ']')) return
     var th = document.createElement('th')
     th.setAttribute(ACTION_HEADER_ATTR, '')
-    th.textContent = 'Action'
+    // Search/sort only makes sense where the pagination pipeline (which
+    // implements the actual filtering/ordering) can run — both its paths
+    // require the dashboard's own window.__ROWS result array. A dashboard
+    // without one keeps the plain header exactly as before.
+    if (Array.isArray(window.__ROWS)) {
+      buildActionHeaderControls(th)
+    } else {
+      th.textContent = 'Action'
+    }
     stickyCellStyle(th, true)
     // A bare "Action" text node has no reason to be anywhere near as wide
     // as the 200px trigger button each body cell contains (see the
@@ -887,6 +1059,10 @@
     var name = trigger.getAttribute(ACTION_NAME_ATTR)
     if (!name) return
     actionValuesByName[name.toLowerCase()] = value || null
+    // An active Action search/sort must re-evaluate against the new value
+    // (e.g. the row may no longer match the current query).
+    actionDataVersion++
+    schedulePaginationSync()
     window.parent.postMessage(
       {
         type: 'longlist:action-update',
@@ -2192,17 +2368,28 @@
       state.page = 1
       state.dirty = true
     }
+    // Action search/sort participates exactly like a result-set change:
+    // any change to the query, direction, or the action values themselves
+    // re-derives the view and resets to page 1.
+    var viewKey = actionViewKey()
+    if (state.lastActionViewKey !== viewKey) {
+      state.lastActionViewKey = viewKey
+      state.page = 1
+      state.dirty = true
+    }
     if (!state.dirty) return
 
+    var viewRows = applyActionViewToArray(rows)
+
     var lookups = ensurePgLookups(table, state)
-    var calc = pgCalc(rows.length, state.page, state.size)
+    var calc = pgCalc(viewRows.length, state.page, state.size)
     state.page = calc.page
 
     var tbody = table.querySelector('tbody')
     if (!tbody) return
 
     tbody.innerHTML = calc.total
-      ? rows
+      ? viewRows
           .slice(calc.start, calc.end)
           .map(function (c) {
             return pgRowHtml(c, lookups)
@@ -2231,6 +2418,25 @@
   // click) is simply never touched — it's not one of the "full" rows this
   // counted, so it just sits there displayed exactly as the dashboard's
   // own script left it, next to whichever row it belongs to.
+  // A candidate row's trailing detail rows (the dashboard's own inline
+  // `<tr class="detail">`-shaped inserts — single colspan <td>), collected
+  // so a reorder moves them WITH their row and a filter hides them with it.
+  function collectDetailSiblings(tr) {
+    var out = []
+    var next = tr.nextElementSibling
+    while (
+      next &&
+      next.tagName === 'TR' &&
+      next.children.length === 1 &&
+      next.children[0].tagName === 'TD' &&
+      next.children[0].hasAttribute('colspan')
+    ) {
+      out.push(next)
+      next = next.nextElementSibling
+    }
+    return out
+  }
+
   function syncTablePaginationGeneric(table) {
     var rows = window.__ROWS
     if (!Array.isArray(rows)) return
@@ -2238,6 +2444,14 @@
     var state = getPgState(table)
     if (rows !== state.lastRows) {
       state.lastRows = rows
+      state.page = 1
+      state.dirty = true
+    }
+    // Action search/sort participates exactly like a result-set change —
+    // see syncTablePaginationReconstruct for the same check.
+    var viewKey = actionViewKey()
+    if (state.lastActionViewKey !== viewKey) {
+      state.lastActionViewKey = viewKey
       state.page = 1
       state.dirty = true
     }
@@ -2250,15 +2464,116 @@
     // the MutationObserver yet — bail rather than risk misnumbering pages.
     if (candidateRows.length !== rows.length) return
 
-    var calc = pgCalc(rows.length, state.page, state.size)
-    state.page = calc.page
+    if (!actionViewActive()) {
+      // If a previous pass re-ordered these same DOM rows by Action, put
+      // them back in the dashboard's own order first (each row was stamped
+      // with its original index the moment it was first moved). A fresh
+      // dashboard render replaces the nodes entirely, so stale stamps can
+      // never survive into a new result set.
+      if (state.actionReordered) {
+        state.actionReordered = false
+        var restoreBody = table.querySelector('tbody')
+        if (restoreBody) {
+          candidateRows
+            .map(function (tr) {
+              return { tr: tr, details: collectDetailSiblings(tr) }
+            })
+            .sort(function (a, b) {
+              return (a.tr.__llOrigIndex || 0) - (b.tr.__llOrigIndex || 0)
+            })
+            .forEach(function (unit) {
+              restoreBody.appendChild(unit.tr)
+              unit.details.forEach(function (detail) {
+                restoreBody.appendChild(detail)
+              })
+            })
+          candidateRows = getFullCandidateRows(table, headerCells.length)
+        }
+      }
+      // Feature off: byte-for-byte the pre-existing behavior.
+      var calc = pgCalc(rows.length, state.page, state.size)
+      state.page = calc.page
 
-    for (var i = 0; i < candidateRows.length; i++) {
-      candidateRows[i].style.display =
-        i >= calc.start && i < calc.end ? '' : 'none'
+      for (var i = 0; i < candidateRows.length; i++) {
+        candidateRows[i].style.display =
+          i >= calc.start && i < calc.end ? '' : 'none'
+      }
+
+      pgRenderPager(ensurePagerContainer(table), table, state, calc)
+      state.dirty = false
+      syncActionColumns()
+      return
     }
 
-    pgRenderPager(ensurePagerContainer(table), table, state, calc)
+    // Identity comes from the row's own rendered name cell — the exact
+    // same extraction the Action column itself keys its values by, so
+    // search/sort can never disagree with what the dropdown displays.
+    var nameIdx = findColumnIndex(headerCells, isNameHeader)
+    var query = actionSearchQuery.trim().toLowerCase()
+    var entries = candidateRows.map(function (tr, index) {
+      var action = actionTextForName(extractRowIdentity(tr, nameIdx))
+      return {
+        tr: tr,
+        index: index,
+        action: action,
+        details: collectDetailSiblings(tr),
+        matches: !query || action.toLowerCase().indexOf(query) !== -1,
+      }
+    })
+
+    if (actionSortDir !== 0) {
+      var tbody = table.querySelector('tbody')
+      // Stamp each row's pre-reorder position once (fresh dashboard
+      // renders produce fresh nodes, so a stamp always reflects the
+      // dashboard's own current order), so clearing the sort can restore
+      // that order without waiting for the dashboard's next render.
+      entries.forEach(function (entry) {
+        if (typeof entry.tr.__llOrigIndex === 'undefined') {
+          entry.tr.__llOrigIndex = entry.index
+        }
+      })
+      state.actionReordered = true
+      var ordered = entries.slice().sort(function (a, b) {
+        return (
+          actionSortDir * compareActionTexts(a.action, b.action) ||
+          a.index - b.index
+        )
+      })
+      // Moving (never rebuilding) the dashboard's own nodes: listeners,
+      // the injected Action cells, and any open Notes panel all survive.
+      // The dashboard never reads DOM order back — its own next render
+      // rebuilds the tbody from its data, and this pass then re-applies.
+      ordered.forEach(function (entry) {
+        tbody.appendChild(entry.tr)
+        entry.details.forEach(function (detail) {
+          tbody.appendChild(detail)
+        })
+      })
+      entries = ordered
+    }
+
+    var visible = entries.filter(function (entry) {
+      return entry.matches
+    })
+    var calcView = pgCalc(visible.length, state.page, state.size)
+    state.page = calcView.page
+
+    var shownFrom = calcView.start
+    var shownTo = calcView.end
+    var visibleIndex = 0
+    entries.forEach(function (entry) {
+      var show = false
+      if (entry.matches) {
+        show = visibleIndex >= shownFrom && visibleIndex < shownTo
+        visibleIndex++
+      }
+      entry.tr.style.display = show ? '' : 'none'
+      entry.details.forEach(function (detail) {
+        detail.style.display = show ? '' : 'none'
+      })
+    })
+
+    pgRenderPager(ensurePagerContainer(table), table, state, calcView)
     state.dirty = false
     syncActionColumns()
   }
@@ -2768,7 +3083,9 @@
             }
           })
         })
+        actionDataVersion++
         syncActionColumns()
+        schedulePaginationSync()
       }
 
       if (data.type === 'longlist:status-ack') {
