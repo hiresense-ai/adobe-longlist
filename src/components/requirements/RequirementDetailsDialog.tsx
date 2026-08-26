@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -18,6 +18,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog,
@@ -69,30 +70,113 @@ import {
 } from '@/lib/permissions'
 import { formatDate } from '@/utils/date'
 import {
+  REQUIREMENT_ROLE_TYPES,
   REQUIREMENT_STATUSES,
+  roleTypeLabel,
   type Requirement,
+  type RequirementRoleType,
   type RequirementStatus,
   type RequirementUserRef,
 } from '@/services/requirements.service'
 
-const editSchema = z
-  .object({
-    title: z.string().min(1, 'Requirement title is required'),
-    jdUrl: z
-      .string()
-      .trim()
-      .refine((value) => !value || /^https?:\/\//i.test(value), {
-        message: 'JD link must start with http:// or https://',
-      }),
-    jdText: z.string(),
-    contactNotes: z.string(),
-  })
-  .refine((value) => value.jdText.trim() || value.jdUrl.trim(), {
-    message: 'A requirement must keep a job description or a JD link.',
-    path: ['jdText'],
-  })
+/**
+ * Edit schema, parameterized on whether the requirement already carries
+ * the detail fields. New-era requirements (`requireDetails`) must keep
+ * them filled; requirements created before the fields existed may leave
+ * them blank (blank = unchanged, the update payload simply omits them) —
+ * but anything the user DOES enter must be valid and pair-consistent.
+ */
+function makeEditSchema(requireDetails: boolean) {
+  return z
+    .object({
+      title: z.string().min(1, 'Requirement title is required'),
+      jdUrl: z
+        .string()
+        .trim()
+        .refine((value) => !value || /^https?:\/\//i.test(value), {
+          message: 'JD link must start with http:// or https://',
+        }),
+      jdText: z.string(),
+      contactNotes: z.string(),
+      relevantExperience: z.string().trim(),
+      totalExperience: z.string().trim(),
+      roleType: z.string(),
+      idealCandidate: z
+        .string()
+        .max(2000, 'Ideal candidate description is too long.'),
+      notAFit: z.string().max(2000, 'Not-a-fit notes are too long.'),
+    })
+    .refine((value) => value.jdText.trim() || value.jdUrl.trim(), {
+      message: 'A requirement must keep a job description or a JD link.',
+      path: ['jdText'],
+    })
+    .superRefine((value, ctx) => {
+      const entries = [
+        {
+          raw: value.relevantExperience,
+          path: 'relevantExperience',
+          label: 'Relevant experience',
+        },
+        {
+          raw: value.totalExperience,
+          path: 'totalExperience',
+          label: 'Total experience',
+        },
+      ] as const
+      // Once either experience is present (or the row already has them),
+      // both are needed — a lone value can't satisfy the pair rule.
+      const experienceRequired =
+        requireDetails || entries.some((entry) => entry.raw !== '')
+      for (const { raw, path, label } of entries) {
+        if (raw === '') {
+          if (experienceRequired) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [path],
+              message: `${label} is required.`,
+            })
+          }
+        } else if (!Number.isFinite(Number(raw))) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [path],
+            message: `${label} must be a number of years.`,
+          })
+        } else if (Number(raw) < 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [path],
+            message: `${label} cannot be negative.`,
+          })
+        }
+      }
+      const relevant = Number(value.relevantExperience)
+      const total = Number(value.totalExperience)
+      if (
+        value.relevantExperience !== '' &&
+        value.totalExperience !== '' &&
+        Number.isFinite(relevant) &&
+        Number.isFinite(total) &&
+        total < relevant
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['totalExperience'],
+          message:
+            'Total experience must be greater than or equal to relevant experience.',
+        })
+      }
+      if (requireDetails && !value.roleType) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['roleType'],
+          message: 'Select a role type.',
+        })
+      }
+    })
+}
 
-type EditFormValues = z.infer<typeof editSchema>
+type EditFormValues = z.infer<ReturnType<typeof makeEditSchema>>
 
 /** Read-only chip row — rendered only when the list has entries, so an
  * empty Optional Skills/Target Companies list adds no blank section. */
@@ -168,23 +252,43 @@ export function RequirementDetailsDialog({
     statusMutation.isPending ||
     deleteMutation.isPending
 
+  // Old rows (pre-detail-fields) may keep their blanks; anything newer
+  // must keep the required detail fields filled through an edit.
+  const requireDetails =
+    requirement.relevantExperience != null ||
+    requirement.totalExperience != null ||
+    requirement.roleType != null
+
+  const editSchema = useMemo(
+    () => makeEditSchema(requireDetails),
+    [requireDetails],
+  )
+
+  const editDefaults = (): EditFormValues => ({
+    title: requirement.title,
+    jdUrl: requirement.jdUrl ?? '',
+    jdText: requirement.jdText ?? '',
+    contactNotes: requirement.contactNotes ?? '',
+    relevantExperience:
+      requirement.relevantExperience != null
+        ? String(requirement.relevantExperience)
+        : '',
+    totalExperience:
+      requirement.totalExperience != null
+        ? String(requirement.totalExperience)
+        : '',
+    roleType: requirement.roleType ?? '',
+    idealCandidate: requirement.idealCandidate ?? '',
+    notAFit: requirement.notAFit ?? '',
+  })
+
   const form = useForm<EditFormValues>({
     resolver: zodResolver(editSchema),
-    defaultValues: {
-      title: requirement.title,
-      jdUrl: requirement.jdUrl ?? '',
-      jdText: requirement.jdText ?? '',
-      contactNotes: requirement.contactNotes ?? '',
-    },
+    defaultValues: editDefaults(),
   })
 
   function startEdit() {
-    form.reset({
-      title: requirement.title,
-      jdUrl: requirement.jdUrl ?? '',
-      jdText: requirement.jdText ?? '',
-      contactNotes: requirement.contactNotes ?? '',
-    })
+    form.reset(editDefaults())
     setEditTopSkills(requirement.topSkills ?? [])
     setEditOptionalSkills(requirement.optionalSkills ?? [])
     setEditTargetCompanies(requirement.targetCompanies ?? [])
@@ -202,7 +306,7 @@ export function RequirementDetailsDialog({
 
   async function onSaveEdit(values: EditFormValues) {
     if (editTopSkills.length === 0) {
-      setTopSkillsError('Add at least one top skill.')
+      setTopSkillsError('Add at least one must-have skill.')
       return
     }
     try {
@@ -214,6 +318,19 @@ export function RequirementDetailsDialog({
         topSkills: editTopSkills,
         optionalSkills: editOptionalSkills,
         targetCompanies: editTargetCompanies,
+        // Blank on an old (pre-detail-fields) row means "unchanged" — the
+        // keys are omitted so nothing is invented for legacy data.
+        ...(values.relevantExperience.trim() !== ''
+          ? { relevantExperience: Number(values.relevantExperience) }
+          : {}),
+        ...(values.totalExperience.trim() !== ''
+          ? { totalExperience: Number(values.totalExperience) }
+          : {}),
+        ...(values.roleType
+          ? { roleType: values.roleType as RequirementRoleType }
+          : {}),
+        idealCandidate: values.idealCandidate.trim() || null,
+        notAFit: values.notAFit.trim() || null,
         // The contactNotes key is only ever sent by a Super Admin — the
         // Edge Function rejects the key outright from anyone else.
         ...(canManageLifecycle
@@ -362,7 +479,7 @@ export function RequirementDetailsDialog({
                 />
                 <div className="grid gap-2">
                   <Label htmlFor="requirement-edit-top-skills">
-                    Top skills
+                    Must-have skills
                   </Label>
                   <TagInput
                     id="requirement-edit-top-skills"
@@ -390,6 +507,94 @@ export function RequirementDetailsDialog({
                     disabled={isBusy}
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="relevantExperience"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Relevant experience</FormLabel>
+                        <FormControl>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.5}
+                              placeholder="e.g. 3"
+                              disabled={isBusy}
+                              {...field}
+                            />
+                            <span className="text-muted-foreground shrink-0 text-sm">
+                              years
+                            </span>
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="totalExperience"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Total experience</FormLabel>
+                        <FormControl>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.5}
+                              placeholder="e.g. 5"
+                              disabled={isBusy}
+                              {...field}
+                            />
+                            <span className="text-muted-foreground shrink-0 text-sm">
+                              years
+                            </span>
+                          </div>
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <FormField
+                  control={form.control}
+                  name="roleType"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Role type</FormLabel>
+                      <FormControl>
+                        <RadioGroup
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          disabled={isBusy}
+                          className="flex flex-col gap-2 pt-1"
+                        >
+                          {REQUIREMENT_ROLE_TYPES.map((roleType) => (
+                            <div
+                              key={roleType.value}
+                              className="flex items-center gap-2"
+                            >
+                              <RadioGroupItem
+                                value={roleType.value}
+                                id={`requirement-edit-role-${roleType.value}`}
+                              />
+                              <Label
+                                htmlFor={`requirement-edit-role-${roleType.value}`}
+                                className="font-normal"
+                              >
+                                {roleType.label}
+                              </Label>
+                            </div>
+                          ))}
+                        </RadioGroup>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <div className="grid gap-2">
                   <Label htmlFor="requirement-edit-target-companies">
                     Target companies
@@ -402,6 +607,42 @@ export function RequirementDetailsDialog({
                     disabled={isBusy}
                   />
                 </div>
+                <FormField
+                  control={form.control}
+                  name="idealCandidate"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Ideal candidate (optional)</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Describe the ideal candidate profile…"
+                          rows={3}
+                          disabled={isBusy}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="notAFit"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Not a fit (optional)</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Describe anything that is not required or would not be a good fit…"
+                          rows={3}
+                          disabled={isBusy}
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 {canManageLifecycle && (
                   <FormField
                     control={form.control}
@@ -506,15 +747,74 @@ export function RequirementDetailsDialog({
                     </div>
                   </div>
                 )}
-                <ChipList label="Top skills" values={requirement.topSkills} />
+                <ChipList
+                  label="Must-have skills"
+                  values={requirement.topSkills}
+                />
                 <ChipList
                   label="Optional skills"
                   values={requirement.optionalSkills}
                 />
+                {(requirement.relevantExperience != null ||
+                  requirement.totalExperience != null ||
+                  requirement.roleType) && (
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                    {requirement.relevantExperience != null && (
+                      <div>
+                        <p className="text-muted-foreground text-xs">
+                          Relevant experience
+                        </p>
+                        <p className="text-foreground">
+                          {requirement.relevantExperience} years
+                        </p>
+                      </div>
+                    )}
+                    {requirement.totalExperience != null && (
+                      <div>
+                        <p className="text-muted-foreground text-xs">
+                          Total experience
+                        </p>
+                        <p className="text-foreground">
+                          {requirement.totalExperience} years
+                        </p>
+                      </div>
+                    )}
+                    {requirement.roleType && (
+                      <div>
+                        <p className="text-muted-foreground text-xs">
+                          Role type
+                        </p>
+                        <p className="text-foreground">
+                          {roleTypeLabel(requirement.roleType)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <ChipList
                   label="Target companies"
                   values={requirement.targetCompanies}
                 />
+                {requirement.idealCandidate && (
+                  <div>
+                    <p className="text-muted-foreground mb-1 text-xs">
+                      Ideal candidate
+                    </p>
+                    <div className="border-border bg-muted/30 rounded-lg border p-3 text-sm whitespace-pre-wrap">
+                      {requirement.idealCandidate}
+                    </div>
+                  </div>
+                )}
+                {requirement.notAFit && (
+                  <div>
+                    <p className="text-muted-foreground mb-1 text-xs">
+                      Not a fit
+                    </p>
+                    <div className="border-border bg-muted/30 rounded-lg border p-3 text-sm whitespace-pre-wrap">
+                      {requirement.notAFit}
+                    </div>
+                  </div>
+                )}
                 {requirement.contactNotes && (
                   <div>
                     <p className="text-muted-foreground mb-1 text-xs">
