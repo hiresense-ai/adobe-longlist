@@ -81,6 +81,13 @@ const RATE_LIMIT_MAX_ACTIONS = 60
 const STATUSES = ['Pending', 'Contacted', 'In Progress', 'Completed'] as const
 type RequirementStatus = (typeof STATUSES)[number]
 
+// Stable stored values; display labels ("IC (Individual Contributor)" /
+// "Manager") live in the frontend only. Matches the DB CHECK constraint.
+const ROLE_TYPES = ['ic', 'manager'] as const
+type RoleType = (typeof ROLE_TYPES)[number]
+
+const MAX_EXPERIENCE_YEARS = 99
+
 type CallerRole = 'super_admin' | 'admin' | 'viewer'
 
 interface CreatePayload {
@@ -90,6 +97,11 @@ interface CreatePayload {
   topSkills?: unknown
   optionalSkills?: unknown
   targetCompanies?: unknown
+  relevantExperience?: unknown
+  totalExperience?: unknown
+  roleType?: unknown
+  notAFit?: unknown
+  idealCandidate?: unknown
 }
 interface GetPayload {
   requirementId: string
@@ -103,6 +115,11 @@ interface UpdatePayload {
   topSkills?: unknown
   optionalSkills?: unknown
   targetCompanies?: unknown
+  relevantExperience?: unknown
+  totalExperience?: unknown
+  roleType?: unknown
+  notAFit?: unknown
+  idealCandidate?: unknown
 }
 interface UpdateStatusPayload {
   requirementId: string
@@ -152,10 +169,16 @@ interface RequirementRow {
   top_skills: ListEntryRow[]
   optional_skills: ListEntryRow[]
   target_companies: ListEntryRow[]
+  relevant_experience: number | null
+  total_experience: number | null
+  role_type: RoleType | null
+  not_a_fit: string | null
+  ideal_candidate: string | null
 }
 
 const ROW_SELECT =
   'id, title, jd_text, jd_url, status, created_by, contacted_by, contacted_at, contact_notes, created_at, updated_at, ' +
+  'relevant_experience, total_experience, role_type, not_a_fit, ideal_candidate, ' +
   'creator:profiles!requirements_created_by_fkey(id, name, email), ' +
   'contactor:profiles!requirements_contacted_by_fkey(id, name, email), ' +
   'top_skills:requirement_top_skills(skill, position), ' +
@@ -204,6 +227,14 @@ function shapeRequirement(row: RequirementRow, callerRole: CallerRole) {
     topSkills: orderedValues(row.top_skills),
     optionalSkills: orderedValues(row.optional_skills),
     targetCompanies: orderedValues(row.target_companies),
+    // Null on rows created before these fields existed — the UI treats
+    // null as "not set" and hides the sections rather than inventing
+    // values for old requirements.
+    relevantExperience: row.relevant_experience,
+    totalExperience: row.total_experience,
+    roleType: row.role_type,
+    notAFit: row.not_a_fit,
+    idealCandidate: row.ideal_candidate,
     updatedAt: row.updated_at,
     contactedBy: row.contactor
       ? {
@@ -475,12 +506,12 @@ function normalizeContactNotes(value: unknown): {
 }
 
 /**
- * Normalizes a chip list (top skills / optional skills / target
+ * Normalizes a chip list (must-have skills / optional skills / target
  * companies): trims every entry, drops empties, dedupes
  * case-insensitively keeping the first occurrence's casing (" React " and
  * "react" collapse to one "React"-cased entry), and bounds size. Absent
  * key → empty list; whether empty is acceptable is the caller's rule
- * (top skills: no, the other two: yes).
+ * (must-have skills: no, the other two: yes).
  */
 function normalizeList(
   value: unknown,
@@ -509,6 +540,60 @@ function normalizeList(
   }
   return { items }
 }
+
+/** Experience in years: a finite non-negative number (decimals like 3.5
+ * are fine), bounded to a sane range. Accepts a numeric string too, since
+ * HTML number inputs serialize as strings in some paths. */
+function normalizeExperience(
+  value: unknown,
+  label: string,
+): { years?: number; error?: string } {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim() !== ''
+        ? Number(value)
+        : NaN
+  if (!Number.isFinite(parsed)) {
+    return { error: `${label} must be a number of years.` }
+  }
+  if (parsed < 0) return { error: `${label} cannot be negative.` }
+  if (parsed > MAX_EXPERIENCE_YEARS) {
+    return { error: `${label} must be ${MAX_EXPERIENCE_YEARS} years or fewer.` }
+  }
+  // Two decimals is plenty for "years" — keeps stored values tidy.
+  return { years: Math.round(parsed * 100) / 100 }
+}
+
+function normalizeRoleType(value: unknown): {
+  roleType?: RoleType
+  error?: string
+} {
+  if (typeof value !== 'string' || !ROLE_TYPES.includes(value as RoleType)) {
+    return { error: 'Select a role type.' }
+  }
+  return { roleType: value as RoleType }
+}
+
+/** Optional free-text field (not-a-fit notes, ideal-candidate profile):
+ * absent/blank normalizes to null, anything present is trimmed and
+ * length-bounded. */
+function normalizeOptionalText(
+  value: unknown,
+  label: string,
+): { text?: string | null; error?: string } {
+  if (value === null || value === undefined) return { text: null }
+  if (typeof value !== 'string') return { error: `Invalid ${label}.` }
+  const text = value.trim()
+  if (!text) return { text: null }
+  if (text.length > MAX_CONTACT_NOTES_LENGTH) {
+    return { error: `${label[0].toUpperCase()}${label.slice(1)} is too long.` }
+  }
+  return { text }
+}
+
+const EXPERIENCE_PAIR_ERROR =
+  'Total experience must be greater than or equal to relevant experience.'
 
 const LIST_TABLES = {
   topSkills: { table: 'requirement_top_skills', column: 'skill' },
@@ -621,14 +706,14 @@ async function createRequirement(
 
   const { items: topSkills, error: topSkillsError } = normalizeList(
     p.topSkills,
-    'top skills',
+    'must-have skills',
   )
   if (topSkillsError) return json({ error: topSkillsError }, 400, cors)
   // The one required list — enforced HERE, not just in the form, so a
   // hand-crafted request with topSkills: [] (or all-blank entries) is
   // rejected the same way the UI rejects it.
   if (!topSkills || topSkills.length === 0) {
-    return json({ error: 'Add at least one top skill.' }, 400, cors)
+    return json({ error: 'Add at least one must-have skill.' }, 400, cors)
   }
   const { items: optionalSkills, error: optionalSkillsError } = normalizeList(
     p.optionalSkills,
@@ -645,6 +730,34 @@ async function createRequirement(
     return json({ error: targetCompaniesError }, 400, cors)
   }
 
+  // Required detail fields — enforced HERE, not just in the form, same as
+  // the at-least-one-top-skill rule above. (Existing rows created before
+  // these fields existed keep their nulls; requiredness applies to new
+  // creations only.)
+  const { years: relevantExperience, error: relevantError } =
+    normalizeExperience(p.relevantExperience, 'Relevant experience')
+  if (relevantError) return json({ error: relevantError }, 400, cors)
+  const { years: totalExperience, error: totalError } = normalizeExperience(
+    p.totalExperience,
+    'Total experience',
+  )
+  if (totalError) return json({ error: totalError }, 400, cors)
+  if (totalExperience! < relevantExperience!) {
+    return json({ error: EXPERIENCE_PAIR_ERROR }, 400, cors)
+  }
+  const { roleType, error: roleTypeError } = normalizeRoleType(p.roleType)
+  if (roleTypeError) return json({ error: roleTypeError }, 400, cors)
+  const { text: notAFit, error: notAFitError } = normalizeOptionalText(
+    p.notAFit,
+    'not-a-fit notes',
+  )
+  if (notAFitError) return json({ error: notAFitError }, 400, cors)
+  const { text: idealCandidate, error: idealCandidateError } =
+    normalizeOptionalText(p.idealCandidate, 'ideal candidate description')
+  if (idealCandidateError) {
+    return json({ error: idealCandidateError }, 400, cors)
+  }
+
   // Status is not read from the payload at all: every requirement starts
   // life as 'Pending', created by the verified caller — for every role.
   const { data, error } = await admin
@@ -655,6 +768,11 @@ async function createRequirement(
       jd_url: jdUrl,
       status: 'Pending',
       created_by: callerId,
+      relevant_experience: relevantExperience,
+      total_experience: totalExperience,
+      role_type: roleType,
+      not_a_fit: notAFit,
+      ideal_candidate: idealCandidate,
     })
     .select('id')
     .single()
@@ -747,7 +865,7 @@ async function updateRequirement(
     }
   }
 
-  const updates: Record<string, string | null> = {}
+  const updates: Record<string, string | number | null> = {}
 
   if (Object.prototype.hasOwnProperty.call(p, 'title')) {
     const { title, error } = normalizeTitle(p.title)
@@ -785,16 +903,69 @@ async function updateRequirement(
     if (!Object.prototype.hasOwnProperty.call(p, key)) continue
     const label =
       key === 'topSkills'
-        ? 'top skills'
+        ? 'must-have skills'
         : key === 'optionalSkills'
           ? 'optional skills'
           : 'target companies'
     const { items, error } = normalizeList(p[key], label)
     if (error) return json({ error }, 400, cors)
     if (key === 'topSkills' && (!items || items.length === 0)) {
-      return json({ error: 'Add at least one top skill.' }, 400, cors)
+      return json({ error: 'Add at least one must-have skill.' }, 400, cors)
     }
     listChanges[key] = items!
+  }
+
+  // Detail fields — a present key must carry a valid value (these are
+  // required on new requirements, so an edit can refine but never clear
+  // them; not_a_fit alone is clearable). The experience pair is checked
+  // against EFFECTIVE values — the provided one, or the row's current one
+  // when only one side is being edited — so an edit can never leave
+  // total < relevant. Rows from before these fields existed have nulls,
+  // which skip the pair check exactly like the DB constraint does.
+  if (Object.prototype.hasOwnProperty.call(p, 'relevantExperience')) {
+    const { years, error } = normalizeExperience(
+      p.relevantExperience,
+      'Relevant experience',
+    )
+    if (error) return json({ error }, 400, cors)
+    updates.relevant_experience = years!
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'totalExperience')) {
+    const { years, error } = normalizeExperience(
+      p.totalExperience,
+      'Total experience',
+    )
+    if (error) return json({ error }, 400, cors)
+    updates.total_experience = years!
+  }
+  const nextRelevant =
+    'relevant_experience' in updates
+      ? (updates.relevant_experience as number)
+      : row.relevant_experience
+  const nextTotal =
+    'total_experience' in updates
+      ? (updates.total_experience as number)
+      : row.total_experience
+  if (nextRelevant !== null && nextTotal !== null && nextTotal < nextRelevant) {
+    return json({ error: EXPERIENCE_PAIR_ERROR }, 400, cors)
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'roleType')) {
+    const { roleType, error } = normalizeRoleType(p.roleType)
+    if (error) return json({ error }, 400, cors)
+    updates.role_type = roleType!
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'notAFit')) {
+    const { text, error } = normalizeOptionalText(p.notAFit, 'not-a-fit notes')
+    if (error) return json({ error }, 400, cors)
+    updates.not_a_fit = text ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'idealCandidate')) {
+    const { text, error } = normalizeOptionalText(
+      p.idealCandidate,
+      'ideal candidate description',
+    )
+    if (error) return json({ error }, 400, cors)
+    updates.ideal_candidate = text ?? null
   }
 
   if (

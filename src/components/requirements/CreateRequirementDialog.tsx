@@ -8,6 +8,7 @@ import { Loader2, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog,
@@ -28,6 +29,26 @@ import {
 import { TagInput } from '@/components/requirements/TagInput'
 import { useCreateRequirement } from '@/hooks/useRequirements'
 import { getErrorMessage } from '@/lib/errors'
+import {
+  REQUIREMENT_ROLE_TYPES,
+  type RequirementRoleType,
+} from '@/services/requirements.service'
+
+/** Years-of-experience input: required, numeric, non-negative — decimals
+ * like 3.5 are fine. Kept as a string in the form (HTML inputs are
+ * strings) and converted on submit; the Edge Function re-validates. */
+function experienceField(label: string) {
+  return z
+    .string()
+    .trim()
+    .min(1, `${label} is required.`)
+    .refine((value) => Number.isFinite(Number(value)), {
+      message: `${label} must be a number of years.`,
+    })
+    .refine((value) => Number(value) >= 0, {
+      message: `${label} cannot be negative.`,
+    })
+}
 
 const createSchema = z
   .object({
@@ -39,11 +60,36 @@ const createSchema = z
         message: 'JD link must start with http:// or https://',
       }),
     jdText: z.string(),
+    relevantExperience: experienceField('Relevant experience'),
+    totalExperience: experienceField('Total experience'),
+    roleType: z.string().min(1, 'Select a role type.'),
+    idealCandidate: z
+      .string()
+      .max(2000, 'Ideal candidate description is too long.'),
+    notAFit: z.string().max(2000, 'Not-a-fit notes are too long.'),
   })
   .refine((value) => value.jdText.trim() || value.jdUrl.trim(), {
     message: 'Provide a job description, a JD link, or both.',
     path: ['jdText'],
   })
+  .refine(
+    (value) => {
+      const relevant = Number(value.relevantExperience)
+      const total = Number(value.totalExperience)
+      // Only compare once both parse — each field's own rules report
+      // non-numeric input with a more specific message.
+      return (
+        !Number.isFinite(relevant) ||
+        !Number.isFinite(total) ||
+        total >= relevant
+      )
+    },
+    {
+      message:
+        'Total experience must be greater than or equal to relevant experience.',
+      path: ['totalExperience'],
+    },
+  )
 
 type CreateFormValues = z.infer<typeof createSchema>
 
@@ -59,6 +105,8 @@ export function CreateRequirementDialog({
 }) {
   const createMutation = useCreateRequirement()
 
+  // Displayed as "Must-Have Skills" — internally this is still the
+  // top_skills architecture, unchanged (rename is a label change only).
   const [topSkills, setTopSkills] = useState<string[]>([])
   const [optionalSkills, setOptionalSkills] = useState<string[]>([])
   const [targetCompanies, setTargetCompanies] = useState<string[]>([])
@@ -66,7 +114,16 @@ export function CreateRequirementDialog({
 
   const form = useForm<CreateFormValues>({
     resolver: zodResolver(createSchema),
-    defaultValues: { title: '', jdUrl: '', jdText: '' },
+    defaultValues: {
+      title: '',
+      jdUrl: '',
+      jdText: '',
+      relevantExperience: '',
+      totalExperience: '',
+      roleType: '',
+      idealCandidate: '',
+      notAFit: '',
+    },
   })
 
   function resetAll() {
@@ -87,7 +144,7 @@ export function CreateRequirementDialog({
     // checked by hand — same pattern as the Upload dialog's file errors.
     // The Edge Function enforces it again server-side regardless.
     if (topSkills.length === 0) {
-      setTopSkillsError('Add at least one top skill.')
+      setTopSkillsError('Add at least one must-have skill.')
       return
     }
     try {
@@ -98,6 +155,11 @@ export function CreateRequirementDialog({
         topSkills,
         optionalSkills,
         targetCompanies,
+        relevantExperience: Number(values.relevantExperience),
+        totalExperience: Number(values.totalExperience),
+        roleType: values.roleType as RequirementRoleType,
+        idealCandidate: values.idealCandidate.trim() || null,
+        notAFit: values.notAFit.trim() || null,
       })
       toast.success(`${values.title} created`)
       resetAll()
@@ -111,7 +173,7 @@ export function CreateRequirementDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Create requirement</DialogTitle>
           <DialogDescription>
@@ -121,41 +183,45 @@ export function CreateRequirementDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="title"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Requirement title</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="e.g. Adobe AEM Architect"
-                      disabled={isSubmitting}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="jdUrl"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>JD link (optional)</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="https://…"
-                      disabled={isSubmitting}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            {/* Field pairs sit side by side from `sm` up purely to keep
+                the dialog short — on narrow viewports every pair stacks
+                back to a single column, preserving the same field order. */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="title"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Requirement title</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="e.g. Adobe AEM Architect"
+                        disabled={isSubmitting}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="jdUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>JD link (optional)</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="https://…"
+                        disabled={isSubmitting}
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
 
             <FormField
               control={form.control}
@@ -166,7 +232,7 @@ export function CreateRequirementDialog({
                   <FormControl>
                     <Textarea
                       placeholder="Paste the full job description…"
-                      rows={6}
+                      rows={4}
                       disabled={isSubmitting}
                       {...field}
                     />
@@ -176,48 +242,178 @@ export function CreateRequirementDialog({
               )}
             />
 
-            <div className="grid gap-2">
-              <Label htmlFor="requirement-top-skills">Top skills</Label>
-              <TagInput
-                id="requirement-top-skills"
-                values={topSkills}
-                onChange={(next) => {
-                  setTopSkills(next)
-                  if (next.length > 0) setTopSkillsError(undefined)
-                }}
-                placeholder="Type a skill and press Enter…"
-                disabled={isSubmitting}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid content-start gap-2">
+                <Label htmlFor="requirement-top-skills">Must-have skills</Label>
+                <TagInput
+                  id="requirement-top-skills"
+                  values={topSkills}
+                  onChange={(next) => {
+                    setTopSkills(next)
+                    if (next.length > 0) setTopSkillsError(undefined)
+                  }}
+                  placeholder="Type a skill and press Enter…"
+                  disabled={isSubmitting}
+                />
+                {topSkillsError && (
+                  <p className="text-destructive text-sm">{topSkillsError}</p>
+                )}
+              </div>
+              <div className="grid content-start gap-2">
+                <Label htmlFor="requirement-optional-skills">
+                  Optional skills
+                </Label>
+                <TagInput
+                  id="requirement-optional-skills"
+                  values={optionalSkills}
+                  onChange={setOptionalSkills}
+                  placeholder="Type a skill and press Enter…"
+                  disabled={isSubmitting}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="relevantExperience"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Relevant experience</FormLabel>
+                    <FormControl>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          placeholder="e.g. 3"
+                          disabled={isSubmitting}
+                          {...field}
+                        />
+                        <span className="text-muted-foreground shrink-0 text-sm">
+                          years
+                        </span>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              {topSkillsError && (
-                <p className="text-destructive text-sm">{topSkillsError}</p>
+              <FormField
+                control={form.control}
+                name="totalExperience"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Total experience</FormLabel>
+                    <FormControl>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          placeholder="e.g. 5"
+                          disabled={isSubmitting}
+                          {...field}
+                        />
+                        <span className="text-muted-foreground shrink-0 text-sm">
+                          years
+                        </span>
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="roleType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Role type</FormLabel>
+                    <FormControl>
+                      <RadioGroup
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        disabled={isSubmitting}
+                        className="flex flex-col gap-2 pt-1"
+                      >
+                        {REQUIREMENT_ROLE_TYPES.map((roleType) => (
+                          <div
+                            key={roleType.value}
+                            className="flex items-center gap-2"
+                          >
+                            <RadioGroupItem
+                              value={roleType.value}
+                              id={`requirement-role-${roleType.value}`}
+                            />
+                            <Label
+                              htmlFor={`requirement-role-${roleType.value}`}
+                              className="font-normal"
+                            >
+                              {roleType.label}
+                            </Label>
+                          </div>
+                        ))}
+                      </RadioGroup>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="grid content-start gap-2">
+                <Label htmlFor="requirement-target-companies">
+                  Target companies
+                </Label>
+                <TagInput
+                  id="requirement-target-companies"
+                  values={targetCompanies}
+                  onChange={setTargetCompanies}
+                  placeholder="Type a company and press Enter…"
+                  disabled={isSubmitting}
+                />
+              </div>
+            </div>
+
+            <FormField
+              control={form.control}
+              name="idealCandidate"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Ideal candidate (optional)</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="Describe the ideal candidate profile…"
+                      rows={3}
+                      disabled={isSubmitting}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
               )}
-            </div>
+            />
 
-            <div className="grid gap-2">
-              <Label htmlFor="requirement-optional-skills">
-                Optional skills
-              </Label>
-              <TagInput
-                id="requirement-optional-skills"
-                values={optionalSkills}
-                onChange={setOptionalSkills}
-                placeholder="Type a skill and press Enter…"
-                disabled={isSubmitting}
-              />
-            </div>
-
-            <div className="grid gap-2">
-              <Label htmlFor="requirement-target-companies">
-                Target companies
-              </Label>
-              <TagInput
-                id="requirement-target-companies"
-                values={targetCompanies}
-                onChange={setTargetCompanies}
-                placeholder="Type a company and press Enter…"
-                disabled={isSubmitting}
-              />
-            </div>
+            <FormField
+              control={form.control}
+              name="notAFit"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Not a fit (optional)</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="Describe anything that is not required or would not be a good fit…"
+                      rows={3}
+                      disabled={isSubmitting}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <DialogFooter>
               <Button
