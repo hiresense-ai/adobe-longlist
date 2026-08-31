@@ -696,22 +696,21 @@ async function createRequirement(
   const { jdUrl, error: jdUrlError } = normalizeJdUrl(p.jdUrl)
   if (jdUrlError) return json({ error: jdUrlError }, 400, cors)
 
-  if (!jdText && !jdUrl) {
-    return json(
-      { error: 'Provide a job description, a JD link, or both.' },
-      400,
-      cors,
-    )
+  // The JD link is the ONLY optional field on a new requirement — the JD
+  // text itself is required (blank/whitespace-only normalizes to null
+  // above, so this also rejects whitespace-only input).
+  if (!jdText) {
+    return json({ error: 'Job description is required.' }, 400, cors)
   }
 
+  // Every chip list is required — enforced HERE, not just in the form, so
+  // a hand-crafted request with an empty array (or all-blank entries) is
+  // rejected the same way the UI rejects it.
   const { items: topSkills, error: topSkillsError } = normalizeList(
     p.topSkills,
     'must-have skills',
   )
   if (topSkillsError) return json({ error: topSkillsError }, 400, cors)
-  // The one required list — enforced HERE, not just in the form, so a
-  // hand-crafted request with topSkills: [] (or all-blank entries) is
-  // rejected the same way the UI rejects it.
   if (!topSkills || topSkills.length === 0) {
     return json({ error: 'Add at least one must-have skill.' }, 400, cors)
   }
@@ -722,12 +721,18 @@ async function createRequirement(
   if (optionalSkillsError) {
     return json({ error: optionalSkillsError }, 400, cors)
   }
+  if (!optionalSkills || optionalSkills.length === 0) {
+    return json({ error: 'Add at least one optional skill.' }, 400, cors)
+  }
   const { items: targetCompanies, error: targetCompaniesError } = normalizeList(
     p.targetCompanies,
     'target companies',
   )
   if (targetCompaniesError) {
     return json({ error: targetCompaniesError }, 400, cors)
+  }
+  if (!targetCompanies || targetCompanies.length === 0) {
+    return json({ error: 'Add at least one target company.' }, 400, cors)
   }
 
   // Required detail fields — enforced HERE, not just in the form, same as
@@ -752,10 +757,20 @@ async function createRequirement(
     'not-a-fit notes',
   )
   if (notAFitError) return json({ error: notAFitError }, 400, cors)
+  if (!notAFit) {
+    return json({ error: 'Not-a-fit notes are required.' }, 400, cors)
+  }
   const { text: idealCandidate, error: idealCandidateError } =
     normalizeOptionalText(p.idealCandidate, 'ideal candidate description')
   if (idealCandidateError) {
     return json({ error: idealCandidateError }, 400, cors)
+  }
+  if (!idealCandidate) {
+    return json(
+      { error: 'Ideal candidate description is required.' },
+      400,
+      cors,
+    )
   }
 
   // Status is not read from the payload at all: every requirement starts
@@ -875,6 +890,12 @@ async function updateRequirement(
   if (Object.prototype.hasOwnProperty.call(p, 'jdText')) {
     const { jdText, error } = normalizeJdText(p.jdText)
     if (error) return json({ error }, 400, cors)
+    // Required on new requirements — an edit may refine it but never
+    // clear an existing value. Rows from before this rule (JD-link-only)
+    // may keep their null, so they stay editable as they are.
+    if (!jdText && row.jd_text) {
+      return json({ error: 'Job description is required.' }, 400, cors)
+    }
     updates.jd_text = jdText ?? null
   }
   if (Object.prototype.hasOwnProperty.call(p, 'jdUrl')) {
@@ -909,15 +930,32 @@ async function updateRequirement(
           : 'target companies'
     const { items, error } = normalizeList(p[key], label)
     if (error) return json({ error }, 400, cors)
-    if (key === 'topSkills' && (!items || items.length === 0)) {
-      return json({ error: 'Add at least one must-have skill.' }, 400, cors)
+    // Every list is required on new requirements — an edit may replace a
+    // list but never empty one that has entries. A legacy row whose list
+    // is already empty may stay empty, so it remains editable as-is.
+    if (!items || items.length === 0) {
+      const current =
+        key === 'topSkills'
+          ? orderedValues(row.top_skills)
+          : key === 'optionalSkills'
+            ? orderedValues(row.optional_skills)
+            : orderedValues(row.target_companies)
+      if (key === 'topSkills' || current.length > 0) {
+        const noun =
+          key === 'topSkills'
+            ? 'must-have skill'
+            : key === 'optionalSkills'
+              ? 'optional skill'
+              : 'target company'
+        return json({ error: `Add at least one ${noun}.` }, 400, cors)
+      }
     }
     listChanges[key] = items!
   }
 
   // Detail fields — a present key must carry a valid value (these are
   // required on new requirements, so an edit can refine but never clear
-  // them; not_a_fit alone is clearable). The experience pair is checked
+  // them). The experience pair is checked
   // against EFFECTIVE values — the provided one, or the row's current one
   // when only one side is being edited — so an edit can never leave
   // total < relevant. Rows from before these fields existed have nulls,
@@ -957,6 +995,9 @@ async function updateRequirement(
   if (Object.prototype.hasOwnProperty.call(p, 'notAFit')) {
     const { text, error } = normalizeOptionalText(p.notAFit, 'not-a-fit notes')
     if (error) return json({ error }, 400, cors)
+    if (!text && row.not_a_fit) {
+      return json({ error: 'Not-a-fit notes are required.' }, 400, cors)
+    }
     updates.not_a_fit = text ?? null
   }
   if (Object.prototype.hasOwnProperty.call(p, 'idealCandidate')) {
@@ -965,6 +1006,13 @@ async function updateRequirement(
       'ideal candidate description',
     )
     if (error) return json({ error }, 400, cors)
+    if (!text && row.ideal_candidate) {
+      return json(
+        { error: 'Ideal candidate description is required.' },
+        400,
+        cors,
+      )
+    }
     updates.ideal_candidate = text ?? null
   }
 

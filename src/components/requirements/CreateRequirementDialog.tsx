@@ -53,24 +53,29 @@ function experienceField(label: string) {
 const createSchema = z
   .object({
     title: z.string().min(1, 'Requirement title is required'),
+    // The ONLY optional field on this form — everything else must be
+    // filled in before Create succeeds (the Edge Function enforces the
+    // same set server-side).
     jdUrl: z
       .string()
       .trim()
       .refine((value) => !value || /^https?:\/\//i.test(value), {
         message: 'JD link must start with http:// or https://',
       }),
-    jdText: z.string(),
+    jdText: z.string().trim().min(1, 'Job description is required.'),
     relevantExperience: experienceField('Relevant experience'),
     totalExperience: experienceField('Total experience'),
     roleType: z.string().min(1, 'Select a role type.'),
     idealCandidate: z
       .string()
+      .trim()
+      .min(1, 'Ideal candidate description is required.')
       .max(2000, 'Ideal candidate description is too long.'),
-    notAFit: z.string().max(2000, 'Not-a-fit notes are too long.'),
-  })
-  .refine((value) => value.jdText.trim() || value.jdUrl.trim(), {
-    message: 'Provide a job description, a JD link, or both.',
-    path: ['jdText'],
+    notAFit: z
+      .string()
+      .trim()
+      .min(1, 'Not-a-fit notes are required.')
+      .max(2000, 'Not-a-fit notes are too long.'),
   })
   .refine(
     (value) => {
@@ -111,6 +116,12 @@ export function CreateRequirementDialog({
   const [optionalSkills, setOptionalSkills] = useState<string[]>([])
   const [targetCompanies, setTargetCompanies] = useState<string[]>([])
   const [topSkillsError, setTopSkillsError] = useState<string | undefined>()
+  const [optionalSkillsError, setOptionalSkillsError] = useState<
+    string | undefined
+  >()
+  const [targetCompaniesError, setTargetCompaniesError] = useState<
+    string | undefined
+  >()
 
   const form = useForm<CreateFormValues>({
     resolver: zodResolver(createSchema),
@@ -132,6 +143,8 @@ export function CreateRequirementDialog({
     setOptionalSkills([])
     setTargetCompanies([])
     setTopSkillsError(undefined)
+    setOptionalSkillsError(undefined)
+    setTargetCompaniesError(undefined)
   }
 
   function handleOpenChange(next: boolean) {
@@ -139,18 +152,36 @@ export function CreateRequirementDialog({
     onOpenChange(next)
   }
 
-  async function onSubmit(values: CreateFormValues) {
-    // Chip lists live outside react-hook-form, so the required rule is
-    // checked by hand — same pattern as the Upload dialog's file errors.
-    // The Edge Function enforces it again server-side regardless.
+  // Chip lists live outside react-hook-form, so their required rules are
+  // checked by hand — same pattern as the Upload dialog's file errors. All
+  // three are validated together (not first-failure-only) so every missing
+  // list shows its error at once, and this also runs when the zod fields
+  // fail (handleSubmit's invalid path) so a fully empty submit surfaces
+  // EVERY missing field in one pass. The Edge Function enforces the same
+  // rules again server-side regardless.
+  function validateChipLists() {
+    let valid = true
     if (topSkills.length === 0) {
       setTopSkillsError('Add at least one must-have skill.')
-      return
+      valid = false
     }
+    if (optionalSkills.length === 0) {
+      setOptionalSkillsError('Add at least one optional skill.')
+      valid = false
+    }
+    if (targetCompanies.length === 0) {
+      setTargetCompaniesError('Add at least one target company.')
+      valid = false
+    }
+    return valid
+  }
+
+  async function onSubmit(values: CreateFormValues) {
+    if (!validateChipLists()) return
     try {
       await createMutation.mutateAsync({
         title: values.title,
-        jdText: values.jdText.trim() || null,
+        jdText: values.jdText.trim(),
         jdUrl: values.jdUrl.trim() || null,
         topSkills,
         optionalSkills,
@@ -158,8 +189,8 @@ export function CreateRequirementDialog({
         relevantExperience: Number(values.relevantExperience),
         totalExperience: Number(values.totalExperience),
         roleType: values.roleType as RequirementRoleType,
-        idealCandidate: values.idealCandidate.trim() || null,
-        notAFit: values.notAFit.trim() || null,
+        idealCandidate: values.idealCandidate.trim(),
+        notAFit: values.notAFit.trim(),
       })
       toast.success(`${values.title} created`)
       resetAll()
@@ -177,12 +208,16 @@ export function CreateRequirementDialog({
         <DialogHeader>
           <DialogTitle>Create requirement</DialogTitle>
           <DialogDescription>
-            Submit a job requirement with its JD text, a JD link, or both.
+            Submit a job requirement. Every field is required except the JD
+            link.
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <form
+            onSubmit={form.handleSubmit(onSubmit, validateChipLists)}
+            className="space-y-4"
+          >
             {/* Field pairs sit side by side from `sm` up purely to keep
                 the dialog short — on narrow viewports every pair stacks
                 back to a single column, preserving the same field order. */}
@@ -266,10 +301,18 @@ export function CreateRequirementDialog({
                 <TagInput
                   id="requirement-optional-skills"
                   values={optionalSkills}
-                  onChange={setOptionalSkills}
+                  onChange={(next) => {
+                    setOptionalSkills(next)
+                    if (next.length > 0) setOptionalSkillsError(undefined)
+                  }}
                   placeholder="Type a skill and press Enter…"
                   disabled={isSubmitting}
                 />
+                {optionalSkillsError && (
+                  <p className="text-destructive text-sm">
+                    {optionalSkillsError}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -370,10 +413,18 @@ export function CreateRequirementDialog({
                 <TagInput
                   id="requirement-target-companies"
                   values={targetCompanies}
-                  onChange={setTargetCompanies}
+                  onChange={(next) => {
+                    setTargetCompanies(next)
+                    if (next.length > 0) setTargetCompaniesError(undefined)
+                  }}
                   placeholder="Type a company and press Enter…"
                   disabled={isSubmitting}
                 />
+                {targetCompaniesError && (
+                  <p className="text-destructive text-sm">
+                    {targetCompaniesError}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -382,7 +433,7 @@ export function CreateRequirementDialog({
               name="idealCandidate"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Ideal candidate (optional)</FormLabel>
+                  <FormLabel>Ideal candidate</FormLabel>
                   <FormControl>
                     <Textarea
                       placeholder="Describe the ideal candidate profile…"
@@ -401,7 +452,7 @@ export function CreateRequirementDialog({
               name="notAFit"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Not a fit (optional)</FormLabel>
+                  <FormLabel>Not a fit</FormLabel>
                   <FormControl>
                     <Textarea
                       placeholder="Describe anything that is not required or would not be a good fit…"
