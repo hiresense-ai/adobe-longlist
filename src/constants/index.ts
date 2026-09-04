@@ -13,6 +13,7 @@ export const ROUTES = {
   profile: '/profile',
   adminUsers: '/admin/users',
   requirements: '/requirements',
+  jdAnalytics: '/jd-analytics',
   notFound: '*',
 } as const
 
@@ -63,4 +64,5 @@ export const QUERY_KEYS = {
   dashboardAnalytics: (dashboardId: string) =>
     ['dashboard-analytics', dashboardId] as const,
   requirements: ['requirements'] as const,
+  jdAnalytics: ['jd-analytics'] as const,
 }

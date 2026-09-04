@@ -26,6 +26,10 @@ const Requirements = lazyNamed(
   () => import('@/pages/Requirements'),
   'Requirements',
 )
+const JdAnalytics = lazyNamed(
+  () => import('@/pages/JdAnalytics'),
+  'JdAnalytics',
+)
 
 export const router = createBrowserRouter([
   {
@@ -56,6 +60,11 @@ export const router = createBrowserRouter([
               // requirements Edge Function decides per-role what each
               // caller can see or do once inside.
               { path: ROUTES.requirements, element: <Requirements /> },
+              // Every authenticated role, matching the existing Analytics
+              // entry points (canViewDashboardAnalytics is open to all) —
+              // the dashboard-analytics Edge Function scopes WHICH
+              // dashboards each caller sees, per call, server-side.
+              { path: ROUTES.jdAnalytics, element: <JdAnalytics /> },
               {
                 element: <AdminRoute />,
                 children: [

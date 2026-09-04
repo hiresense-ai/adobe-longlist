@@ -1,5 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { getDashboardAnalytics } from '@/services/dashboardAnalytics.service'
+import {
+  getDashboardAnalytics,
+  getJdAnalyticsOverview,
+} from '@/services/dashboardAnalytics.service'
 import { QUERY_KEYS } from '@/constants'
 
 /** Analytics for one dashboard. Only fetched while the Analytics dialog is
@@ -14,5 +17,16 @@ export function useDashboardAnalytics(dashboardId: string, enabled: boolean) {
     queryKey: QUERY_KEYS.dashboardAnalytics(dashboardId),
     queryFn: () => getDashboardAnalytics(dashboardId),
     enabled,
+  })
+}
+
+/** The JD Analytics overview — every dashboard the caller may see, in ONE
+ * aggregated request (the Edge Function batches server-side; there is no
+ * per-dashboard fetching anywhere in this path). Authorization is enforced
+ * server-side per call, same as useDashboardAnalytics. */
+export function useJdAnalytics() {
+  return useQuery({
+    queryKey: QUERY_KEYS.jdAnalytics,
+    queryFn: getJdAnalyticsOverview,
   })
 }

@@ -1,0 +1,22 @@
+-- Adobe Longlist — completed_at backfill: INTENTIONALLY NOT EXECUTED.
+--
+-- This migration originally ran two UPDATE statements over
+-- public.requirements to give already-'Completed' rows a completed_at
+-- value (recovered from audit_logs where available, otherwise now()).
+--
+-- Product decision (2026-09-04, before the first production release of
+-- this feature): existing production data must NOT be mutated. Historical
+-- completion timestamps are not reconstructed or invented — a requirement
+-- that was already 'Completed' before completed_at existed keeps NULL and
+-- renders as "—" in the Requirements table and in JD Analytics. Only a
+-- real transition INTO 'Completed' made AFTER this release stamps the
+-- column, and that stamping is done by the requirements Edge Function,
+-- never by a migration.
+--
+-- The file is kept (rather than deleted) so this version number stays
+-- consumed and the migration history remains linear and identical across
+-- every environment — it simply contains no executable statements. Note
+-- that local/dev databases migrated before this decision may still hold
+-- backfilled values from the original version; production never ran it.
+--
+-- Deliberately empty below this line: no DDL, no DML, no data touched.

@@ -15,13 +15,13 @@
 //                 client-side, same as the existing upload flow, since
 //                 super_admin already has direct RLS-permitted access to
 //                 the `dashboards` storage bucket).
-//   admin       — may only act on a dashboard they themselves have a row in
-//                 (checked fresh against the table on every call, never
-//                 trusted from the request), may only edit title,
-//                 description, and category — a request that includes a
-//                 `thumbnail` key AT ALL is rejected outright, even if the
-//                 value would be a no-op, so a hand-crafted request can
-//                 never slip a thumbnail change through.
+//   admin       — may edit ANY dashboard (2026-09-04: editing follows
+//                 dashboard visibility, and Admins see every dashboard —
+//                 no assignment gate), but only title, description, and
+//                 category — a request that includes a `thumbnail` key AT
+//                 ALL is rejected outright, even if the value would be a
+//                 no-op, so a hand-crafted request can never slip a
+//                 thumbnail change through.
 //   viewer      — 403 on every action here. No edit permissions at all.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
@@ -220,23 +220,9 @@ async function getDashboard(
   return data ?? null
 }
 
-/** Whether `userId` has an assignment row on `dashboardId` right now —
- * checked fresh against the table on every call, never trusted from the
- * request or cached, since this is the actual authorization boundary for
- * every Admin edit below. */
-async function isAssigned(
-  admin: SupabaseClient,
-  dashboardId: string,
-  userId: string,
-): Promise<boolean> {
-  const { data } = await admin
-    .from('dashboard_assignments')
-    .select('id')
-    .eq('dashboard_id', dashboardId)
-    .eq('user_id', userId)
-    .maybeSingle()
-  return Boolean(data)
-}
+// (The per-call isAssigned() helper was removed 2026-09-04: Admin edits now
+// follow dashboard visibility — every dashboard — so no assignment check
+// remains in this function. Viewers are rejected outright above.)
 
 async function updateDashboard(
   admin: SupabaseClient,
@@ -255,15 +241,10 @@ async function updateDashboard(
   if (!dashboard) return json({ error: 'Dashboard not found.' }, 404, cors)
 
   if (callerRole === 'admin') {
-    // "verify dashboard is assigned to caller" / "reject modifying
-    // dashboards not assigned to caller"
-    if (!(await isAssigned(admin, dashboardId, callerId))) {
-      return json(
-        { error: 'You can only edit dashboards assigned to you.' },
-        403,
-        cors,
-      )
-    }
+    // 2026-09-04: no assignment gate anymore — an Admin may edit ANY
+    // dashboard's text fields, matching their dashboard visibility.
+    // Viewer callers are still rejected at the top of the handler, and
+    // the thumbnail stays Super-Admin-only below.
     // Hard reject — even a no-op thumbnail key in the request body is
     // treated as an unauthorized attempt, never silently dropped.
     if (Object.prototype.hasOwnProperty.call(payload, 'thumbnail')) {

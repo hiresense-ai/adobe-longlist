@@ -61,6 +61,7 @@ import {
   useUpdateRequirement,
   useUpdateRequirementStatus,
 } from '@/hooks/useRequirements'
+import { useDashboards } from '@/hooks/useDashboards'
 import { useAuth } from '@/hooks/useAuth'
 import { getErrorMessage } from '@/lib/errors'
 import {
@@ -241,6 +242,11 @@ export function RequirementDetailsDialog({
   const [editOptionalSkills, setEditOptionalSkills] = useState<string[]>([])
   const [editTargetCompanies, setEditTargetCompanies] = useState<string[]>([])
   const [topSkillsError, setTopSkillsError] = useState<string | undefined>()
+  // '' = not linked. Super-Admin-only control; seeded in startEdit.
+  const [editDashboardId, setEditDashboardId] = useState('')
+  // Same cached query the Dashboards page uses; for the Super Admin who
+  // sees this control, that list is every dashboard.
+  const { data: dashboards } = useDashboards()
 
   const isOwner = Boolean(user && requirement.createdBy?.id === user.id)
   const isPending = requirement.status === 'Pending'
@@ -293,6 +299,7 @@ export function RequirementDetailsDialog({
     setEditOptionalSkills(requirement.optionalSkills ?? [])
     setEditTargetCompanies(requirement.targetCompanies ?? [])
     setTopSkillsError(undefined)
+    setEditDashboardId(requirement.dashboardId ?? '')
     setMode('edit')
   }
 
@@ -331,10 +338,14 @@ export function RequirementDetailsDialog({
           : {}),
         idealCandidate: values.idealCandidate.trim() || null,
         notAFit: values.notAFit.trim() || null,
-        // The contactNotes key is only ever sent by a Super Admin — the
-        // Edge Function rejects the key outright from anyone else.
+        // contactNotes/dashboardId keys are only ever sent by a Super
+        // Admin — the Edge Function rejects either key outright from
+        // anyone else.
         ...(canManageLifecycle
-          ? { contactNotes: values.contactNotes.trim() || null }
+          ? {
+              contactNotes: values.contactNotes.trim() || null,
+              dashboardId: editDashboardId || null,
+            }
           : {}),
       })
       toast.success('Requirement updated')
@@ -658,6 +669,36 @@ export function RequirementDetailsDialog({
                     )}
                   />
                 )}
+                {/* Super-Admin-only, like contact notes: links this
+                    requirement to its JD dashboard so JD Analytics can
+                    show the completion date on that dashboard's row. Lives
+                    outside react-hook-form (simple select, seeded in
+                    startEdit). Native select styled like the app's inputs
+                    — options are the dashboards this Super Admin can
+                    already see (all of them). */}
+                {canManageLifecycle && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="requirement-linked-dashboard">
+                      Linked JD dashboard
+                    </Label>
+                    <select
+                      id="requirement-linked-dashboard"
+                      className="border-input bg-background text-foreground focus-visible:ring-ring h-9 rounded-md border px-3 text-sm shadow-sm outline-none focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50"
+                      value={editDashboardId}
+                      onChange={(event) =>
+                        setEditDashboardId(event.target.value)
+                      }
+                      disabled={isBusy}
+                    >
+                      <option value="">Not linked</option>
+                      {(dashboards ?? []).map((dashboard) => (
+                        <option key={dashboard.id} value={dashboard.id}>
+                          {dashboard.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <DialogFooter>
                   <Button
                     type="button"
@@ -717,6 +758,38 @@ export function RequirementDetailsDialog({
                   </div>
                 </>
               )}
+              {/* The real completion timestamp (stamped server-side on the
+                  transition into Completed) — shown only while the CURRENT
+                  status is Completed, so a reopened requirement drops it.
+                  Part of the summary shape, so every role that can see the
+                  row sees it. */}
+              {requirement.status === 'Completed' &&
+                requirement.completedAt && (
+                  <div>
+                    <p className="text-muted-foreground text-xs">Completed</p>
+                    <p className="text-foreground">
+                      {formatDate(requirement.completedAt)}
+                    </p>
+                  </div>
+                )}
+              {/* Shown when linked AND this viewer's dashboard list can
+                  resolve the title (a viewer not assigned to the linked
+                  dashboard simply doesn't see the entry — no id leaks). */}
+              {requirement.dashboardId &&
+                (dashboards ?? []).some(
+                  (d) => d.id === requirement.dashboardId,
+                ) && (
+                  <div>
+                    <p className="text-muted-foreground text-xs">Linked JD</p>
+                    <p className="text-foreground truncate">
+                      {
+                        (dashboards ?? []).find(
+                          (d) => d.id === requirement.dashboardId,
+                        )?.title
+                      }
+                    </p>
+                  </div>
+                )}
             </div>
 
             {requirement.hasFullDetails ? (

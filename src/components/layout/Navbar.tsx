@@ -5,6 +5,7 @@ import {
   useSearchParams,
 } from 'react-router-dom'
 import {
+  ChartColumn,
   ClipboardList,
   LayoutDashboard,
   LogOut,
@@ -61,6 +62,16 @@ export function Navbar() {
       label: 'Requirements',
       icon: ClipboardList,
       isActive: location.pathname.startsWith(ROUTES.requirements),
+    },
+    // Every role, same as the existing Analytics entry points
+    // (canViewDashboardAnalytics is open to all) — the dashboard-analytics
+    // Edge Function scopes which dashboards each caller's overview
+    // actually contains, per call, server-side.
+    {
+      to: ROUTES.jdAnalytics,
+      label: 'JD Analytics',
+      icon: ChartColumn,
+      isActive: location.pathname.startsWith(ROUTES.jdAnalytics),
     },
     ...(isAdmin
       ? [
@@ -171,6 +182,12 @@ export function Navbar() {
                 <Link to={ROUTES.requirements}>
                   <ClipboardList className="size-4" />
                   Requirements
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild className="md:hidden">
+                <Link to={ROUTES.jdAnalytics}>
+                  <ChartColumn className="size-4" />
+                  JD Analytics
                 </Link>
               </DropdownMenuItem>
               {isAdmin && (

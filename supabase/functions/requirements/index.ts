@@ -112,6 +112,7 @@ interface UpdatePayload {
   jdText?: string | null
   jdUrl?: string | null
   contactNotes?: string | null
+  dashboardId?: string | null
   topSkills?: unknown
   optionalSkills?: unknown
   targetCompanies?: unknown
@@ -161,6 +162,8 @@ interface RequirementRow {
   created_by: string
   contacted_by: string | null
   contacted_at: string | null
+  completed_at: string | null
+  dashboard_id: string | null
   contact_notes: string | null
   created_at: string
   updated_at: string
@@ -177,7 +180,7 @@ interface RequirementRow {
 }
 
 const ROW_SELECT =
-  'id, title, jd_text, jd_url, status, created_by, contacted_by, contacted_at, contact_notes, created_at, updated_at, ' +
+  'id, title, jd_text, jd_url, status, created_by, contacted_by, contacted_at, completed_at, dashboard_id, contact_notes, created_at, updated_at, ' +
   'relevant_experience, total_experience, role_type, not_a_fit, ideal_candidate, ' +
   'creator:profiles!requirements_created_by_fkey(id, name, email), ' +
   'contactor:profiles!requirements_contacted_by_fkey(id, name, email), ' +
@@ -207,6 +210,14 @@ function shapeRequirement(row: RequirementRow, callerRole: CallerRole) {
     title: row.title,
     status: row.status,
     createdAt: row.created_at,
+    // Lifecycle data, exactly like `status` — part of the summary shape so
+    // every caller who can see the row at all (including a Viewer's
+    // post-Contacted summary) sees when it was completed. Null for rows
+    // completed before the column existed (never backfilled).
+    completedAt: row.completed_at ?? null,
+    // The linked JD dashboard (if a Super Admin set one) — plain id, part
+    // of the summary like status; JD Analytics joins through it.
+    dashboardId: row.dashboard_id ?? null,
     createdBy: row.creator
       ? { id: row.creator.id, name: row.creator.name, email: row.creator.email }
       : null,
@@ -878,6 +889,15 @@ async function updateRequirement(
         cors,
       )
     }
+    // Same rule for the JD-dashboard link: lifecycle metadata owned by
+    // the Super Admin, key-presence rejected for everyone else.
+    if (Object.prototype.hasOwnProperty.call(p, 'dashboardId')) {
+      return json(
+        { error: 'Only a Super Admin can link a requirement to a dashboard.' },
+        403,
+        cors,
+      )
+    }
   }
 
   const updates: Record<string, string | number | null> = {}
@@ -910,6 +930,29 @@ async function updateRequirement(
     const { contactNotes, error } = normalizeContactNotes(p.contactNotes)
     if (error) return json({ error }, 400, cors)
     updates.contact_notes = contactNotes ?? null
+  }
+  if (
+    callerRole === 'super_admin' &&
+    Object.prototype.hasOwnProperty.call(p, 'dashboardId')
+  ) {
+    // null/'' clears the link; a value must reference a REAL dashboard —
+    // verified fresh here, never trusted from the client (the FK would
+    // also refuse, but failing early gives a clean message).
+    if (p.dashboardId === null || p.dashboardId === '') {
+      updates.dashboard_id = null
+    } else if (typeof p.dashboardId !== 'string') {
+      return json({ error: 'Invalid dashboard link.' }, 400, cors)
+    } else {
+      const { data: linked } = await admin
+        .from('dashboards')
+        .select('id')
+        .eq('id', p.dashboardId)
+        .maybeSingle()
+      if (!linked) {
+        return json({ error: 'Linked dashboard not found.' }, 400, cors)
+      }
+      updates.dashboard_id = p.dashboardId
+    }
   }
 
   // Chip lists — validated up front so nothing is written unless every
@@ -1120,6 +1163,18 @@ async function updateRequirementStatus(
   if (p.status === 'Contacted' && !row.contacted_by) {
     updates.contacted_by = callerId
     updates.contacted_at = new Date().toISOString()
+  }
+
+  // Entering Completed records when — the timestamp of THIS actual
+  // transition. The same-status early return above means a requirement
+  // already Completed is never re-stamped by a repeat call; only the
+  // existing reopen-then-complete-again flow (already supported — any
+  // transition is legal for a Super Admin) refreshes it, to that newer
+  // real transition. Reopening itself leaves the stamp untouched; readers
+  // gate on status = 'Completed' to decide whether to show it. Rows
+  // completed before completed_at existed stay NULL — never backfilled.
+  if (p.status === 'Completed') {
+    updates.completed_at = new Date().toISOString()
   }
 
   if (Object.prototype.hasOwnProperty.call(p, 'contactNotes')) {

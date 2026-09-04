@@ -161,7 +161,7 @@ export function Requirements() {
       {!isLoading && !isError && filtered.length > 0 && (
         <div className="border-border bg-card shadow-soft overflow-hidden rounded-2xl border">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
+            <table className="w-full min-w-[800px] text-left text-sm">
               <thead>
                 <tr className="border-border bg-muted/50 border-b text-xs">
                   <th className="text-muted-foreground px-4 py-3 font-medium">
@@ -175,6 +175,9 @@ export function Requirements() {
                   </th>
                   <th className="text-muted-foreground px-2 py-3 font-medium">
                     Status
+                  </th>
+                  <th className="text-muted-foreground px-2 py-3 font-medium">
+                    Completed
                   </th>
                   {showContactColumns && (
                     <>
@@ -215,6 +218,18 @@ export function Requirements() {
                     </td>
                     <td className="px-2 py-3">
                       <RequirementStatusBadge status={requirement.status} />
+                    </td>
+                    {/* Real completion timestamp only (stamped server-side
+                        on the transition into Completed) — display gated on
+                        the CURRENT status, so a reopened requirement shows
+                        "—" again even though the historical stamp is kept.
+                        Legacy rows completed before the stamp existed also
+                        show "—", never a guessed date. */}
+                    <td className="text-muted-foreground px-2 py-3">
+                      {requirement.status === 'Completed' &&
+                      requirement.completedAt
+                        ? formatDate(requirement.completedAt)
+                        : '—'}
                     </td>
                     {showContactColumns && (
                       <>
