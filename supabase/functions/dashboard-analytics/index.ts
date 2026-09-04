@@ -354,7 +354,6 @@ async function getAssignedUsers(
 interface OverviewDashboardRow {
   id: string
   title: string
-  created_by: string | null
   created_at: string
   storage_path: string
 }
@@ -372,7 +371,7 @@ async function getOverview(
   if (callerRole === 'super_admin' || callerRole === 'admin') {
     const { data, error } = await admin
       .from('dashboards')
-      .select('id, title, created_by, created_at, storage_path')
+      .select('id, title, created_at, storage_path')
       .order('created_at', { ascending: false })
     if (error) throw error
     dashboards = (data ?? []) as OverviewDashboardRow[]
@@ -392,7 +391,7 @@ async function getOverview(
     if (ids.length > 0) {
       const { data, error } = await admin
         .from('dashboards')
-        .select('id, title, created_by, created_at, storage_path')
+        .select('id, title, created_at, storage_path')
         .in('id', ids)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -431,10 +430,76 @@ async function getOverview(
     counts.set(action, (counts.get(action) ?? 0) + 1)
   }
 
-  // One query for every creator identity (same minimal fields the Assigned
-  // Users list already exposes).
+  // Candidate totals come from each dashboard's stored HTML — the only
+  // place candidates exist (see getTotalCandidates). Read in parallel,
+  // once per dashboard per request, exactly like the per-dashboard
+  // analytics does for one.
+  const totals = await Promise.all(
+    dashboards.map((d) => getTotalCandidates(admin, d.storage_path)),
+  )
+
+  // A JD's IDENTITY (who created it, when) and its Completed Date all come
+  // from the linked REQUIREMENT — joined through the explicit
+  // requirements.dashboard_id link a Super Admin sets, in ONE query for
+  // every visible dashboard (never one per dashboard).
+  //
+  //   createdBy   — the requirement's creator. This is deliberately NOT the
+  //                 dashboard's owner: "Created By" answers "who raised this
+  //                 JD?", and the person who uploads a dashboard is often
+  //                 someone else entirely. A dashboard with no linked
+  //                 requirement has no JD creator, so it stays null ("—")
+  //                 rather than falling back to the dashboard's owner, which
+  //                 would put the wrong name in the column.
+  //   createdAt   — the requirement's creation date, falling back to the
+  //                 dashboard's own created_at when nothing is linked, so
+  //                 every row still carries a date and the Today / This Week
+  //                 / All Time filters keep working for unlinked rows.
+  //   completedAt — unchanged: only a requirement whose CURRENT status is
+  //                 'Completed' contributes, latest completion wins.
+  //
+  // When several requirements link to one dashboard, the EARLIEST one is
+  // treated as that JD's origin (deterministic, and the first requirement
+  // raised is the one that created the JD).
+  const { data: linkedReqs, error: linkedError } = await admin
+    .from('requirements')
+    .select('dashboard_id, created_by, created_at, status, completed_at')
+    .in('dashboard_id', dashboardIds)
+  if (linkedError) throw linkedError
+
+  const jdByDashboard = new Map<
+    string,
+    { createdBy: string | null; createdAt: string }
+  >()
+  const completedByDashboard = new Map<string, string>()
+  for (const row of linkedReqs ?? []) {
+    const req = row as {
+      dashboard_id: string
+      created_by: string | null
+      created_at: string
+      status: string
+      completed_at: string | null
+    }
+    const current = jdByDashboard.get(req.dashboard_id)
+    if (!current || req.created_at < current.createdAt) {
+      jdByDashboard.set(req.dashboard_id, {
+        createdBy: req.created_by,
+        createdAt: req.created_at,
+      })
+    }
+    if (req.status === 'Completed' && req.completed_at) {
+      const seen = completedByDashboard.get(req.dashboard_id)
+      if (!seen || req.completed_at > seen) {
+        completedByDashboard.set(req.dashboard_id, req.completed_at)
+      }
+    }
+  }
+
+  // One query for every JD creator identity (same minimal fields the
+  // Assigned Users list already exposes — name and email only).
   const creatorIds = [
-    ...new Set(dashboards.map((d) => d.created_by).filter(Boolean)),
+    ...new Set(
+      [...jdByDashboard.values()].map((jd) => jd.createdBy).filter(Boolean),
+    ),
   ] as string[]
   const creatorsById = new Map<string, AssignedUserSummary>()
   if (creatorIds.length > 0) {
@@ -446,40 +511,6 @@ async function getOverview(
     for (const profile of creators ?? []) {
       const p = profile as { id: string; name: string | null; email: string }
       creatorsById.set(p.id, { id: p.id, name: p.name, email: p.email })
-    }
-  }
-
-  // Candidate totals come from each dashboard's stored HTML — the only
-  // place candidates exist (see getTotalCandidates). Read in parallel,
-  // once per dashboard per request, exactly like the per-dashboard
-  // analytics does for one.
-  const totals = await Promise.all(
-    dashboards.map((d) => getTotalCandidates(admin, d.storage_path)),
-  )
-
-  // Completed Date comes from the REQUIREMENT lifecycle, joined through
-  // the explicit requirements.dashboard_id link a Super Admin sets — one
-  // query for all visible dashboards. Only a requirement whose CURRENT
-  // status is 'Completed' contributes (display gates on status, same as
-  // everywhere else); if several completed requirements link to one
-  // dashboard, the latest completion wins, matching the live stamping
-  // rule. Dashboards with no linked completed requirement stay null ("—").
-  const { data: linkedReqs, error: linkedError } = await admin
-    .from('requirements')
-    .select('dashboard_id, status, completed_at')
-    .in('dashboard_id', dashboardIds)
-    .eq('status', 'Completed')
-    .not('completed_at', 'is', null)
-  if (linkedError) throw linkedError
-  const completedByDashboard = new Map<string, string>()
-  for (const req of linkedReqs ?? []) {
-    const { dashboard_id, completed_at } = req as {
-      dashboard_id: string
-      completed_at: string
-    }
-    const current = completedByDashboard.get(dashboard_id)
-    if (!current || completed_at > current) {
-      completedByDashboard.set(dashboard_id, completed_at)
     }
   }
 
@@ -496,13 +527,16 @@ async function getOverview(
     )
     const total = totals[index]
     const pending = total === null ? null : Math.max(0, total - actioned)
+    const jd = jdByDashboard.get(dashboard.id)
     return {
       id: dashboard.id,
       title: dashboard.title,
-      createdBy: dashboard.created_by
-        ? (creatorsById.get(dashboard.created_by) ?? null)
+      // The JD's creator — the linked requirement's author, never the
+      // dashboard's owner (see the comment above the requirements query).
+      createdBy: jd?.createdBy
+        ? (creatorsById.get(jd.createdBy) ?? null)
         : null,
-      createdAt: dashboard.created_at,
+      createdAt: jd?.createdAt ?? dashboard.created_at,
       completedAt: completedByDashboard.get(dashboard.id) ?? null,
       candidates: { total, actioned, pending },
       actionBreakdown,

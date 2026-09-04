@@ -10,7 +10,6 @@ import { RequirementStatusBadge } from '@/components/requirements/RequirementSta
 import { CreateRequirementDialog } from '@/components/requirements/CreateRequirementDialog'
 import { RequirementDetailsDialog } from '@/components/requirements/RequirementDetailsDialog'
 import { useRequirements } from '@/hooks/useRequirements'
-import { useAuth } from '@/hooks/useAuth'
 import {
   filterRequirements,
   REQUIREMENT_STATUSES,
@@ -30,8 +29,6 @@ type StatusFilter = 'All' | RequirementStatus
  * operates strictly over what the caller is allowed to see.
  */
 export function Requirements() {
-  const { user } = useAuth()
-  const role = user?.role ?? 'viewer'
   const {
     data: requirements,
     isLoading,
@@ -44,11 +41,6 @@ export function Requirements() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All')
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
-
-  // Contacted-by/date are lifecycle internals — a Viewer's rows never
-  // carry them (the server strips the fields), so the columns would only
-  // ever render empty for a Viewer. Hidden entirely instead.
-  const showContactColumns = role !== 'viewer'
 
   const filtered = useMemo(() => {
     const byStatus =
@@ -161,7 +153,7 @@ export function Requirements() {
       {!isLoading && !isError && filtered.length > 0 && (
         <div className="border-border bg-card shadow-soft overflow-hidden rounded-2xl border">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[800px] text-left text-sm">
+            <table className="w-full min-w-[720px] text-left text-sm">
               <thead>
                 <tr className="border-border bg-muted/50 border-b text-xs">
                   <th className="text-muted-foreground px-4 py-3 font-medium">
@@ -179,16 +171,6 @@ export function Requirements() {
                   <th className="text-muted-foreground px-2 py-3 font-medium">
                     Completed
                   </th>
-                  {showContactColumns && (
-                    <>
-                      <th className="text-muted-foreground px-2 py-3 font-medium">
-                        Contacted By
-                      </th>
-                      <th className="text-muted-foreground px-2 py-3 font-medium">
-                        Contacted
-                      </th>
-                    </>
-                  )}
                   <th className="w-16 px-4 py-3"></th>
                 </tr>
               </thead>
@@ -231,21 +213,6 @@ export function Requirements() {
                         ? formatDate(requirement.completedAt)
                         : '—'}
                     </td>
-                    {showContactColumns && (
-                      <>
-                        <td className="text-muted-foreground px-2 py-3">
-                          {requirement.contactedBy
-                            ? requirement.contactedBy.name ||
-                              requirement.contactedBy.email
-                            : '—'}
-                        </td>
-                        <td className="text-muted-foreground px-2 py-3">
-                          {requirement.contactedAt
-                            ? formatDate(requirement.contactedAt)
-                            : '—'}
-                        </td>
-                      </>
-                    )}
                     <td className="px-4 py-3 text-right">
                       <Button
                         type="button"
