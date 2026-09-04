@@ -454,43 +454,47 @@ async function getOverview(
   //                 dashboard's own created_at when nothing is linked, so
   //                 every row still carries a date and the Today / This Week
   //                 / All Time filters keep working for unlinked rows.
-  //   completedAt — unchanged: only a requirement whose CURRENT status is
-  //                 'Completed' contributes, latest completion wins.
+  //   completedAt — that same requirement's completion stamp, and only
+  //                 while its CURRENT status is 'Completed'. Never derived
+  //                 from dashboard activity, updated_at, contacted_at, or
+  //                 anything else.
   //
-  // When several requirements link to one dashboard, the EARLIEST one is
-  // treated as that JD's origin (deterministic, and the first requirement
-  // raised is the one that created the JD).
+  // requirements.dashboard_id carries NO unique constraint, so a dashboard
+  // can legitimately have SEVERAL requirements linked to it. Rather than
+  // reading different fields off different rows — which could show one
+  // requirement's author beside another's completion date, describing a JD
+  // that doesn't exist — exactly ONE requirement is chosen as the JD's
+  // canonical record and every field comes from it. Canonical = the
+  // earliest created_at, tie-broken by id so the choice is total and
+  // stable even when two requirements share a timestamp.
   const { data: linkedReqs, error: linkedError } = await admin
     .from('requirements')
-    .select('dashboard_id, created_by, created_at, status, completed_at')
+    .select('id, dashboard_id, created_by, created_at, status, completed_at')
     .in('dashboard_id', dashboardIds)
   if (linkedError) throw linkedError
 
-  const jdByDashboard = new Map<
-    string,
-    { createdBy: string | null; createdAt: string }
-  >()
-  const completedByDashboard = new Map<string, string>()
+  interface LinkedRequirement {
+    id: string
+    dashboard_id: string
+    created_by: string | null
+    created_at: string
+    status: string
+    completed_at: string | null
+  }
+
+  /** True when `a` should win over `b` as the dashboard's canonical
+   * requirement: earlier creation, then lower id as a stable tiebreak. */
+  function isMoreCanonical(a: LinkedRequirement, b: LinkedRequirement) {
+    if (a.created_at !== b.created_at) return a.created_at < b.created_at
+    return a.id < b.id
+  }
+
+  const canonicalByDashboard = new Map<string, LinkedRequirement>()
   for (const row of linkedReqs ?? []) {
-    const req = row as {
-      dashboard_id: string
-      created_by: string | null
-      created_at: string
-      status: string
-      completed_at: string | null
-    }
-    const current = jdByDashboard.get(req.dashboard_id)
-    if (!current || req.created_at < current.createdAt) {
-      jdByDashboard.set(req.dashboard_id, {
-        createdBy: req.created_by,
-        createdAt: req.created_at,
-      })
-    }
-    if (req.status === 'Completed' && req.completed_at) {
-      const seen = completedByDashboard.get(req.dashboard_id)
-      if (!seen || req.completed_at > seen) {
-        completedByDashboard.set(req.dashboard_id, req.completed_at)
-      }
+    const req = row as LinkedRequirement
+    const current = canonicalByDashboard.get(req.dashboard_id)
+    if (!current || isMoreCanonical(req, current)) {
+      canonicalByDashboard.set(req.dashboard_id, req)
     }
   }
 
@@ -498,7 +502,9 @@ async function getOverview(
   // Assigned Users list already exposes — name and email only).
   const creatorIds = [
     ...new Set(
-      [...jdByDashboard.values()].map((jd) => jd.createdBy).filter(Boolean),
+      [...canonicalByDashboard.values()]
+        .map((req) => req.created_by)
+        .filter(Boolean),
     ),
   ] as string[]
   const creatorsById = new Map<string, AssignedUserSummary>()
@@ -527,17 +533,22 @@ async function getOverview(
     )
     const total = totals[index]
     const pending = total === null ? null : Math.max(0, total - actioned)
-    const jd = jdByDashboard.get(dashboard.id)
+    // Every requirement-sourced field on this row comes from ONE record:
+    // the dashboard's canonical linked requirement (see above).
+    const jd = canonicalByDashboard.get(dashboard.id)
     return {
       id: dashboard.id,
       title: dashboard.title,
       // The JD's creator — the linked requirement's author, never the
       // dashboard's owner (see the comment above the requirements query).
-      createdBy: jd?.createdBy
-        ? (creatorsById.get(jd.createdBy) ?? null)
+      createdBy: jd?.created_by
+        ? (creatorsById.get(jd.created_by) ?? null)
         : null,
-      createdAt: jd?.createdAt ?? dashboard.created_at,
-      completedAt: completedByDashboard.get(dashboard.id) ?? null,
+      createdAt: jd?.created_at ?? dashboard.created_at,
+      completedAt:
+        jd && jd.status === 'Completed' && jd.completed_at
+          ? jd.completed_at
+          : null,
       candidates: { total, actioned, pending },
       actionBreakdown,
     }

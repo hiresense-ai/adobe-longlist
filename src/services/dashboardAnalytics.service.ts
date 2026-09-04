@@ -62,16 +62,28 @@ export async function getDashboardAnalytics(
 // two views can never disagree.
 // ---------------------------------------------------------------------------
 
+/**
+ * One JD row. Everything requirement-shaped below comes from a SINGLE
+ * record — the dashboard's canonical linked requirement (earliest
+ * created_at, tie-broken by id), resolved server-side through
+ * requirements.dashboard_id. A dashboard can have several requirements
+ * linked to it, so taking each field from whichever row happened to win
+ * its own comparison could describe a JD that doesn't exist; one record
+ * supplies them all.
+ */
 export interface JdAnalyticsRow {
   id: string
   title: string
+  /** The canonical requirement's author — who RAISED the JD. Never the
+   * dashboard's owner. Null (rendered "—") when no requirement is linked. */
   createdBy: DashboardAssignedUser | null
+  /** The canonical requirement's creation date, falling back to the
+   * dashboard's own created_at when nothing is linked, so every row keeps
+   * a date for the Today / This Week / All Time filters. */
   createdAt: string
-  /** Always null today: dashboards carry no completion concept anywhere in
-   * the schema (and the separate Requirements lifecycle stores no
-   * completion timestamp and has no link to a dashboard), so a real
-   * completed date cannot be derived — the UI shows "—". In the contract
-   * now so a future `dashboards.completed_at` needs no shape change. */
+  /** The canonical requirement's completion stamp, and only while that
+   * requirement's CURRENT status is 'Completed'. Never derived from
+   * dashboard activity, updated_at, or contacted_at; null renders "—". */
   completedAt: string | null
   candidates: DashboardCandidateCounts
   actionBreakdown: DashboardActionBreakdownEntry[]
