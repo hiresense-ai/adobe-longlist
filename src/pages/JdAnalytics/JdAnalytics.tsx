@@ -3,8 +3,13 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Briefcase,
   ChartColumn,
+  Clock,
+  Percent,
   Search,
+  UserCheck,
+  UserX,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -222,23 +227,33 @@ export function JdAnalytics() {
           className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5"
           aria-label={`Summary for ${dateFilter}`}
         >
+          {/* Display labels only — "Screen Select"/"Screen Reject" here are
+              the same ssHs/srHs metrics computed from the canonical
+              "Screen Select - HireSense"/"Screen Reject - HireSense" action
+              values, which are unchanged everywhere else. Icons follow the
+              existing section-heading pattern (lucide + size-3.5 + gap-1.5,
+              same as the Analytics dialog's headings). */}
           {(
             [
-              ['JDs', String(summary.totalJds)],
+              [Briefcase, 'JDs', String(summary.totalJds)],
               [
+                Clock,
                 'Pending',
                 summary.pending === null ? '—' : String(summary.pending),
               ],
-              ['Screen Select - HireSense', String(summary.ssHs)],
-              ['Screen Reject - HireSense', String(summary.srHs)],
-              ['Ratio', formatJdRatio(summary.ratio)],
+              [UserCheck, 'Screen Select', String(summary.ssHs)],
+              [UserX, 'Screen Reject', String(summary.srHs)],
+              [Percent, 'Ratio', formatJdRatio(summary.ratio)],
             ] as const
-          ).map(([label, value]) => (
+          ).map(([Icon, label, value]) => (
             <div
               key={label}
               className="border-border bg-muted/30 rounded-lg border px-3 py-2"
             >
-              <p className="text-muted-foreground text-xs">{label}</p>
+              <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                {label}
+              </p>
               <p className="text-foreground text-xl font-semibold tabular-nums">
                 {value}
               </p>
@@ -315,13 +330,13 @@ export function JdAnalytics() {
                     {...headerProps}
                   />
                   <SortableHeader
-                    label="SS.HS"
+                    label="Screen Select"
                     sort="ssHs"
                     align="right"
                     {...headerProps}
                   />
                   <SortableHeader
-                    label="SR.HS"
+                    label="Screen Reject"
                     sort="srHs"
                     align="right"
                     {...headerProps}
