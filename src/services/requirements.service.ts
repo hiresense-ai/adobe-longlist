@@ -49,6 +49,15 @@ export interface Requirement {
   title: string
   status: RequirementStatus
   createdAt: string
+  /** When the requirement last transitioned into 'Completed' — stamped by
+   * the Edge Function on that transition only. Null while not yet
+   * completed and for rows completed before the column existed (never
+   * backfilled); readers gate on status === 'Completed' when displaying. */
+  completedAt: string | null
+  /** The JD dashboard this requirement is linked to (set by a Super Admin
+   * in the edit dialog) — JD Analytics joins through it to surface the
+   * completion date on the dashboard's row. Null = not linked. */
+  dashboardId: string | null
   createdBy: RequirementUserRef | null
   /** False exactly when the server stripped the restricted fields (Viewer
    * + post-Contacted). Everything below is only present when true. */
@@ -111,6 +120,9 @@ export interface UpdateRequirementInput {
   /** Super Admin only — the Edge Function rejects the key outright for
    * any other caller. Omit it entirely unless editing notes. */
   contactNotes?: string | null
+  /** Super Admin only, same key-presence rule as contactNotes. A dashboard
+   * id links this requirement to its JD dashboard; null clears the link. */
+  dashboardId?: string | null
 }
 
 export interface UpdateRequirementStatusInput {

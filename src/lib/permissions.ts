@@ -136,14 +136,13 @@ export function canManageDashboards(role: UserRole): boolean {
 }
 
 /** Whether a caller may open the "Manage Access" UI on a dashboard card at
- * all. Real authorization (which dashboard, which target role) is enforced
+ * all. Real authorization (which target role, self-removal) is enforced
  * fresh server-side on every call by the dashboard-assignments Edge
  * Function — this only decides whether the entry point is worth showing.
- * Viewer never gets it. An Admin gets it on every dashboard they can see,
- * because post-assignment-migration visibility itself IS the assignment
- * check (dashboards_select requires a dashboard_assignments row for any
- * non-super_admin caller) — there is no dashboard an Admin can see in their
- * list that they aren't already assigned to. */
+ * Viewer never gets it. An Admin gets it on every dashboard, matching
+ * their dashboard visibility (2026-09-04: Admins see and may manage viewer
+ * access on ALL dashboards; the Edge Function no longer assignment-gates
+ * an Admin, only limits WHAT they may do — viewer add/remove only). */
 export function canManageDashboardAssignments(role: UserRole): boolean {
   return role === 'admin' || role === 'super_admin'
 }
@@ -178,9 +177,9 @@ export function canViewDashboardAnalytics(_role: UserRole): boolean {
  * server-side on every call by the dashboard-edit Edge Function — same
  * split as canManageDashboardAssignments/canViewDashboardAnalytics: this
  * only decides whether the entry point is worth showing. Viewer never gets
- * it. An Admin gets it on every dashboard they can see, because visibility
- * itself already implies assignment (see canManageDashboardAssignments) —
- * the Edge Function still re-checks assignment on every call regardless.
+ * it. An Admin gets it on every dashboard (2026-09-04: editing follows
+ * dashboard visibility — Admins see and may edit the text fields of ALL
+ * dashboards; the Edge Function no longer assignment-gates an Admin).
  * Thumbnail controls inside the dialog are gated separately, by
  * canManageDashboards (Super Admin only). */
 export function canEditDashboard(role: UserRole): boolean {

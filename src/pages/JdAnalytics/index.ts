@@ -1,0 +1,1 @@
+export { JdAnalytics } from './JdAnalytics'

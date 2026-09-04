@@ -11,12 +11,12 @@
 //   super_admin — any assignment: any dashboard, any target role, add or
 //                 remove, including another admin's or super_admin's own
 //                 assignment row.
-//   admin       — may only act on a dashboard they themselves have a row
-//                 in (checked fresh against the table on every call, never
-//                 trusted from the request), may only add/remove a target
-//                 whose profiles.role is 'viewer', and may never remove
-//                 their OWN assignment row (that is "remove their own
-//                 access", explicitly disallowed regardless of role).
+//   admin       — may act on ANY dashboard (2026-09-04: manage-access
+//                 follows dashboard visibility, and Admins see every
+//                 dashboard — no assignment gate), but may only add/remove
+//                 a target whose profiles.role is 'viewer', and may never
+//                 remove their OWN assignment row (that is "remove their
+//                 own access", explicitly disallowed regardless of role).
 //   viewer      — 403 on every action here. No assignment permissions at
 //                 all, including just listing a roster.
 //
@@ -280,24 +280,6 @@ async function getDashboard(
   return data ?? null
 }
 
-/** Whether `userId` has an assignment row on `dashboardId` right now —
- * checked fresh against the table on every call, never trusted from the
- * request or cached, since this is the actual authorization boundary for
- * every Admin action below. */
-async function isAssigned(
-  admin: SupabaseClient,
-  dashboardId: string,
-  userId: string,
-): Promise<boolean> {
-  const { data } = await admin
-    .from('dashboard_assignments')
-    .select('id')
-    .eq('dashboard_id', dashboardId)
-    .eq('user_id', userId)
-    .maybeSingle()
-  return Boolean(data)
-}
-
 interface TargetProfile {
   id: string
   email: string
@@ -330,18 +312,11 @@ async function listAssignments(
   const dashboard = await getDashboard(admin, dashboardId)
   if (!dashboard) return json({ error: 'Dashboard not found.' }, 404, cors)
 
-  if (
-    callerRole === 'admin' &&
-    !(await isAssigned(admin, dashboardId, callerId))
-  ) {
-    return json(
-      {
-        error: 'You can only view assignments for dashboards assigned to you.',
-      },
-      403,
-      cors,
-    )
-  }
+  // 2026-09-04: Admin manage-access follows dashboard visibility (Admins
+  // see every dashboard), so no assignment check here anymore — an Admin
+  // may view any dashboard's roster, same as a Super Admin. Viewers were
+  // already rejected at the top of the handler. What an Admin may DO with
+  // the roster is still limited to Viewer add/remove below.
 
   const { data, error } = await admin
     .from('dashboard_assignments')
@@ -393,18 +368,9 @@ async function assignDashboard(
   if (!target) return json({ error: 'User not found.' }, 404, cors)
 
   if (callerRole === 'admin') {
-    // "verify dashboard is assigned to caller" / "reject modifying
-    // dashboards not assigned to caller"
-    if (!(await isAssigned(admin, dashboardId, callerId))) {
-      return json(
-        {
-          error:
-            'You can only manage assignments for dashboards assigned to you.',
-        },
-        403,
-        cors,
-      )
-    }
+    // 2026-09-04: no assignment gate anymore — an Admin may manage viewer
+    // access on ANY dashboard, matching their dashboard visibility. The
+    // target-role rule below is unchanged and still the real boundary:
     // "verify every target user has role = Viewer" / "reject assigning
     // Admin or Super Admin"
     if (target.role !== 'viewer') {
@@ -468,16 +434,7 @@ async function unassignDashboard(
   if (!target) return json({ error: 'User not found.' }, 404, cors)
 
   if (callerRole === 'admin') {
-    if (!(await isAssigned(admin, dashboardId, callerId))) {
-      return json(
-        {
-          error:
-            'You can only manage assignments for dashboards assigned to you.',
-        },
-        403,
-        cors,
-      )
-    }
+    // 2026-09-04: no assignment gate anymore — see assignDashboard above.
     // "reject removing the caller's own assignment" — checked regardless
     // of the target's role, since this rule is about the ACTOR, not the
     // target's role.

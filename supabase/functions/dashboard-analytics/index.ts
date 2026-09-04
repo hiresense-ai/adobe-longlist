@@ -10,15 +10,21 @@
 // authorization check, exactly like dashboard-assignments' `list` action
 // already does for the same reason.
 //
-// Access rules (mirrors the product spec verbatim):
+// Access rules (mirrors the product spec, updated 2026-09-04 to match the
+// widened dashboard visibility — analytics access always equals dashboard
+// visibility, so a role can never open a dashboard it can't get analytics
+// for, or vice versa):
 //   super_admin — analytics for any dashboard, unconditionally.
-//   admin       — only a dashboard they have a dashboard_assignments row on
-//                 (checked fresh against the table on every call, never
-//                 trusted from the request).
-//   viewer      — same rule as admin: only a dashboard they are assigned
-//                 to, which is exactly the set they can see at all. Same
-//                 numbers, same response shape as an Admin caller — the
-//                 analytics themselves are not scoped by role.
+//   admin       — analytics for any dashboard, matching their dashboard
+//                 visibility (Admins see every dashboard). Read-only, like
+//                 everything here — no new edit/delete/assignment power.
+//   viewer      — only a dashboard they are assigned to (checked fresh
+//                 against dashboard_assignments on every call, never
+//                 trusted from the request), which is exactly the set they
+//                 can see at all. Same numbers, same response shape for
+//                 every role — the analytics themselves are never scoped.
+// Single-tenant deployment: no tenant column exists anywhere, so "any
+// dashboard" means any in this instance — there is no cross-tenant surface.
 //
 // No writes happen anywhere in this function — it never touches dashboards,
 // dashboard_assignments, dashboard_status, or storage except to read.
@@ -79,7 +85,8 @@ interface AssignedUserSummary {
   email: string
 }
 
-type ActionBody = { action: 'get'; payload: GetPayload }
+type ActionBody =
+  { action: 'get'; payload: GetPayload } | { action: 'overview' }
 
 Deno.serve(async (req: Request) => {
   const cors = corsHeadersFor(req)
@@ -154,6 +161,8 @@ Deno.serve(async (req: Request) => {
           callerRole,
           cors,
         )
+      case 'overview':
+        return await getOverview(admin, callerIdentity, callerRole, cors)
       default:
         return json({ error: 'Unknown action' }, 400, cors)
     }
@@ -211,10 +220,12 @@ async function getAnalytics(
   const dashboard = await getDashboard(admin, dashboardId)
   if (!dashboard) return json({ error: 'Dashboard not found.' }, 404, cors)
 
-  // Admin and Viewer alike: only dashboards they hold an assignment row
-  // on, checked fresh on every call. Only Super Admin skips this.
+  // Viewer only: an assignment row is required, checked fresh on every
+  // call. Super Admin AND Admin skip this — their analytics access equals
+  // their dashboard visibility (every dashboard), per the 2026-09-04 rule
+  // in the module comment.
   if (
-    callerRole !== 'super_admin' &&
+    callerRole === 'viewer' &&
     !(await isAssigned(admin, dashboardId, caller.id))
   ) {
     return json(
@@ -223,7 +234,6 @@ async function getAnalytics(
       cors,
     )
   }
-  // super_admin: no further check — analytics for any dashboard.
 
   const [assignedUsers, actionBreakdown, candidateTotal] = await Promise.all([
     getAssignedUsers(admin, dashboardId, callerRole, caller),
@@ -318,6 +328,188 @@ async function getAssignedUsers(
     admins,
     viewers,
   }
+}
+
+// ---------------------------------------------------------------------------
+// JD Analytics overview — one aggregated response covering EVERY dashboard
+// the caller may see, so the JD Analytics page never issues one request per
+// dashboard. Access follows the exact same rule as `get`: a Super Admin or
+// Admin sees every dashboard; a Viewer sees only dashboards they hold a
+// dashboard_assignments row on (the same set they can open at all). All
+// numbers come from the same sources the per-dashboard analytics above
+// uses — dashboard_status current-state rows (one per touched candidate)
+// for the action counts and the stored HTML for the candidate total — so
+// the two views can never disagree. Batched: one dashboards query, one
+// dashboard_status query, one profiles query, and the per-dashboard HTML
+// reads in parallel.
+//
+// completedAt comes from the REQUIREMENT lifecycle: a Super Admin may link
+// a requirement to its JD dashboard (requirements.dashboard_id, set only
+// through the requirements Edge Function), and a dashboard's row shows the
+// linked requirement's completion timestamp while that requirement's
+// CURRENT status is 'Completed'. Dashboards with no such link stay null
+// and render as "—" — never a guessed date.
+// ---------------------------------------------------------------------------
+
+interface OverviewDashboardRow {
+  id: string
+  title: string
+  created_by: string | null
+  created_at: string
+  storage_path: string
+}
+
+async function getOverview(
+  admin: SupabaseClient,
+  caller: AssignedUserSummary,
+  callerRole: CallerRole,
+  cors: Record<string, string>,
+) {
+  let dashboards: OverviewDashboardRow[] = []
+
+  // Super Admin and Admin: every dashboard — the same set their dashboard
+  // list shows. Viewer: assigned only, unchanged.
+  if (callerRole === 'super_admin' || callerRole === 'admin') {
+    const { data, error } = await admin
+      .from('dashboards')
+      .select('id, title, created_by, created_at, storage_path')
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    dashboards = (data ?? []) as OverviewDashboardRow[]
+  } else {
+    const { data: assignments, error: assignmentsError } = await admin
+      .from('dashboard_assignments')
+      .select('dashboard_id')
+      .eq('user_id', caller.id)
+    if (assignmentsError) throw assignmentsError
+    const ids = [
+      ...new Set(
+        (assignments ?? []).map(
+          (row) => (row as { dashboard_id: string }).dashboard_id,
+        ),
+      ),
+    ]
+    if (ids.length > 0) {
+      const { data, error } = await admin
+        .from('dashboards')
+        .select('id, title, created_by, created_at, storage_path')
+        .in('id', ids)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      dashboards = (data ?? []) as OverviewDashboardRow[]
+    }
+  }
+
+  if (dashboards.length === 0) {
+    return json({ rows: [] }, 200, cors)
+  }
+
+  const dashboardIds = dashboards.map((d) => d.id)
+
+  // One query for every action row across all visible dashboards, grouped
+  // in memory — the same per-candidate current-state source
+  // getActionBreakdown reads, just batched.
+  const { data: statusRows, error: statusError } = await admin
+    .from('dashboard_status')
+    .select('dashboard_id, action')
+    .in('dashboard_id', dashboardIds)
+    .not('action', 'is', null)
+  if (statusError) throw statusError
+
+  const breakdownByDashboard = new Map<string, Map<string, number>>()
+  for (const row of statusRows ?? []) {
+    const { dashboard_id, action } = row as {
+      dashboard_id: string
+      action: string | null
+    }
+    if (!action) continue
+    let counts = breakdownByDashboard.get(dashboard_id)
+    if (!counts) {
+      counts = new Map()
+      breakdownByDashboard.set(dashboard_id, counts)
+    }
+    counts.set(action, (counts.get(action) ?? 0) + 1)
+  }
+
+  // One query for every creator identity (same minimal fields the Assigned
+  // Users list already exposes).
+  const creatorIds = [
+    ...new Set(dashboards.map((d) => d.created_by).filter(Boolean)),
+  ] as string[]
+  const creatorsById = new Map<string, AssignedUserSummary>()
+  if (creatorIds.length > 0) {
+    const { data: creators, error: creatorsError } = await admin
+      .from('profiles')
+      .select('id, name, email')
+      .in('id', creatorIds)
+    if (creatorsError) throw creatorsError
+    for (const profile of creators ?? []) {
+      const p = profile as { id: string; name: string | null; email: string }
+      creatorsById.set(p.id, { id: p.id, name: p.name, email: p.email })
+    }
+  }
+
+  // Candidate totals come from each dashboard's stored HTML — the only
+  // place candidates exist (see getTotalCandidates). Read in parallel,
+  // once per dashboard per request, exactly like the per-dashboard
+  // analytics does for one.
+  const totals = await Promise.all(
+    dashboards.map((d) => getTotalCandidates(admin, d.storage_path)),
+  )
+
+  // Completed Date comes from the REQUIREMENT lifecycle, joined through
+  // the explicit requirements.dashboard_id link a Super Admin sets — one
+  // query for all visible dashboards. Only a requirement whose CURRENT
+  // status is 'Completed' contributes (display gates on status, same as
+  // everywhere else); if several completed requirements link to one
+  // dashboard, the latest completion wins, matching the live stamping
+  // rule. Dashboards with no linked completed requirement stay null ("—").
+  const { data: linkedReqs, error: linkedError } = await admin
+    .from('requirements')
+    .select('dashboard_id, status, completed_at')
+    .in('dashboard_id', dashboardIds)
+    .eq('status', 'Completed')
+    .not('completed_at', 'is', null)
+  if (linkedError) throw linkedError
+  const completedByDashboard = new Map<string, string>()
+  for (const req of linkedReqs ?? []) {
+    const { dashboard_id, completed_at } = req as {
+      dashboard_id: string
+      completed_at: string
+    }
+    const current = completedByDashboard.get(dashboard_id)
+    if (!current || completed_at > current) {
+      completedByDashboard.set(dashboard_id, completed_at)
+    }
+  }
+
+  const rows = dashboards.map((dashboard, index) => {
+    const counts = breakdownByDashboard.get(dashboard.id)
+    const actionBreakdown = counts
+      ? [...counts.entries()]
+          .map(([value, count]) => ({ value, count }))
+          .sort((a, b) => b.count - a.count)
+      : []
+    const actioned = actionBreakdown.reduce(
+      (sum, entry) => sum + entry.count,
+      0,
+    )
+    const total = totals[index]
+    const pending = total === null ? null : Math.max(0, total - actioned)
+    return {
+      id: dashboard.id,
+      title: dashboard.title,
+      createdBy: dashboard.created_by
+        ? (creatorsById.get(dashboard.created_by) ?? null)
+        : null,
+      createdAt: dashboard.created_at,
+      completedAt: completedByDashboard.get(dashboard.id) ?? null,
+      candidates: { total, actioned, pending },
+      actionBreakdown,
+    }
+  })
+
+  return json({ rows }, 200, cors)
 }
 
 interface ActionBreakdownEntry {
