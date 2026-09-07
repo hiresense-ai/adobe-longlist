@@ -172,6 +172,17 @@ export function canViewDashboardAnalytics(_role: UserRole): boolean {
   return true
 }
 
+/** Whether a caller may open the JD Analytics page (and see its nav entry)
+ * — Admin and Super Admin only (2026-09-07). Deliberately distinct from
+ * canViewDashboardAnalytics above: the per-dashboard Analytics dialog stays
+ * open to every role, but the cross-dashboard JD Analytics view is a
+ * management surface. Mirrored server-side by the dashboard-analytics Edge
+ * Function's `overview` action, which refuses a Viewer with 403 — this only
+ * decides whether the route/link are worth showing. */
+export function canViewJdAnalytics(role: UserRole): boolean {
+  return role === 'admin' || role === 'super_admin'
+}
+
 /** Whether a caller may open the Edit Dashboard UI at all. Real
  * authorization (which dashboard, which fields) is enforced fresh
  * server-side on every call by the dashboard-edit Edge Function — same
