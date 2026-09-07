@@ -331,17 +331,26 @@ async function getAssignedUsers(
 }
 
 // ---------------------------------------------------------------------------
-// JD Analytics overview — one aggregated response covering EVERY dashboard
-// the caller may see, so the JD Analytics page never issues one request per
-// dashboard. Access follows the exact same rule as `get`: a Super Admin or
-// Admin sees every dashboard; a Viewer sees only dashboards they hold a
-// dashboard_assignments row on (the same set they can open at all). All
+// JD Analytics overview — one aggregated response covering EVERY dashboard,
+// so the JD Analytics page never issues one request per dashboard. Access
+// (2026-09-07): Super Admin and Admin ONLY. A Viewer is refused outright
+// (403) — JD Analytics is a management view. This is deliberately narrower
+// than the per-dashboard `get` above, which a Viewer may still open for a
+// dashboard assigned to them (Dashboard Analytics is unchanged). All
 // numbers come from the same sources the per-dashboard analytics above
 // uses — dashboard_status current-state rows (one per touched candidate)
 // for the action counts and the stored HTML for the candidate total — so
 // the two views can never disagree. Batched: one dashboards query, one
 // dashboard_status query, one profiles query, and the per-dashboard HTML
 // reads in parallel.
+//
+// createdBy is the dashboard's assigned VIEWER — dashboard_assignments joined
+// to profiles and filtered to role = 'viewer' — never the requirement's
+// author, the dashboard's uploader/owner, or an Admin / Super Admin
+// assignee. A dashboard with no Viewer assigned stays null ("—"). Should a
+// dashboard ever carry several Viewers, the earliest-assigned one is used
+// (assigned_at ascending, user_id as a stable tiebreak) so the choice is
+// deterministic; nothing here ever creates or changes an assignment.
 //
 // completedAt comes from the REQUIREMENT lifecycle: a Super Admin may link
 // a requirement to its JD dashboard (requirements.dashboard_id, set only
@@ -360,44 +369,29 @@ interface OverviewDashboardRow {
 
 async function getOverview(
   admin: SupabaseClient,
-  caller: AssignedUserSummary,
+  _caller: AssignedUserSummary,
   callerRole: CallerRole,
   cors: Record<string, string>,
 ) {
-  let dashboards: OverviewDashboardRow[] = []
-
-  // Super Admin and Admin: every dashboard — the same set their dashboard
-  // list shows. Viewer: assigned only, unchanged.
-  if (callerRole === 'super_admin' || callerRole === 'admin') {
-    const { data, error } = await admin
-      .from('dashboards')
-      .select('id, title, created_at, storage_path')
-      .order('created_at', { ascending: false })
-    if (error) throw error
-    dashboards = (data ?? []) as OverviewDashboardRow[]
-  } else {
-    const { data: assignments, error: assignmentsError } = await admin
-      .from('dashboard_assignments')
-      .select('dashboard_id')
-      .eq('user_id', caller.id)
-    if (assignmentsError) throw assignmentsError
-    const ids = [
-      ...new Set(
-        (assignments ?? []).map(
-          (row) => (row as { dashboard_id: string }).dashboard_id,
-        ),
-      ),
-    ]
-    if (ids.length > 0) {
-      const { data, error } = await admin
-        .from('dashboards')
-        .select('id, title, created_at, storage_path')
-        .in('id', ids)
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      dashboards = (data ?? []) as OverviewDashboardRow[]
-    }
+  // Super Admin and Admin only — checked from the verified session role,
+  // never from the request. A Viewer is refused here regardless of how
+  // many dashboards they are assigned to (see the section comment).
+  if (callerRole !== 'super_admin' && callerRole !== 'admin') {
+    return json(
+      { error: 'JD Analytics is available to Admins and Super Admins only.' },
+      403,
+      cors,
+    )
   }
+
+  // Every dashboard — the same set an Admin's / Super Admin's dashboard
+  // list shows.
+  const { data: dashboardData, error: dashboardsError } = await admin
+    .from('dashboards')
+    .select('id, title, created_at, storage_path')
+    .order('created_at', { ascending: false })
+  if (dashboardsError) throw dashboardsError
+  const dashboards = (dashboardData ?? []) as OverviewDashboardRow[]
 
   if (dashboards.length === 0) {
     return json({ rows: [] }, 200, cors)
@@ -438,18 +432,11 @@ async function getOverview(
     dashboards.map((d) => getTotalCandidates(admin, d.storage_path)),
   )
 
-  // A JD's IDENTITY (who created it, when) and its Completed Date all come
-  // from the linked REQUIREMENT — joined through the explicit
-  // requirements.dashboard_id link a Super Admin sets, in ONE query for
-  // every visible dashboard (never one per dashboard).
+  // A JD's Created Date and Completed Date come from the linked REQUIREMENT
+  // — joined through the explicit requirements.dashboard_id link a Super
+  // Admin sets, in ONE query for every visible dashboard (never one per
+  // dashboard). (Created By does NOT: see the viewer lookup further down.)
   //
-  //   createdBy   — the requirement's creator. This is deliberately NOT the
-  //                 dashboard's owner: "Created By" answers "who raised this
-  //                 JD?", and the person who uploads a dashboard is often
-  //                 someone else entirely. A dashboard with no linked
-  //                 requirement has no JD creator, so it stays null ("—")
-  //                 rather than falling back to the dashboard's owner, which
-  //                 would put the wrong name in the column.
   //   createdAt   — the requirement's creation date, falling back to the
   //                 dashboard's own created_at when nothing is linked, so
   //                 every row still carries a date and the Today / This Week
@@ -469,14 +456,13 @@ async function getOverview(
   // stable even when two requirements share a timestamp.
   const { data: linkedReqs, error: linkedError } = await admin
     .from('requirements')
-    .select('id, dashboard_id, created_by, created_at, status, completed_at')
+    .select('id, dashboard_id, created_at, status, completed_at')
     .in('dashboard_id', dashboardIds)
   if (linkedError) throw linkedError
 
   interface LinkedRequirement {
     id: string
     dashboard_id: string
-    created_by: string | null
     created_at: string
     status: string
     completed_at: string | null
@@ -498,25 +484,57 @@ async function getOverview(
     }
   }
 
-  // One query for every JD creator identity (same minimal fields the
-  // Assigned Users list already exposes — name and email only).
-  const creatorIds = [
-    ...new Set(
-      [...canonicalByDashboard.values()]
-        .map((req) => req.created_by)
-        .filter(Boolean),
-    ),
-  ] as string[]
-  const creatorsById = new Map<string, AssignedUserSummary>()
-  if (creatorIds.length > 0) {
-    const { data: creators, error: creatorsError } = await admin
-      .from('profiles')
-      .select('id, name, email')
-      .in('id', creatorIds)
-    if (creatorsError) throw creatorsError
-    for (const profile of creators ?? []) {
-      const p = profile as { id: string; name: string | null; email: string }
-      creatorsById.set(p.id, { id: p.id, name: p.name, email: p.email })
+  // Created By = the dashboard's assigned VIEWER. ONE query over
+  // dashboard_assignments for every visible dashboard (never one per
+  // dashboard), joined to profiles exactly like getAssignedUsers above, and
+  // filtered to role = 'viewer' in memory — Admin and Super Admin assignment
+  // rows are ignored, and nothing is ever read from requirements.created_by
+  // or dashboards.created_by for this column. Earliest assigned_at wins if
+  // a dashboard ever has several Viewers (user_id as a stable tiebreak).
+  const { data: assignmentRows, error: assignmentsError } = await admin
+    .from('dashboard_assignments')
+    .select(
+      'dashboard_id, user_id, assigned_at, profiles!dashboard_assignments_user_id_fkey(id, name, email, role)',
+    )
+    .in('dashboard_id', dashboardIds)
+  if (assignmentsError) throw assignmentsError
+
+  interface ViewerAssignment {
+    userId: string
+    assignedAt: string
+    summary: AssignedUserSummary
+  }
+  const viewerByDashboard = new Map<string, ViewerAssignment>()
+  for (const row of assignmentRows ?? []) {
+    const r = row as unknown as {
+      dashboard_id: string
+      user_id: string
+      assigned_at: string
+      profiles: {
+        id: string
+        name: string | null
+        email: string
+        role: CallerRole
+      } | null
+    }
+    if (!r.profiles || r.profiles.role !== 'viewer') continue
+    const candidate: ViewerAssignment = {
+      userId: r.user_id,
+      assignedAt: r.assigned_at,
+      summary: {
+        id: r.profiles.id,
+        name: r.profiles.name,
+        email: r.profiles.email,
+      },
+    }
+    const current = viewerByDashboard.get(r.dashboard_id)
+    if (
+      !current ||
+      candidate.assignedAt < current.assignedAt ||
+      (candidate.assignedAt === current.assignedAt &&
+        candidate.userId < current.userId)
+    ) {
+      viewerByDashboard.set(r.dashboard_id, candidate)
     }
   }
 
@@ -539,11 +557,9 @@ async function getOverview(
     return {
       id: dashboard.id,
       title: dashboard.title,
-      // The JD's creator — the linked requirement's author, never the
-      // dashboard's owner (see the comment above the requirements query).
-      createdBy: jd?.created_by
-        ? (creatorsById.get(jd.created_by) ?? null)
-        : null,
+      // The dashboard's assigned Viewer — never the requirement's author or
+      // the dashboard's owner (see the comment above the assignments query).
+      createdBy: viewerByDashboard.get(dashboard.id)?.summary ?? null,
       createdAt: jd?.created_at ?? dashboard.created_at,
       completedAt:
         jd && jd.status === 'Completed' && jd.completed_at

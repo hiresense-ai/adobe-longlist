@@ -63,19 +63,22 @@ export async function getDashboardAnalytics(
 // ---------------------------------------------------------------------------
 
 /**
- * One JD row. Everything requirement-shaped below comes from a SINGLE
- * record — the dashboard's canonical linked requirement (earliest
- * created_at, tie-broken by id), resolved server-side through
+ * One JD row. Both date fields below come from a SINGLE record — the
+ * dashboard's canonical linked requirement (earliest created_at,
+ * tie-broken by id), resolved server-side through
  * requirements.dashboard_id. A dashboard can have several requirements
  * linked to it, so taking each field from whichever row happened to win
  * its own comparison could describe a JD that doesn't exist; one record
- * supplies them all.
+ * supplies them all. Created By is a different source entirely — the
+ * dashboard's assigned Viewer.
  */
 export interface JdAnalyticsRow {
   id: string
   title: string
-  /** The canonical requirement's author — who RAISED the JD. Never the
-   * dashboard's owner. Null (rendered "—") when no requirement is linked. */
+  /** The dashboard's assigned VIEWER (dashboard_assignments, role =
+   * 'viewer'), resolved server-side. Never the requirement's author, the
+   * dashboard's uploader/owner, or an Admin / Super Admin assignee. Null
+   * (rendered "—") when no Viewer is assigned. */
   createdBy: DashboardAssignedUser | null
   /** The canonical requirement's creation date, falling back to the
    * dashboard's own created_at when nothing is linked, so every row keeps
@@ -126,10 +129,11 @@ export interface JdMetrics {
   pending: number | null
   ssHs: number
   srHs: number
-  /** SR.HS conversion from SS.HS: srHs ÷ ssHs × 100. Null when ssHs is 0
-   * — the ratio is undefined there (0% would wrongly read as "no rejects"
-   * even when rejects exist), so it renders as "—" per the feature's
-   * established convention. Never Infinity/NaN. */
+  /** Selection Ratio — the share of screened candidates that were selected:
+   * ssHs ÷ (ssHs + srHs) × 100 (7 selects / 3 rejects → 70%; 10 / 0 →
+   * 100%; 0 / 10 → 0%). Null ONLY when ssHs + srHs is 0 — nothing was
+   * screened, so the rate is undefined and renders as "—" per the
+   * feature's established convention. Never Infinity/NaN. */
   ratio: number | null
 }
 
@@ -148,8 +152,16 @@ export function computeJdMetrics(row: JdAnalyticsRow): JdMetrics {
     pending: row.candidates.pending,
     ssHs,
     srHs,
-    ratio: ssHs === 0 ? null : (srHs / ssHs) * 100,
+    ratio: selectionRatio(ssHs, srHs),
   }
+}
+
+/** THE one Selection Ratio formula, shared by every row and the aggregate
+ * tiles so the two can never diverge: ssHs ÷ (ssHs + srHs) × 100, null
+ * only when nothing was screened (ssHs + srHs = 0). */
+export function selectionRatio(ssHs: number, srHs: number): number | null {
+  const screened = ssHs + srHs
+  return screened === 0 ? null : (ssHs / screened) * 100
 }
 
 export interface JdMetricsSummary {
@@ -162,10 +174,11 @@ export interface JdMetricsSummary {
   pending: number | null
   ssHs: number
   srHs: number
-  /** The Ratio definition applied to the AGGREGATE counts — total srHs ÷
-   * total ssHs × 100, null when total ssHs is 0 (never NaN/Infinity).
-   * Deliberately NOT an average of per-dashboard ratios: counts are summed
-   * FIRST, then the one formula runs on the totals. */
+  /** The Selection Ratio applied to the AGGREGATE counts — total ssHs ÷
+   * (total ssHs + total srHs) × 100, null when nothing was screened (never
+   * NaN/Infinity). Deliberately NOT an average of per-dashboard ratios:
+   * counts are summed FIRST, then the one formula runs on the totals
+   * (1/1 + 9/1 → 10/12 = 83.33%, not (50% + 90%) / 2 = 70%). */
   ratio: number | null
 }
 
@@ -191,14 +204,14 @@ export function aggregateJdMetrics(metrics: JdMetrics[]): JdMetricsSummary {
     pending: metrics.length > 0 && pendingKnown === 0 ? null : pendingSum,
     ssHs,
     srHs,
-    ratio: ssHs === 0 ? null : (srHs / ssHs) * 100,
+    ratio: selectionRatio(ssHs, srHs),
   }
 }
 
 /** THE one place a JD Analytics ratio becomes display text, so rows and
  * the aggregate tiles can never format differently: up to two decimals,
- * trailing zeros trimmed (21.67%, 10.4%, 25%), "—" for the undefined
- * (ssHs = 0) case. */
+ * trailing zeros trimmed (66.67%, 10.4%, 25%), "—" for the undefined
+ * (nothing screened) case. */
 export function formatJdRatio(ratio: number | null): string {
   if (ratio === null) return '—'
   return `${Number(ratio.toFixed(2))}%`

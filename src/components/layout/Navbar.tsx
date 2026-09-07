@@ -31,7 +31,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
-import { isAtLeastAdmin } from '@/lib/permissions'
+import { canViewJdAnalytics, isAtLeastAdmin } from '@/lib/permissions'
 import { cn } from '@/lib/utils'
 
 export function Navbar() {
@@ -41,6 +41,7 @@ export function Navbar() {
   const [searchParams, setSearchParams] = useSearchParams()
   const isHome = location.pathname === ROUTES.home
   const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
+  const showJdAnalytics = Boolean(user && canViewJdAnalytics(user.role))
 
   // Primary top-nav destinations, with their active-route matching. Purely
   // presentational — routing is unchanged; this only decides which pill
@@ -63,16 +64,19 @@ export function Navbar() {
       icon: ClipboardList,
       isActive: location.pathname.startsWith(ROUTES.requirements),
     },
-    // Every role, same as the existing Analytics entry points
-    // (canViewDashboardAnalytics is open to all) — the dashboard-analytics
-    // Edge Function scopes which dashboards each caller's overview
-    // actually contains, per call, server-side.
-    {
-      to: ROUTES.jdAnalytics,
-      label: 'JD Analytics',
-      icon: ChartColumn,
-      isActive: location.pathname.startsWith(ROUTES.jdAnalytics),
-    },
+    // Admin and Super Admin only (canViewJdAnalytics) — the route is
+    // guarded the same way, and the dashboard-analytics Edge Function
+    // refuses a Viewer's overview call server-side regardless.
+    ...(showJdAnalytics
+      ? [
+          {
+            to: ROUTES.jdAnalytics,
+            label: 'JD Analytics',
+            icon: ChartColumn,
+            isActive: location.pathname.startsWith(ROUTES.jdAnalytics),
+          },
+        ]
+      : []),
     ...(isAdmin
       ? [
           {
@@ -184,12 +188,14 @@ export function Navbar() {
                   Requirements
                 </Link>
               </DropdownMenuItem>
-              <DropdownMenuItem asChild className="md:hidden">
-                <Link to={ROUTES.jdAnalytics}>
-                  <ChartColumn className="size-4" />
-                  JD Analytics
-                </Link>
-              </DropdownMenuItem>
+              {showJdAnalytics && (
+                <DropdownMenuItem asChild className="md:hidden">
+                  <Link to={ROUTES.jdAnalytics}>
+                    <ChartColumn className="size-4" />
+                    JD Analytics
+                  </Link>
+                </DropdownMenuItem>
+              )}
               {isAdmin && (
                 <DropdownMenuItem asChild className="md:hidden">
                   <Link to={ROUTES.adminUsers}>

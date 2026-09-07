@@ -60,15 +60,16 @@ export const router = createBrowserRouter([
               // requirements Edge Function decides per-role what each
               // caller can see or do once inside.
               { path: ROUTES.requirements, element: <Requirements /> },
-              // Every authenticated role, matching the existing Analytics
-              // entry points (canViewDashboardAnalytics is open to all) —
-              // the dashboard-analytics Edge Function scopes WHICH
-              // dashboards each caller sees, per call, server-side.
-              { path: ROUTES.jdAnalytics, element: <JdAnalytics /> },
               {
+                // Admin and Super Admin only. AdminRoute is the existing
+                // role gate (isAtLeastAdmin) — the same rule as
+                // canViewJdAnalytics, which hides the nav entry; the
+                // dashboard-analytics Edge Function refuses a Viewer's
+                // overview call server-side regardless of the UI.
                 element: <AdminRoute />,
                 children: [
                   { path: ROUTES.adminUsers, element: <AdminUsers /> },
+                  { path: ROUTES.jdAnalytics, element: <JdAnalytics /> },
                 ],
               },
             ],
