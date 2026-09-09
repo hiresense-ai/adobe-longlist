@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BarChart3,
   Briefcase,
   ChartColumn,
   Clock,
@@ -17,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
+import { DashboardAnalyticsDialog } from '@/components/dashboard/DashboardAnalyticsDialog'
 import { useJdAnalytics } from '@/hooks/useDashboardAnalytics'
 import {
   aggregateJdMetrics,
@@ -129,6 +131,17 @@ export function JdAnalytics() {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('createdAt')
   const [sortDir, setSortDir] = useState<1 | -1>(-1)
+  // Which JD's Dashboard Analytics dialog is open, if any. A row's `id` IS
+  // the dashboard's real id (see the dashboard-analytics Edge Function's
+  // `overview` action) — never a name lookup — so this is passed straight
+  // into the EXISTING DashboardAnalyticsDialog/useDashboardAnalytics, the
+  // same component and query the Dashboards page already uses. Its query
+  // key is keyed by dashboard id, so switching JDs can never show stale
+  // data from the previous one.
+  const [analyticsDashboard, setAnalyticsDashboard] = useState<{
+    id: string
+    title: string
+  } | null>(null)
 
   const rows = useMemo<RowWithMetrics[]>(
     () =>
@@ -355,8 +368,26 @@ export function JdAnalytics() {
                     key={row.id}
                     className="hover:bg-muted/40 transition-colors duration-150"
                   >
-                    <td className="max-w-72 truncate px-2 py-3 pl-4 font-medium">
-                      {row.title}
+                    <td className="max-w-72 px-2 py-3 pl-4 font-medium">
+                      <div className="flex items-center gap-1">
+                        <span className="truncate">{row.title}</span>
+                        <Button
+                          type="button"
+                          size="icon-xs"
+                          variant="ghost"
+                          className="text-muted-foreground hover:text-foreground shrink-0"
+                          title="Dashboard Analytics"
+                          aria-label={`Dashboard Analytics for ${row.title}`}
+                          onClick={() =>
+                            setAnalyticsDashboard({
+                              id: row.id,
+                              title: row.title,
+                            })
+                          }
+                        >
+                          <BarChart3 />
+                        </Button>
+                      </div>
                     </td>
                     <td className="text-muted-foreground max-w-48 truncate px-2 py-3">
                       {row.createdBy?.name || row.createdBy?.email || '—'}
@@ -385,6 +416,16 @@ export function JdAnalytics() {
             </table>
           </div>
         </div>
+      )}
+
+      {analyticsDashboard && (
+        <DashboardAnalyticsDialog
+          dashboard={analyticsDashboard}
+          open={Boolean(analyticsDashboard)}
+          onOpenChange={(open) => {
+            if (!open) setAnalyticsDashboard(null)
+          }}
+        />
       )}
     </div>
   )
