@@ -1,4 +1,8 @@
-// Dashboard Analytics — server-side only, strictly read-only.
+// Dashboard Analytics — server-side only, read-only EXCEPT for one narrowly
+// scoped exception (see below): the `overview` action stamps/clears
+// dashboards.pending_zero_at, JD Analytics' "Completed Date", because that
+// is the only place Pending's two sources (the stored HTML and
+// dashboard_status) are already read together for every visible dashboard.
 //
 // Mirrors dashboard-assignments' shape (caller identity + role verified from
 // a real session before anything runs; service-role client only reached
@@ -26,8 +30,11 @@
 // Single-tenant deployment: no tenant column exists anywhere, so "any
 // dashboard" means any in this instance — there is no cross-tenant surface.
 //
-// No writes happen anywhere in this function — it never touches dashboards,
-// dashboard_assignments, dashboard_status, or storage except to read.
+// Nothing here ever touches dashboard_assignments, dashboard_status, or
+// storage except to read. The one write (see getOverview's own comment) is
+// a plain `dashboards.pending_zero_at` update, idempotent and gated purely
+// on the Pending value this same request already computed — never a
+// separate decision made from stale or unrelated data.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -352,18 +359,64 @@ async function getAssignedUsers(
 // (assigned_at ascending, user_id as a stable tiebreak) so the choice is
 // deterministic; nothing here ever creates or changes an assignment.
 //
-// completedAt comes from the REQUIREMENT lifecycle: a Super Admin may link
+// THREE independent business dates, never conflated (see each field below):
+//   submittedAt — when the Requirement (or this dashboard, absent one) was
+//                 first raised.
+//   deliveredAt — when the linked Requirement's work was marked done.
+//   completedAt — when every candidate on THIS dashboard was actioned.
+// deliveredAt comes from the REQUIREMENT lifecycle: a Super Admin may link
 // a requirement to its JD dashboard (requirements.dashboard_id, set only
 // through the requirements Edge Function), and a dashboard's row shows the
 // linked requirement's completion timestamp while that requirement's
 // CURRENT status is 'Completed'. Dashboards with no such link stay null
 // and render as "—" — never a guessed date.
+//
+// Each of the three also has a Super-Admin-only manual override column
+// (submitted_date_override / delivered_date_override /
+// completed_date_override, edited only through the dashboard-edit Edge
+// Function — never written here), which when set takes ABSOLUTE
+// precedence over everything else described above for that date. This is
+// a deliberately separate field per date, never a direct edit of
+// requirements.created_at/completed_at or dashboards.pending_zero_at —
+// see the override columns' own migration comment for why overwriting
+// those directly would be unsafe (it would corrupt the Requirements tab's
+// own dates for the same requirement, or get silently clobbered by
+// pending_zero_at's own auto-clear logic below).
+//
+// completedAt is the ONE write this otherwise read-only function performs,
+// and the ONLY place it happens anywhere in the app: candidates and their
+// actioned state live entirely outside Postgres (the full candidate list
+// only exists in this dashboard's own uploaded HTML in Storage;
+// dashboard_status only ever gets a row once a candidate is first
+// touched), so "did Pending just reach zero" can only be observed here,
+// where both are already read together to answer the exact same question
+// for the Pending count itself. The write is narrowly scoped and
+// idempotent: dashboards.pending_zero_at is set (once) the first time
+// Pending is observed at exactly zero, and cleared if Pending is later
+// observed above zero again (e.g. more candidates were bulk-appended after
+// full completion) — so it always mirrors "is Pending currently zero"
+// rather than becoming a permanent, possibly-stale historical fact.
 // ---------------------------------------------------------------------------
 
 interface OverviewDashboardRow {
   id: string
   title: string
   created_at: string
+  /** Manual/external Requirement Created Date, set at upload time only
+   * when the dashboard had no tracked Requirement yet — see
+   * dashboards.requirement_created_at's column comment. Used as a
+   * fallback for Submitted Date, below the canonical linked requirement's
+   * own created_at but above this dashboard's own upload created_at. */
+  requirement_created_at: string | null
+  /** JD Analytics "Completed Date" — see dashboards.pending_zero_at's
+   * column comment and the section comment above. */
+  pending_zero_at: string | null
+  /** Super-Admin-set manual overrides — each takes absolute precedence
+   * over everything else that would otherwise resolve that date. See the
+   * dashboard_date_overrides migration's column comments. */
+  submitted_date_override: string | null
+  delivered_date_override: string | null
+  completed_date_override: string | null
   storage_path: string
 }
 
@@ -388,7 +441,9 @@ async function getOverview(
   // list shows.
   const { data: dashboardData, error: dashboardsError } = await admin
     .from('dashboards')
-    .select('id, title, created_at, storage_path')
+    .select(
+      'id, title, created_at, requirement_created_at, pending_zero_at, submitted_date_override, delivered_date_override, completed_date_override, storage_path',
+    )
     .order('created_at', { ascending: false })
   if (dashboardsError) throw dashboardsError
   const dashboards = (dashboardData ?? []) as OverviewDashboardRow[]
@@ -437,11 +492,14 @@ async function getOverview(
   // Admin sets, in ONE query for every visible dashboard (never one per
   // dashboard). (Created By does NOT: see the viewer lookup further down.)
   //
-  //   createdAt   — the requirement's creation date, falling back to the
-  //                 dashboard's own created_at when nothing is linked, so
-  //                 every row still carries a date and the Today / This Week
-  //                 / All Time filters keep working for unlinked rows.
-  //   completedAt — that same requirement's completion stamp, and only
+  //   submittedAt — the canonical requirement's creation date when one is
+  //                 linked; otherwise the dashboard's own manual/external
+  //                 requirement_created_at (set at upload time for
+  //                 dashboards with no tracked requirement yet); otherwise
+  //                 the dashboard's own upload created_at. Every row always
+  //                 carries a date this way, so the Today / This Week /
+  //                 All Time filters keep working regardless of linkage.
+  //   deliveredAt — that same requirement's completion stamp, and only
   //                 while its CURRENT status is 'Completed'. Never derived
   //                 from dashboard activity, updated_at, contacted_at, or
   //                 anything else.
@@ -538,7 +596,10 @@ async function getOverview(
     }
   }
 
-  const rows = dashboards.map((dashboard, index) => {
+  // First pass: the action breakdown and Pending count for every dashboard
+  // — needed before the batched completedAt (Pending-reached-zero) write
+  // below, and reused as-is by the second pass that builds the response.
+  const perDashboard = dashboards.map((dashboard, index) => {
     const counts = breakdownByDashboard.get(dashboard.id)
     const actionBreakdown = counts
       ? [...counts.entries()]
@@ -551,24 +612,81 @@ async function getOverview(
     )
     const total = totals[index]
     const pending = total === null ? null : Math.max(0, total - actioned)
-    // Every requirement-sourced field on this row comes from ONE record:
-    // the dashboard's canonical linked requirement (see above).
-    const jd = canonicalByDashboard.get(dashboard.id)
-    return {
-      id: dashboard.id,
-      title: dashboard.title,
-      // The dashboard's assigned Viewer — never the requirement's author or
-      // the dashboard's owner (see the comment above the assignments query).
-      createdBy: viewerByDashboard.get(dashboard.id)?.summary ?? null,
-      createdAt: jd?.created_at ?? dashboard.created_at,
-      completedAt:
-        jd && jd.status === 'Completed' && jd.completed_at
-          ? jd.completed_at
-          : null,
-      candidates: { total, actioned, pending },
-      actionBreakdown,
-    }
+    return { dashboard, actionBreakdown, actioned, total, pending }
   })
+
+  // JD Analytics "Completed Date" — Pending reaching zero, tracked in
+  // dashboards.pending_zero_at (see the section comment above for why this
+  // narrowly-scoped write lives here). Two batched updates, never one per
+  // dashboard: dashboards newly observed at Pending = 0 get NOW() (only
+  // when not already stamped, so an existing stamp is never overwritten
+  // with a later "first observed" time); dashboards observed back above
+  // zero after being fully completed get their stamp cleared. Unreadable
+  // totals (pending === null) touch neither list — never guess.
+  const toStamp = perDashboard
+    .filter((p) => p.pending === 0 && p.dashboard.pending_zero_at === null)
+    .map((p) => p.dashboard.id)
+  const toClear = perDashboard
+    .filter(
+      (p) =>
+        p.pending !== null &&
+        p.pending > 0 &&
+        p.dashboard.pending_zero_at !== null,
+    )
+    .map((p) => p.dashboard.id)
+
+  let stampedAt: string | null = null
+  if (toStamp.length > 0) {
+    stampedAt = new Date().toISOString()
+    const { error: stampError } = await admin
+      .from('dashboards')
+      .update({ pending_zero_at: stampedAt })
+      .in('id', toStamp)
+    if (stampError) throw stampError
+  }
+  if (toClear.length > 0) {
+    const { error: clearError } = await admin
+      .from('dashboards')
+      .update({ pending_zero_at: null })
+      .in('id', toClear)
+    if (clearError) throw clearError
+  }
+  const toStampSet = new Set(toStamp)
+  const toClearSet = new Set(toClear)
+
+  const rows = perDashboard.map(
+    ({ dashboard, actionBreakdown, actioned, total, pending }) => {
+      // Every requirement-sourced field on this row comes from ONE record:
+      // the dashboard's canonical linked requirement (see above).
+      const jd = canonicalByDashboard.get(dashboard.id)
+      const completedAt = toStampSet.has(dashboard.id)
+        ? stampedAt
+        : toClearSet.has(dashboard.id)
+          ? null
+          : dashboard.pending_zero_at
+      return {
+        id: dashboard.id,
+        title: dashboard.title,
+        // The dashboard's assigned Viewer — never the requirement's author
+        // or the dashboard's owner (see the comment above the assignments
+        // query).
+        createdBy: viewerByDashboard.get(dashboard.id)?.summary ?? null,
+        submittedAt:
+          dashboard.submitted_date_override ??
+          jd?.created_at ??
+          dashboard.requirement_created_at ??
+          dashboard.created_at,
+        deliveredAt:
+          dashboard.delivered_date_override ??
+          (jd && jd.status === 'Completed' && jd.completed_at
+            ? jd.completed_at
+            : null),
+        completedAt: dashboard.completed_date_override ?? completedAt,
+        candidates: { total, actioned, pending },
+        actionBreakdown,
+      }
+    },
+  )
 
   return json({ rows }, 200, cors)
 }

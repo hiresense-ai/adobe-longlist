@@ -75,6 +75,11 @@ export interface Database {
           category: string | null
           created_by: string | null
           created_at: string
+          requirement_created_at: string | null
+          pending_zero_at: string | null
+          submitted_date_override: string | null
+          delivered_date_override: string | null
+          completed_date_override: string | null
         }
         Insert: {
           id?: string
@@ -86,6 +91,11 @@ export interface Database {
           category?: string | null
           created_by?: string | null
           created_at?: string
+          requirement_created_at?: string | null
+          pending_zero_at?: string | null
+          submitted_date_override?: string | null
+          delivered_date_override?: string | null
+          completed_date_override?: string | null
         }
         Update: {
           id?: string
@@ -97,6 +107,11 @@ export interface Database {
           category?: string | null
           created_by?: string | null
           created_at?: string
+          requirement_created_at?: string | null
+          pending_zero_at?: string | null
+          submitted_date_override?: string | null
+          delivered_date_override?: string | null
+          completed_date_override?: string | null
         }
         Relationships: [
           {

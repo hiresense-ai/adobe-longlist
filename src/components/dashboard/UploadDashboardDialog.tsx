@@ -34,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { useUploadDashboard } from '@/hooks/useUploadDashboard'
 import { useAssignableUsers } from '@/hooks/useAdminUsers'
 import { useAuth } from '@/hooks/useAuth'
@@ -46,11 +47,31 @@ import { getErrorMessage } from '@/lib/errors'
 import { assignableDashboardRoles, roleLabel } from '@/lib/permissions'
 import type { AdminUserRow } from '@/types'
 
-const uploadSchema = z.object({
-  title: z.string().min(1, 'Dashboard name is required'),
-  description: z.string().optional(),
-  category: z.string().optional(),
-})
+const uploadSchema = z
+  .object({
+    title: z.string().min(1, 'Dashboard name is required'),
+    description: z.string().optional(),
+    category: z.string().optional(),
+    // Client-side only — never sent to the server as-is. It only decides
+    // whether requirementCreatedAt is shown/required below; the persisted
+    // signal is requirementCreatedAt itself (see UploadDashboardInput's
+    // doc comment for why no separate "linked" column exists).
+    linkedToRequirement: z.enum(['yes', 'no']),
+    // A plain <input type="date"> value ("YYYY-MM-DD"), required only when
+    // linkedToRequirement is 'no'. Left as a string here; onSubmit converts
+    // it to an ISO timestamp the same way every other date in this app is
+    // stored.
+    requirementCreatedAt: z.string().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.linkedToRequirement === 'no' && !value.requirementCreatedAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Requirement Created Date is required.',
+        path: ['requirementCreatedAt'],
+      })
+    }
+  })
 
 type UploadFormValues = z.infer<typeof uploadSchema>
 
@@ -117,13 +138,29 @@ export function UploadDashboardDialog({
     setPendingAssignees((prev) => prev.filter((a) => a.id !== userId))
   }
 
+  // Drives whether the date field renders below. Deliberately a plain
+  // useState kept in sync from the RadioGroup's own onValueChange, not
+  // form.watch('linkedToRequirement') — watch() returns a function the
+  // React Compiler can't safely memoize (see CreateUserDialog's
+  // hasPassword for the same reasoning).
+  const [linkedToRequirement, setLinkedToRequirement] = useState<'yes' | 'no'>(
+    'yes',
+  )
+
   const form = useForm<UploadFormValues>({
     resolver: zodResolver(uploadSchema),
-    defaultValues: { title: '', description: '', category: '' },
+    defaultValues: {
+      title: '',
+      description: '',
+      category: '',
+      linkedToRequirement: 'yes',
+      requirementCreatedAt: '',
+    },
   })
 
   function resetAll() {
     form.reset()
+    setLinkedToRequirement('yes')
     setHtmlFile(null)
     setThumbnailFile(null)
     setFileErrors({})
@@ -154,6 +191,19 @@ export function UploadDashboardDialog({
     setFileErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0 || !htmlFile) return
 
+    // Converted to local midnight, not parsed as a bare "YYYY-MM-DD" string
+    // (which JS treats as UTC midnight) — that would silently roll back a
+    // day for any viewer west of UTC once formatted back in their own
+    // timezone, exactly the bug class the rest of this app's date handling
+    // already goes out of its way to avoid.
+    let requirementCreatedAt: string | null = null
+    if (values.linkedToRequirement === 'no' && values.requirementCreatedAt) {
+      const [year, month, day] = values.requirementCreatedAt
+        .split('-')
+        .map(Number)
+      requirementCreatedAt = new Date(year, month - 1, day).toISOString()
+    }
+
     try {
       setProgress({ stage: 'html', percent: 5 })
       const created = await uploadMutation.mutateAsync({
@@ -163,6 +213,7 @@ export function UploadDashboardDialog({
         htmlFile,
         thumbnailFile,
         createdBy: user.id,
+        requirementCreatedAt,
         onProgress: (stage, percent) => setProgress({ stage, percent }),
       })
 
@@ -257,6 +308,80 @@ export function UploadDashboardDialog({
                 </FormItem>
               )}
             />
+
+            <FormField
+              control={form.control}
+              name="linkedToRequirement"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    Is this dashboard linked to a Requirement?
+                  </FormLabel>
+                  <FormControl>
+                    <RadioGroup
+                      value={field.value}
+                      onValueChange={(value) => {
+                        field.onChange(value)
+                        setLinkedToRequirement(value as 'yes' | 'no')
+                        // Clear a previously entered date so switching back
+                        // to "No" later never resurfaces a stale value.
+                        if (value === 'yes') {
+                          form.setValue('requirementCreatedAt', '')
+                        }
+                      }}
+                      disabled={isSubmitting}
+                      className="flex flex-row gap-4 pt-1"
+                    >
+                      <div className="flex items-center gap-2">
+                        <RadioGroupItem
+                          value="yes"
+                          id="dashboard-linked-requirement-yes"
+                        />
+                        <Label
+                          htmlFor="dashboard-linked-requirement-yes"
+                          className="font-normal"
+                        >
+                          Yes
+                        </Label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <RadioGroupItem
+                          value="no"
+                          id="dashboard-linked-requirement-no"
+                        />
+                        <Label
+                          htmlFor="dashboard-linked-requirement-no"
+                          className="font-normal"
+                        >
+                          No
+                        </Label>
+                      </div>
+                    </RadioGroup>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {linkedToRequirement === 'no' && (
+              <FormField
+                control={form.control}
+                name="requirementCreatedAt"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Requirement Created Date</FormLabel>
+                    <FormControl>
+                      <Input type="date" disabled={isSubmitting} {...field} />
+                    </FormControl>
+                    <p className="text-muted-foreground text-xs">
+                      When this requirement was actually received (e.g. by email
+                      or phone call).
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
             <div className="grid gap-2">
               <Label htmlFor="dashboard-html-file">HTML file</Label>

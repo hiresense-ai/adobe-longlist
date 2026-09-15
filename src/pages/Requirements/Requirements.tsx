@@ -163,13 +163,13 @@ export function Requirements() {
                     Created By
                   </th>
                   <th className="text-muted-foreground px-2 py-3 font-medium">
-                    Created
+                    Submitted Date
                   </th>
                   <th className="text-muted-foreground px-2 py-3 font-medium">
                     Status
                   </th>
                   <th className="text-muted-foreground px-2 py-3 font-medium">
-                    Completed
+                    Delivered Date
                   </th>
                   <th className="w-16 px-4 py-3"></th>
                 </tr>
