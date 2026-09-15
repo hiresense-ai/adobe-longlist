@@ -10,18 +10,28 @@
 //
 // Rules:
 //   super_admin — may edit any dashboard's title, description, category,
-//                 AND thumbnail (thumbnail here is just the storage PATH
+//                 thumbnail (thumbnail here is just the storage PATH
 //                 string or null; the actual Storage upload/delete happens
 //                 client-side, same as the existing upload flow, since
 //                 super_admin already has direct RLS-permitted access to
-//                 the `dashboards` storage bucket).
+//                 the `dashboards` storage bucket), AND JD Analytics'
+//                 three manual date overrides (submittedDateOverride /
+//                 deliveredDateOverride / completedDateOverride — see
+//                 20260917000001_dashboard_date_overrides.sql for why
+//                 these are separate columns from the fields that
+//                 normally derive Submitted/Delivered/Completed Date,
+//                 never a destructive edit of requirements.created_at,
+//                 requirements.completed_at, or dashboards.pending_zero_at).
 //   admin       — may edit ANY dashboard (2026-09-04: editing follows
 //                 dashboard visibility, and Admins see every dashboard —
 //                 no assignment gate), but only title, description, and
-//                 category — a request that includes a `thumbnail` key AT
-//                 ALL is rejected outright, even if the value would be a
-//                 no-op, so a hand-crafted request can never slip a
-//                 thumbnail change through.
+//                 category — a request that includes a `thumbnail` key, or
+//                 any of the three date-override keys, AT ALL is rejected
+//                 outright, even if the value would be a no-op, so a
+//                 hand-crafted request can never slip one of those changes
+//                 through. Admin still SEES the three dates in JD
+//                 Analytics (unchanged, read-only there) — only editing
+//                 them is Super-Admin-only.
 //   viewer      — 403 on every action here. No edit permissions at all.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
@@ -75,7 +85,22 @@ interface UpdatePayload {
   description?: string | null
   category?: string | null
   thumbnail?: string | null
+  /** JD Analytics manual date overrides — Super Admin only. Each is either
+   * an ISO date/datetime string or null (null clears the override, letting
+   * the normal derivation take over again). */
+  submittedDateOverride?: string | null
+  deliveredDateOverride?: string | null
+  completedDateOverride?: string | null
 }
+
+/** The three Super-Admin-only date-override payload keys, checked together
+ * everywhere they need identical treatment (the Admin hard-reject below,
+ * and the column name each maps to). */
+const DATE_OVERRIDE_FIELDS = [
+  ['submittedDateOverride', 'submitted_date_override'],
+  ['deliveredDateOverride', 'delivered_date_override'],
+  ['completedDateOverride', 'completed_date_override'],
+] as const
 
 type ActionBody = { action: 'update'; payload: UpdatePayload }
 
@@ -244,9 +269,11 @@ async function updateDashboard(
     // 2026-09-04: no assignment gate anymore — an Admin may edit ANY
     // dashboard's text fields, matching their dashboard visibility.
     // Viewer callers are still rejected at the top of the handler, and
-    // the thumbnail stays Super-Admin-only below.
-    // Hard reject — even a no-op thumbnail key in the request body is
-    // treated as an unauthorized attempt, never silently dropped.
+    // the thumbnail and the three date overrides stay Super-Admin-only
+    // below.
+    // Hard reject — even a no-op thumbnail/date-override key in the
+    // request body is treated as an unauthorized attempt, never silently
+    // dropped.
     if (Object.prototype.hasOwnProperty.call(payload, 'thumbnail')) {
       return json(
         { error: 'Admins cannot modify the dashboard thumbnail.' },
@@ -254,9 +281,22 @@ async function updateDashboard(
         cors,
       )
     }
+    for (const [payloadKey] of DATE_OVERRIDE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(payload, payloadKey)) {
+        return json(
+          {
+            error:
+              'Admins cannot modify JD Analytics date overrides. Super Admin only.',
+          },
+          403,
+          cors,
+        )
+      }
+    }
   }
-  // super_admin: title, description, category, and thumbnail all allowed —
-  // no assignment check, matches existing dashboards_*_super_admin RLS.
+  // super_admin: title, description, category, thumbnail, and the three
+  // date overrides are all allowed — no assignment check, matches existing
+  // dashboards_*_super_admin RLS.
 
   const updates: Record<string, string | null> = {}
 
@@ -294,6 +334,24 @@ async function updateDashboard(
   if (Object.prototype.hasOwnProperty.call(payload, 'thumbnail')) {
     updates.thumbnail =
       typeof payload.thumbnail === 'string' ? payload.thumbnail : null
+  }
+
+  // Only reachable for super_admin — admin requests with any of these keys
+  // were already rejected above. Each is either null (clears the
+  // override, letting the normal Submitted/Delivered/Completed Date
+  // derivation take back over) or a string that must parse to a real
+  // date — never silently coerced to "now" or dropped on a bad value.
+  for (const [payloadKey, column] of DATE_OVERRIDE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(payload, payloadKey)) continue
+    const raw = payload[payloadKey]
+    if (raw === null) {
+      updates[column] = null
+      continue
+    }
+    if (typeof raw !== 'string' || Number.isNaN(Date.parse(raw))) {
+      return json({ error: `${payloadKey} must be a valid date.` }, 400, cors)
+    }
+    updates[column] = new Date(raw).toISOString()
   }
 
   if (Object.keys(updates).length === 0) {

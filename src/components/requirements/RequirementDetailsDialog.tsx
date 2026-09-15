@@ -735,7 +735,7 @@ export function RequirementDetailsDialog({
                 <UserLine user={requirement.createdBy} />
               </div>
               <div>
-                <p className="text-muted-foreground text-xs">Created</p>
+                <p className="text-muted-foreground text-xs">Submitted Date</p>
                 <p className="text-foreground">
                   {formatDate(requirement.createdAt)}
                 </p>
@@ -766,7 +766,9 @@ export function RequirementDetailsDialog({
               {requirement.status === 'Completed' &&
                 requirement.completedAt && (
                   <div>
-                    <p className="text-muted-foreground text-xs">Completed</p>
+                    <p className="text-muted-foreground text-xs">
+                      Delivered Date
+                    </p>
                     <p className="text-foreground">
                       {formatDate(requirement.completedAt)}
                     </p>

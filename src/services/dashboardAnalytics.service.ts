@@ -63,14 +63,24 @@ export async function getDashboardAnalytics(
 // ---------------------------------------------------------------------------
 
 /**
- * One JD row. Both date fields below come from a SINGLE record — the
- * dashboard's canonical linked requirement (earliest created_at,
- * tie-broken by id), resolved server-side through
- * requirements.dashboard_id. A dashboard can have several requirements
- * linked to it, so taking each field from whichever row happened to win
- * its own comparison could describe a JD that doesn't exist; one record
- * supplies them all. Created By is a different source entirely — the
- * dashboard's assigned Viewer.
+ * One JD row, carrying THREE independent business dates that must never be
+ * conflated (see each field below):
+ *
+ *   submittedAt — Submitted Date: when the Requirement (or this dashboard,
+ *                 absent one) was first raised.
+ *   deliveredAt — Delivered Date: when the linked Requirement's work was
+ *                 marked done.
+ *   completedAt — Completed Date: when every candidate on THIS dashboard
+ *                 had been actioned (Pending reached zero).
+ *
+ * submittedAt and deliveredAt come from a SINGLE record — the dashboard's
+ * canonical linked requirement (earliest created_at, tie-broken by id),
+ * resolved server-side through requirements.dashboard_id. A dashboard can
+ * have several requirements linked to it, so taking each field from
+ * whichever row happened to win its own comparison could describe a JD
+ * that doesn't exist; one record supplies both. completedAt is unrelated
+ * to the requirement entirely — see its own field doc. Created By is a
+ * different source again — the dashboard's assigned Viewer.
  */
 export interface JdAnalyticsRow {
   id: string
@@ -80,13 +90,23 @@ export interface JdAnalyticsRow {
    * dashboard's uploader/owner, or an Admin / Super Admin assignee. Null
    * (rendered "—") when no Viewer is assigned. */
   createdBy: DashboardAssignedUser | null
-  /** The canonical requirement's creation date, falling back to the
-   * dashboard's own created_at when nothing is linked, so every row keeps
-   * a date for the Today / This Week / All Time filters. */
-  createdAt: string
-  /** The canonical requirement's completion stamp, and only while that
-   * requirement's CURRENT status is 'Completed'. Never derived from
-   * dashboard activity, updated_at, or contacted_at; null renders "—". */
+  /** Submitted Date. The canonical requirement's creation date when one is
+   * linked; otherwise the dashboard's own manual/external
+   * requirement_created_at (set at upload time for a dashboard with no
+   * tracked requirement yet); otherwise the dashboard's own created_at.
+   * Every row keeps a date this way for the Today / This Week filters. */
+  submittedAt: string
+  /** Delivered Date. The canonical requirement's completion stamp, and
+   * only while that requirement's CURRENT status is 'Completed'. Never
+   * derived from dashboard activity, updated_at, or contacted_at; null
+   * renders "—". */
+  deliveredAt: string | null
+  /** Completed Date. dashboards.pending_zero_at — the first moment this
+   * dashboard's OWN Pending count (independent of any linked requirement)
+   * was observed at exactly zero; null whenever Pending is currently
+   * greater than zero. A dashboard whose candidate total can't be read
+   * from its stored HTML (pending null) never gets a completedAt either —
+   * "—" rather than a guess. */
   completedAt: string | null
   candidates: DashboardCandidateCounts
   actionBreakdown: DashboardActionBreakdownEntry[]

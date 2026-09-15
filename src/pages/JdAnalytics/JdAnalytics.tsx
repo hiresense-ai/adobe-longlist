@@ -6,11 +6,16 @@ import {
   BarChart3,
   Briefcase,
   ChartColumn,
+  Check,
   Clock,
+  Loader2,
+  Pencil,
   Percent,
+  RotateCcw,
   Search,
   UserCheck,
   UserX,
+  X,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -19,6 +24,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { DashboardAnalyticsDialog } from '@/components/dashboard/DashboardAnalyticsDialog'
+import { useAuth } from '@/hooks/useAuth'
 import { useJdAnalytics } from '@/hooks/useDashboardAnalytics'
 import {
   aggregateJdMetrics,
@@ -27,12 +33,22 @@ import {
   type JdAnalyticsRow,
   type JdMetrics,
 } from '@/services/dashboardAnalytics.service'
+import {
+  updateDashboardDateOverride,
+  type DashboardDateOverrideField,
+} from '@/services/dashboardAdmin.service'
 import { getErrorMessage } from '@/lib/errors'
 import { formatDate } from '@/utils/date'
 
-/** Which creation window a row must fall in. "This Week" is the CURRENT
- * calendar week starting Monday 00:00 in the viewer's local timezone —
- * matching how the rest of the app treats dates as local (formatDate). */
+/** Which SUBMISSION window a row must fall in — Today/This Week answer "was
+ * this JD's Requirement submitted in this period", based on Submitted Date
+ * (submittedAt), never Delivered Date or Completed Date. "This Week" is the
+ * CURRENT calendar week starting Monday 00:00 in the viewer's local
+ * timezone — matching how the rest of the app treats dates as local
+ * (formatDate). All Time ignores this entirely. In Progress is a SEPARATE,
+ * independently-toggleable filter (Pending > 0) combinable with any of the
+ * three — see inProgressOnly below — not a fourth mutually-exclusive
+ * option in this same set. */
 const DATE_FILTERS = ['Today', 'This Week', 'All Time'] as const
 type DateFilter = (typeof DATE_FILTERS)[number]
 
@@ -49,13 +65,30 @@ function startOfWeek(): Date {
   return today
 }
 
-function matchesDateFilter(createdAt: string, filter: DateFilter): boolean {
+function matchesDateFilter(submittedAt: string, filter: DateFilter): boolean {
   if (filter === 'All Time') return true
-  const created = new Date(createdAt)
-  return created >= (filter === 'Today' ? startOfToday() : startOfWeek())
+  const submitted = new Date(submittedAt)
+  return submitted >= (filter === 'Today' ? startOfToday() : startOfWeek())
 }
 
-type SortKey = 'title' | 'createdAt' | 'pending' | 'ssHs' | 'srHs' | 'ratio'
+/** The empty-state message for every dateFilter × inProgressOnly
+ * combination, since In Progress can combine with any of the three date
+ * windows (Today + In Progress, This Week + In Progress, All Time + In
+ * Progress). */
+function describeEmptyFilter(filter: DateFilter, inProgressOnly: boolean) {
+  const window =
+    filter === 'Today'
+      ? 'submitted today'
+      : filter === 'This Week'
+        ? 'submitted this week'
+        : null
+  if (window && inProgressOnly) return `No JDs ${window} are in progress.`
+  if (window) return `No JDs ${window}.`
+  if (inProgressOnly) return 'No JDs are in progress.'
+  return 'No JDs match the current filters.'
+}
+
+type SortKey = 'title' | 'submittedAt' | 'pending' | 'ssHs' | 'srHs' | 'ratio'
 
 interface RowWithMetrics {
   row: JdAnalyticsRow
@@ -66,8 +99,8 @@ function sortValue(entry: RowWithMetrics, key: SortKey): string | number {
   switch (key) {
     case 'title':
       return entry.row.title.toLowerCase()
-    case 'createdAt':
-      return new Date(entry.row.createdAt).getTime()
+    case 'submittedAt':
+      return new Date(entry.row.submittedAt).getTime()
     case 'pending':
       // Nulls (unreadable candidate totals) sort last in either direction.
       return entry.metrics.pending ?? -1
@@ -114,6 +147,155 @@ function SortableHeader({
   )
 }
 
+/** ISO timestamp -> `<input type="date">` value, using LOCAL date parts
+ * (never UTC) so a date picked as e.g. Sep 15 round-trips as Sep 15
+ * regardless of timezone offset — same convention the Upload Dashboard
+ * form's own date input already follows. */
+function isoToDateInputValue(iso: string): string {
+  const d = new Date(iso)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+/** `<input type="date">` value -> ISO timestamp at LOCAL midnight — the
+ * exact inverse of isoToDateInputValue, and the same
+ * `new Date(year, month - 1, day)` construction UploadDashboardDialog uses
+ * for requirementCreatedAt, so both features store dates the same way. */
+function dateInputValueToIso(value: string): string {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, month - 1, day).toISOString()
+}
+
+/**
+ * One JD Analytics date cell (Submitted / Delivered / Completed). For
+ * everyone but a Super Admin this just renders the resolved date, same as
+ * before. A Super Admin additionally gets a pencil trigger that opens a
+ * native calendar date input; saving writes straight to the dashboard's
+ * manual override column via updateDashboardDateOverride (super_admin-only
+ * server-side, enforced by dashboard-edit regardless of this UI), which
+ * takes precedence over the normal derivation from then on. "Reset"
+ * clears the override so the date goes back to being derived automatically
+ * — always available in edit mode since this cell has no way to know
+ * up front whether today's value came from an override or the normal
+ * derivation.
+ */
+function EditableDateCell({
+  dashboardId,
+  field,
+  value,
+  editable,
+  onSaved,
+}: {
+  dashboardId: string
+  field: DashboardDateOverrideField
+  value: string | null
+  editable: boolean
+  onSaved: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(() =>
+    value ? isoToDateInputValue(value) : '',
+  )
+  const [saving, setSaving] = useState(false)
+
+  if (!editable) {
+    return (
+      <td className="text-muted-foreground px-2 py-3 whitespace-nowrap">
+        {value ? formatDate(value) : '—'}
+      </td>
+    )
+  }
+
+  if (!editing) {
+    return (
+      <td className="text-muted-foreground px-2 py-3 whitespace-nowrap">
+        <div className="group flex items-center gap-1">
+          <span>{value ? formatDate(value) : '—'}</span>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            title="Edit date"
+            aria-label={`Edit ${field}`}
+            className="text-muted-foreground hover:text-foreground shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+            onClick={() => {
+              setDraft(value ? isoToDateInputValue(value) : '')
+              setEditing(true)
+            }}
+          >
+            <Pencil />
+          </Button>
+        </div>
+      </td>
+    )
+  }
+
+  async function save(newValue: string | null) {
+    setSaving(true)
+    try {
+      await updateDashboardDateOverride(dashboardId, field, newValue)
+      setEditing(false)
+      onSaved()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <td className="px-2 py-3 whitespace-nowrap">
+      <div className="flex items-center gap-1">
+        <Input
+          type="date"
+          autoFocus
+          className="h-8 w-36"
+          value={draft}
+          disabled={saving}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        {saving ? (
+          <Loader2 className="text-muted-foreground size-4 shrink-0 animate-spin" />
+        ) : (
+          <>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              title="Save"
+              aria-label="Save date"
+              disabled={!draft}
+              onClick={() => void save(dateInputValueToIso(draft))}
+            >
+              <Check />
+            </Button>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              title="Reset to automatic"
+              aria-label="Reset to automatic date"
+              onClick={() => void save(null)}
+            >
+              <RotateCcw />
+            </Button>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              title="Cancel"
+              aria-label="Cancel edit"
+              onClick={() => setEditing(false)}
+            >
+              <X />
+            </Button>
+          </>
+        )}
+      </div>
+    </td>
+  )
+}
+
 /**
  * JD Analytics — one high-level table over every JD/dashboard the caller
  * may see, so nobody has to open dashboards one by one. The data arrives
@@ -125,11 +307,21 @@ function SortableHeader({
  * Analytics dialog renders, so the two views always agree.
  */
 export function JdAnalytics() {
+  const { user } = useAuth()
+  // Submitted/Delivered/Completed Date are calendar-editable for Super
+  // Admin only — Admin (and Viewer, already excluded from this whole page)
+  // keeps read-only cells. Enforced again server-side in dashboard-edit
+  // regardless of this check.
+  const canEditDates = user?.role === 'super_admin'
   const { data, isLoading, isError, error, refetch } = useJdAnalytics()
 
   const [dateFilter, setDateFilter] = useState<DateFilter>('All Time')
+  // Independent of dateFilter — combinable with any of Today / This Week /
+  // All Time (item: "preserve/support Today + In Progress" etc.), not a
+  // fourth mutually-exclusive option in that same button group.
+  const [inProgressOnly, setInProgressOnly] = useState(false)
   const [query, setQuery] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>('createdAt')
+  const [sortKey, setSortKey] = useState<SortKey>('submittedAt')
   const [sortDir, setSortDir] = useState<1 | -1>(-1)
   // Which JD's Dashboard Analytics dialog is open, if any. A row's `id` IS
   // the dashboard's real id (see the dashboard-analytics Edge Function's
@@ -152,18 +344,23 @@ export function JdAnalytics() {
     [data],
   )
 
-  // Date filtering alone — the aggregate summary is computed over THIS set
-  // (every JD matching the selected date window, exactly as the product
-  // rule states), so the name search below narrows only the table, never
-  // the totals. All rows are already in memory from the one batched
-  // overview response, so the summary is pagination-proof by construction
-  // (there is no pagination — the table always renders the full set).
+  // Date filter + In Progress together — the aggregate summary is computed
+  // over THIS set (every JD matching both, exactly as the product rule
+  // states), so the name search below narrows only the table, never the
+  // totals. All rows are already in memory from the one batched overview
+  // response, so the summary is pagination-proof by construction (there is
+  // no pagination — the table always renders the full set). In Progress
+  // means Pending > 0; a dashboard whose candidate total couldn't be read
+  // (pending null) is excluded from In Progress — never assumed either way.
   const dateFiltered = useMemo(
     () =>
-      rows.filter((entry) =>
-        matchesDateFilter(entry.row.createdAt, dateFilter),
+      rows.filter(
+        (entry) =>
+          matchesDateFilter(entry.row.submittedAt, dateFilter) &&
+          (!inProgressOnly ||
+            (entry.metrics.pending !== null && entry.metrics.pending > 0)),
       ),
-    [rows, dateFilter],
+    [rows, dateFilter, inProgressOnly],
   )
 
   const summary = useMemo(
@@ -230,6 +427,21 @@ export function JdAnalytics() {
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
+        {/* A separate toggle, not part of the DATE_FILTERS group above —
+            combines with any of the three (Today + In Progress, etc.), per
+            the product rule. Pending > 0, independent of any date. ml-auto
+            pins it flush to the row's right edge on wide viewports; it
+            simply wraps below the rest on narrow ones. */}
+        <Button
+          type="button"
+          size="sm"
+          variant={inProgressOnly ? 'default' : 'outline'}
+          aria-pressed={inProgressOnly}
+          onClick={() => setInProgressOnly((prev) => !prev)}
+          className="ml-auto"
+        >
+          In Progress
+        </Button>
       </div>
 
       {/* Aggregate summary for the SELECTED DATE FILTER, across every JD it
@@ -238,7 +450,7 @@ export function JdAnalytics() {
       {!isLoading && !isError && (
         <div
           className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5"
-          aria-label={`Summary for ${dateFilter}`}
+          aria-label={`Summary for ${dateFilter}${inProgressOnly ? ' + In Progress' : ''}`}
         >
           {/* Display labels only — "Screen Select"/"Screen Reject" here are
               the same ssHs/srHs metrics computed from the canonical
@@ -309,7 +521,7 @@ export function JdAnalytics() {
           description={
             query.trim()
               ? `Nothing matches "${query.trim()}".`
-              : `No JDs created ${dateFilter === 'Today' ? 'today' : 'this week'}.`
+              : describeEmptyFilter(dateFilter, inProgressOnly)
           }
         />
       )}
@@ -329,10 +541,13 @@ export function JdAnalytics() {
                     Created By
                   </th>
                   <SortableHeader
-                    label="Created Date"
-                    sort="createdAt"
+                    label="Submitted Date"
+                    sort="submittedAt"
                     {...headerProps}
                   />
+                  <th className="text-muted-foreground px-2 py-3 font-medium">
+                    Delivered Date
+                  </th>
                   <th className="text-muted-foreground px-2 py-3 font-medium">
                     Completed Date
                   </th>
@@ -392,12 +607,27 @@ export function JdAnalytics() {
                     <td className="text-muted-foreground max-w-48 truncate px-2 py-3">
                       {row.createdBy?.name || row.createdBy?.email || '—'}
                     </td>
-                    <td className="text-muted-foreground px-2 py-3 whitespace-nowrap">
-                      {formatDate(row.createdAt)}
-                    </td>
-                    <td className="text-muted-foreground px-2 py-3 whitespace-nowrap">
-                      {row.completedAt ? formatDate(row.completedAt) : '—'}
-                    </td>
+                    <EditableDateCell
+                      dashboardId={row.id}
+                      field="submittedDateOverride"
+                      value={row.submittedAt}
+                      editable={canEditDates}
+                      onSaved={() => void refetch()}
+                    />
+                    <EditableDateCell
+                      dashboardId={row.id}
+                      field="deliveredDateOverride"
+                      value={row.deliveredAt}
+                      editable={canEditDates}
+                      onSaved={() => void refetch()}
+                    />
+                    <EditableDateCell
+                      dashboardId={row.id}
+                      field="completedDateOverride"
+                      value={row.completedAt}
+                      editable={canEditDates}
+                      onSaved={() => void refetch()}
+                    />
                     <td className="px-2 py-3 text-right tabular-nums">
                       {metrics.pending ?? '—'}
                     </td>

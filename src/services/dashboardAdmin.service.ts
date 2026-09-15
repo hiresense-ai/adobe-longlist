@@ -25,6 +25,15 @@ export interface UploadDashboardInput {
   htmlFile: File
   thumbnailFile?: File | null
   createdBy: string
+  /** Manual/external Requirement Created Date (ISO timestamp), set only
+   * when the Super Admin indicates this dashboard has NO tracked
+   * Requirement yet (e.g. one received by email or phone call). JD
+   * Analytics falls back to this for Created Date until a real
+   * requirement is linked via requirements.dashboard_id, at which point
+   * that requirement's own created_at takes over — see
+   * dashboards.requirement_created_at's column comment. Omit or pass null
+   * when the dashboard is already linked to an existing Requirement. */
+  requirementCreatedAt?: string | null
   onProgress?: (
     stage: 'normalizing' | 'html' | 'thumbnail' | 'saving',
     percent: number,
@@ -137,6 +146,7 @@ export async function uploadDashboard(
         storage_path: storagePath,
         thumbnail: thumbnailPath,
         created_by: input.createdBy,
+        requirement_created_at: input.requirementCreatedAt || null,
       })
       .select()
       .single()
@@ -358,6 +368,36 @@ export async function updateDashboard(
           ? { thumbnail: input.thumbnail }
           : {}),
       },
+    },
+  )
+  return dashboard
+}
+
+export type DashboardDateOverrideField =
+  'submittedDateOverride' | 'deliveredDateOverride' | 'completedDateOverride'
+
+/**
+ * Sets or clears one of JD Analytics' three Super-Admin-only manual date
+ * overrides (Submitted / Delivered / Completed Date) via the dashboard-edit
+ * Edge Function, which rejects the request outright for any non-Super-Admin
+ * caller. Sends only the one relevant key alongside dashboardId — never
+ * reuses updateDashboard()/UpdateDashboardInput, since those always send
+ * `title` and would perform an unrelated, unintended title write.
+ *
+ * @param value ISO date/datetime string to set the override, or `null` to
+ * clear it and let JD Analytics fall back to the normal derivation for
+ * that date again.
+ */
+export async function updateDashboardDateOverride(
+  dashboardId: string,
+  field: DashboardDateOverrideField,
+  value: string | null,
+): Promise<Dashboard> {
+  const { dashboard } = await invokeEdgeFunction<{ dashboard: Dashboard }>(
+    EDIT_FUNCTION_NAME,
+    {
+      action: 'update',
+      payload: { dashboardId, [field]: value },
     },
   )
   return dashboard
