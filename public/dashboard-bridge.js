@@ -2213,6 +2213,46 @@
     )
   }
 
+  // Reconciles pagination state against the Action-priority view WITHOUT
+  // forcing page 1 on every candidate action selection.
+  //
+  // actionDataVersion bumps on EVERY committed action value (see
+  // commitActionSelection), completely independent of whether
+  // actionPriorityMode is even active. Folding both into one
+  // actionViewKey() and resetting the page whenever that combined key
+  // changed meant picking ANY action reset the page — even with the
+  // default (mode 0) order active, where applyActionViewToArray() is a
+  // pure identity passthrough and the row order provably does not change
+  // at all. That was the reported bug: selecting an action on page 4
+  // always bounced back to page 1.
+  //
+  // The two triggers are tracked separately so only a genuine MODE change
+  // resets the page:
+  //   - actionPriorityMode changes (the Action header's 3-state click/
+  //     Enter cycle) -> a real reordering just took effect; resetting to
+  //     page 1 here is existing, already-tested behavior and is
+  //     unaffected by this fix.
+  //   - actionDataVersion changes with the mode unchanged (a plain
+  //     dropdown commit) -> `dirty` still flips so an ACTIVE reorder
+  //     re-derives against the new value, but the page number itself is
+  //     left alone. The total page count cannot have changed either way
+  //     (reordering never adds or removes rows), and pgCalc()'s own
+  //     Math.min/Math.max clamp still protects against any page number
+  //     that is otherwise no longer valid — see item 9/13 in the task:
+  //     preserve the page unless the dataset genuinely makes it invalid,
+  //     never blindly reset to page 1.
+  function reconcileActionView(state) {
+    if (state.lastActionMode !== actionPriorityMode) {
+      state.lastActionMode = actionPriorityMode
+      state.lastActionDataVersion = actionDataVersion
+      state.page = 1
+      state.dirty = true
+    } else if (state.lastActionDataVersion !== actionDataVersion) {
+      state.lastActionDataVersion = actionDataVersion
+      state.dirty = true
+    }
+  }
+
   // The single function every page calculation goes through, so the row
   // slice, the footer text, and the nav controls can never disagree.
   // Clamps page as a side effect: the result set can shrink under
@@ -2350,15 +2390,9 @@
       state.page = 1
       state.dirty = true
     }
-    // The Action priority order participates exactly like a result-set
-    // change: any change to the mode or the action values themselves
-    // re-derives the view and resets to page 1.
-    var viewKey = actionViewKey()
-    if (state.lastActionViewKey !== viewKey) {
-      state.lastActionViewKey = viewKey
-      state.page = 1
-      state.dirty = true
-    }
+    // Action-priority reconciliation — see reconcileActionView() for why
+    // this no longer forces page 1 on a plain action commit.
+    reconcileActionView(state)
     if (!state.dirty) return
 
     var viewRows = applyActionViewToArray(rows)
@@ -2429,14 +2463,9 @@
       state.page = 1
       state.dirty = true
     }
-    // The Action priority order participates exactly like a result-set
-    // change — see syncTablePaginationReconstruct for the same check.
-    var viewKey = actionViewKey()
-    if (state.lastActionViewKey !== viewKey) {
-      state.lastActionViewKey = viewKey
-      state.page = 1
-      state.dirty = true
-    }
+    // Action-priority reconciliation — see reconcileActionView() for why
+    // this no longer forces page 1 on a plain action commit.
+    reconcileActionView(state)
     if (!state.dirty) return
 
     var headerCells = getHeaderCells(table)
