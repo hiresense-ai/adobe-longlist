@@ -68,7 +68,15 @@ function startOfWeek(): Date {
 function matchesDateFilter(submittedAt: string, filter: DateFilter): boolean {
   if (filter === 'All Time') return true
   const submitted = new Date(submittedAt)
-  return submitted >= (filter === 'Today' ? startOfToday() : startOfWeek())
+  const start = filter === 'Today' ? startOfToday() : startOfWeek()
+  // An upper bound too, not just a lower one — Submitted Date can now be a
+  // Super Admin's manual override, which (unlike every value it could
+  // previously derive from) may legitimately be set in the future. Without
+  // this, a future-dated override would match "Today"/"This Week" for
+  // every day between now and that date, not just its own day/week.
+  const end = new Date(start)
+  end.setDate(end.getDate() + (filter === 'Today' ? 1 : 7))
+  return submitted >= start && submitted < end
 }
 
 /** The empty-state message for every dateFilter × inProgressOnly
@@ -199,6 +207,7 @@ function EditableDateCell({
     value ? isoToDateInputValue(value) : '',
   )
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   if (!editable) {
     return (
@@ -222,6 +231,7 @@ function EditableDateCell({
             className="text-muted-foreground hover:text-foreground shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
             onClick={() => {
               setDraft(value ? isoToDateInputValue(value) : '')
+              setSaveError(null)
               setEditing(true)
             }}
           >
@@ -234,10 +244,16 @@ function EditableDateCell({
 
   async function save(newValue: string | null) {
     setSaving(true)
+    setSaveError(null)
     try {
       await updateDashboardDateOverride(dashboardId, field, newValue)
       setEditing(false)
       onSaved()
+    } catch (error) {
+      // Stay in edit mode on failure (never silently drop the attempt) so
+      // the Super Admin sees why and can retry without re-entering the
+      // date.
+      setSaveError(getErrorMessage(error, 'Could not save this date.'))
     } finally {
       setSaving(false)
     }
@@ -285,13 +301,21 @@ function EditableDateCell({
               variant="ghost"
               title="Cancel"
               aria-label="Cancel edit"
-              onClick={() => setEditing(false)}
+              onClick={() => {
+                setSaveError(null)
+                setEditing(false)
+              }}
             >
               <X />
             </Button>
           </>
         )}
       </div>
+      {saveError && (
+        <p className="text-destructive mt-1 w-36 text-xs whitespace-normal">
+          {saveError}
+        </p>
+      )}
     </td>
   )
 }
