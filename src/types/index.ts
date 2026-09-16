@@ -11,6 +11,7 @@ export type {
   CandidateNote,
   CandidateNoteInsert,
   CandidateNoteUpdate,
+  CandidateActionLog,
 } from './database.types'
 
 export interface AppUser {
