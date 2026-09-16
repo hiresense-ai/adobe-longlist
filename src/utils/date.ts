@@ -11,6 +11,21 @@ export function formatDate(
   }).format(date)
 }
 
+/** Date + time, for precise event timestamps (e.g. an audit log's
+ * changed_at) where formatDate's date-only default loses information that
+ * actually matters. Same 'en-US'/Intl.DateTimeFormat convention as
+ * formatDate, just with the time fields always included. */
+export function formatDateTime(value: string | Date): string {
+  const date = typeof value === 'string' ? new Date(value) : value
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
 /** "X min" until a lock expires, rounded up and floored at 1 so an
  * about-to-expire lock never reads as "0 min" — matches the server's own
  * rounding in supabase/functions/_shared/lockout.ts's remainingLockMinutes,

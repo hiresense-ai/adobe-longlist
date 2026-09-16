@@ -44,3 +44,12 @@ verify_jwt = true
 # gate stays on for the same reason as the other functions above.
 [functions.requirements]
 verify_jwt = true
+
+# action-logs is the ONLY access path to candidate_action_logs for a normal
+# client (that table has no client SELECT/INSERT/UPDATE/DELETE RLS policy
+# at all — see 20260918000001_candidate_action_logs.sql): it verifies the
+# caller and rejects anyone but a Super Admin with 403 before reading
+# anything. The platform JWT gate stays on for the same reason as the
+# other functions above.
+[functions.action-logs]
+verify_jwt = true

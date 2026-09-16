@@ -1,7 +1,9 @@
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useTheme } from 'next-themes'
-import { Loader2, User, Users2 } from 'lucide-react'
+import { History, Loader2, User, Users2 } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -10,8 +12,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { getActionConfig } from '@/config/actionConfig'
+import { useAuth } from '@/hooks/useAuth'
 import { useDashboardAnalytics } from '@/hooks/useDashboardAnalytics'
 import { getErrorMessage } from '@/lib/errors'
+import { canViewActionLogs } from '@/lib/permissions'
+import { ROUTES } from '@/constants'
 import type { CandidateAction } from '@/types'
 import type {
   DashboardActionBreakdownEntry,
@@ -51,6 +56,9 @@ export function DashboardAnalyticsDialog({
     dashboard.id,
     open,
   )
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  const showActionHistoryLink = Boolean(user && canViewActionLogs(user.role))
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -59,6 +67,22 @@ export function DashboardAnalyticsDialog({
           <DialogTitle>Dashboard Analytics</DialogTitle>
           <DialogDescription>{`Read-only statistics for "${dashboard.title}".`}</DialogDescription>
         </DialogHeader>
+
+        {showActionHistoryLink && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-fit"
+            onClick={() => {
+              onOpenChange(false)
+              navigate(`${ROUTES.actionLogs}?dashboardId=${dashboard.id}`)
+            }}
+          >
+            <History className="size-4" />
+            View Action History
+          </Button>
+        )}
 
         {isLoading && (
           <div className="flex justify-center py-8">

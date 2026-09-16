@@ -234,6 +234,18 @@ export function canDeleteRequirements(role: UserRole): boolean {
   return role === 'super_admin'
 }
 
+/** Whether a caller may open the Action Logs page (and see its nav entry)
+ * — Super Admin only. Deliberately narrower than canViewJdAnalytics: this
+ * is sensitive audit history (who changed what candidate's action, and
+ * when), not an aggregate report, and candidate_action_logs itself has no
+ * client-reachable RLS policy at all — the action-logs Edge Function is
+ * the ONLY way to read it, and it refuses anyone but a Super Admin with
+ * 403 regardless of this check. This only decides whether the route/nav
+ * link are worth showing. */
+export function canViewActionLogs(role: UserRole): boolean {
+  return role === 'super_admin'
+}
+
 export function roleLabel(role: UserRole): string {
   if (role === 'super_admin') return 'Super Admin'
   if (role === 'admin') return 'Admin'

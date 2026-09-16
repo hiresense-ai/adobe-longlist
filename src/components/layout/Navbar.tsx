@@ -7,6 +7,7 @@ import {
 import {
   ChartColumn,
   ClipboardList,
+  History,
   LayoutDashboard,
   LogOut,
   Search,
@@ -31,7 +32,11 @@ import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
-import { canViewJdAnalytics, isAtLeastAdmin } from '@/lib/permissions'
+import {
+  canViewActionLogs,
+  canViewJdAnalytics,
+  isAtLeastAdmin,
+} from '@/lib/permissions'
 import { cn } from '@/lib/utils'
 
 export function Navbar() {
@@ -42,6 +47,7 @@ export function Navbar() {
   const isHome = location.pathname === ROUTES.home
   const isAdmin = Boolean(user && isAtLeastAdmin(user.role))
   const showJdAnalytics = Boolean(user && canViewJdAnalytics(user.role))
+  const showActionLogs = Boolean(user && canViewActionLogs(user.role))
 
   // Primary top-nav destinations, with their active-route matching. Purely
   // presentational — routing is unchanged; this only decides which pill
@@ -74,6 +80,21 @@ export function Navbar() {
             label: 'JD Analytics',
             icon: ChartColumn,
             isActive: location.pathname.startsWith(ROUTES.jdAnalytics),
+          },
+        ]
+      : []),
+    // Super Admin only (canViewActionLogs) — narrower than JD Analytics
+    // above. The action-logs Edge Function refuses an Admin's or Viewer's
+    // call server-side regardless; that table has no client-reachable RLS
+    // policy at all, so hiding this link is purely a UX nicety, not the
+    // boundary.
+    ...(showActionLogs
+      ? [
+          {
+            to: ROUTES.actionLogs,
+            label: 'Action Logs',
+            icon: History,
+            isActive: location.pathname.startsWith(ROUTES.actionLogs),
           },
         ]
       : []),
@@ -193,6 +214,14 @@ export function Navbar() {
                   <Link to={ROUTES.jdAnalytics}>
                     <ChartColumn className="size-4" />
                     JD Analytics
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              {showActionLogs && (
+                <DropdownMenuItem asChild className="md:hidden">
+                  <Link to={ROUTES.actionLogs}>
+                    <History className="size-4" />
+                    Action Logs
                   </Link>
                 </DropdownMenuItem>
               )}

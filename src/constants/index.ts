@@ -14,6 +14,7 @@ export const ROUTES = {
   adminUsers: '/admin/users',
   requirements: '/requirements',
   jdAnalytics: '/jd-analytics',
+  actionLogs: '/action-logs',
   notFound: '*',
 } as const
 
@@ -65,4 +66,13 @@ export const QUERY_KEYS = {
     ['dashboard-analytics', dashboardId] as const,
   requirements: ['requirements'] as const,
   jdAnalytics: ['jd-analytics'] as const,
+  // Keyed by the full filter/sort/pagination params object: a distinct
+  // params value is a distinct query (and a distinct cache entry) — the
+  // same factory-key pattern as dashboard/dashboardAnalytics above, just
+  // with an object instead of a single id. Typed as `unknown` (not
+  // imported from actionLogs.service.ts, to avoid a constants -> services
+  // dependency) — a named interface like ListActionLogsParams has no index
+  // signature, so `Record<string, unknown>` would reject it here even
+  // though every field is structurally fine.
+  actionLogs: (params: unknown) => ['action-logs', params] as const,
 }
