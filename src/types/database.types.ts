@@ -229,6 +229,58 @@ export interface Database {
           },
         ]
       }
+      candidate_action_logs: {
+        Row: {
+          id: string
+          dashboard_id: string
+          candidate_id: string
+          previous_action: CandidateAction | null
+          new_action: CandidateAction | null
+          changed_by: string | null
+          changed_at: string
+        }
+        Insert: {
+          id?: string
+          dashboard_id: string
+          candidate_id: string
+          previous_action?: CandidateAction | null
+          new_action?: CandidateAction | null
+          changed_by?: string | null
+          changed_at?: string
+        }
+        Update: {
+          id?: string
+          dashboard_id?: string
+          candidate_id?: string
+          previous_action?: CandidateAction | null
+          new_action?: CandidateAction | null
+          changed_by?: string | null
+          changed_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'candidate_action_logs_dashboard_id_fkey'
+            columns: ['dashboard_id']
+            isOneToOne: false
+            referencedRelation: 'dashboards'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'candidate_action_logs_candidate_id_fkey'
+            columns: ['candidate_id']
+            isOneToOne: false
+            referencedRelation: 'dashboard_status'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'candidate_action_logs_changed_by_fkey'
+            columns: ['changed_by']
+            isOneToOne: false
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
     }
     Views: Record<string, never>
     Functions: {
@@ -256,3 +308,8 @@ export type CandidateNoteInsert =
   Database['public']['Tables']['candidate_notes']['Insert']
 export type CandidateNoteUpdate =
   Database['public']['Tables']['candidate_notes']['Update']
+// No Insert/Update alias exported: candidate_action_logs is written only by
+// the log_candidate_action_change() database trigger, never by application
+// code (see its migration) — there is no legitimate call site for those.
+export type CandidateActionLog =
+  Database['public']['Tables']['candidate_action_logs']['Row']
