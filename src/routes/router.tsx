@@ -4,6 +4,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { GuestRoute } from '@/components/auth/GuestRoute'
 import { AdminRoute } from '@/components/auth/AdminRoute'
+import { SuperAdminRoute } from '@/components/auth/SuperAdminRoute'
 import { ForcePasswordChangeGate } from '@/components/auth/ForcePasswordChangeGate'
 import { RouteErrorBoundary } from '@/components/common/RouteErrorBoundary'
 import { NotFound } from '@/pages/NotFound'
@@ -30,6 +31,7 @@ const JdAnalytics = lazyNamed(
   () => import('@/pages/JdAnalytics'),
   'JdAnalytics',
 )
+const ActionLogs = lazyNamed(() => import('@/pages/ActionLogs'), 'ActionLogs')
 
 export const router = createBrowserRouter([
   {
@@ -70,6 +72,17 @@ export const router = createBrowserRouter([
                 children: [
                   { path: ROUTES.adminUsers, element: <AdminUsers /> },
                   { path: ROUTES.jdAnalytics, element: <JdAnalytics /> },
+                ],
+              },
+              {
+                // Super Admin only — narrower than AdminRoute above.
+                // canViewActionLogs hides the nav entry the same way; the
+                // action-logs Edge Function refuses an Admin's or Viewer's
+                // call server-side regardless of this route guard (that
+                // table has no client-reachable RLS policy at all).
+                element: <SuperAdminRoute />,
+                children: [
+                  { path: ROUTES.actionLogs, element: <ActionLogs /> },
                 ],
               },
             ],
