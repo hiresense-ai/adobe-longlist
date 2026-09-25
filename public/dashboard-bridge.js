@@ -1955,7 +1955,11 @@
       updateSavedIndicator()
     }
 
-    saveBtn.addEventListener('click', function () {
+    // The one save path — the Save button and the Enter shortcut below both
+    // call this, so both get the same guards: nothing while a save is in
+    // flight (`saving` is set synchronously, so repeated/held Enter can't
+    // double-post), nothing for read-only users, nothing when unchanged.
+    function saveNote() {
       if (saving || !EDITABLE || !hasUnsavedChanges()) return
       var candidateName = panel.getAttribute(NOTES_NAME_ATTR)
       if (!candidateName) return
@@ -1975,6 +1979,32 @@
         },
         '*',
       )
+    }
+
+    saveBtn.addEventListener('click', saveNote)
+
+    // Enter saves; Shift+Enter falls through to the textarea's normal
+    // newline. Ctrl/Cmd/Alt+Enter and IME composition (an Enter that
+    // confirms a CJK/phonetic candidate, not a line) are left untouched.
+    // A blank/whitespace-only box never saves from here — clearing an
+    // existing note stays an explicit Save-button action, as before.
+    textarea.setAttribute('aria-keyshortcuts', 'Enter')
+    textarea.title = 'Press Enter to save, Shift+Enter for a new line'
+    textarea.addEventListener('keydown', function (event) {
+      if (
+        event.key !== 'Enter' ||
+        event.shiftKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.isComposing ||
+        event.keyCode === 229
+      ) {
+        return
+      }
+      event.preventDefault()
+      if (!textarea.value.trim()) return
+      saveNote()
     })
 
     applyLoadedState()
