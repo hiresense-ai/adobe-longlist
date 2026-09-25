@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useTheme } from 'next-themes'
 import { History, Loader2, User, Users2 } from 'lucide-react'
 
@@ -11,7 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { getActionConfig } from '@/config/actionConfig'
+import {
+  ACTION_SORT_PARAM,
+  NO_ACTION_SORT_VALUE,
+  getActionConfig,
+} from '@/config/actionConfig'
 import { useAuth } from '@/hooks/useAuth'
 import { useDashboardAnalytics } from '@/hooks/useDashboardAnalytics'
 import { getErrorMessage } from '@/lib/errors'
@@ -42,6 +46,9 @@ const NEUTRAL_BAR_DARK = '#6B7280'
  * point (see canViewDashboardAnalytics).
  *
  * Strictly read-only: no mutation, no write call, anywhere in this file.
+ * Clicking a "Candidate Actions" row only navigates — it opens this
+ * dashboard with that action's candidates shown first (view state; see
+ * ACTION_SORT_PARAM), changing no data.
  */
 export function DashboardAnalyticsDialog({
   dashboard,
@@ -58,7 +65,23 @@ export function DashboardAnalyticsDialog({
   )
   const { user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const showActionHistoryLink = Boolean(user && canViewActionLogs(user.role))
+
+  // Opens this exact dashboard (by id) with the clicked action's candidates
+  // first. Already on that dashboard (the dialog was opened from its own
+  // Analytics button)? `replace` just updates the URL — the viewer stays
+  // mounted and re-sorts its live iframe, no reload or second instance.
+  function openSortedByAction(action: CandidateAction | null) {
+    onOpenChange(false)
+    const path = ROUTES.dashboard(dashboard.id)
+    const search = new URLSearchParams({
+      [ACTION_SORT_PARAM]: action ?? NO_ACTION_SORT_VALUE,
+    })
+    navigate(`${path}?${search.toString()}`, {
+      replace: location.pathname === path,
+    })
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -110,6 +133,7 @@ export function DashboardAnalyticsDialog({
             <ActionBreakdown
               entries={data.actionBreakdown}
               pending={data.candidates.pending}
+              onSelect={openSortedByAction}
             />
           </div>
         )}
@@ -212,6 +236,8 @@ function CandidateSummary({
 
 interface BreakdownRow {
   key: string
+  /** What a click sorts to the top: the action value, or null for "No Action". */
+  action: CandidateAction | null
   label: string
   count: number
   background: string
@@ -220,19 +246,22 @@ interface BreakdownRow {
 function ActionBreakdown({
   entries,
   pending,
+  onSelect,
 }: {
   entries: DashboardActionBreakdownEntry[]
   pending: number | null
+  onSelect: (action: CandidateAction | null) => void
 }) {
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === 'dark'
 
   const rows: BreakdownRow[] = useMemo(() => {
-    const fromActions = entries.map((entry) => {
+    const fromActions = entries.map((entry): BreakdownRow => {
       const config = getActionConfig(entry.value as CandidateAction)
       const palette = config ? (isDark ? config.dark : config.light) : null
       return {
         key: entry.value,
+        action: entry.value as CandidateAction,
         label: config?.label ?? entry.value,
         count: entry.count,
         background: palette
@@ -247,7 +276,8 @@ function ActionBreakdown({
     // total candidate count (and therefore pending) couldn't be determined.
     if (pending !== null && pending > 0) {
       fromActions.push({
-        key: '__no_action__',
+        key: NO_ACTION_SORT_VALUE,
+        action: null,
         label: 'No Action',
         count: pending,
         background: isDark ? NEUTRAL_BAR_DARK : NEUTRAL_BAR_LIGHT,
@@ -260,35 +290,47 @@ function ActionBreakdown({
 
   return (
     <section>
-      <h3 className="text-foreground mb-2 text-sm font-medium">
-        Candidate Actions
-      </h3>
+      <h3 className="text-foreground text-sm font-medium">Candidate Actions</h3>
       {rows.length === 0 ? (
-        <p className="text-muted-foreground text-sm">
+        <p className="text-muted-foreground mt-2 text-sm">
           No candidate actions recorded yet.
         </p>
       ) : (
-        <div className="space-y-2">
-          {rows.map((row) => (
-            <div key={row.key} className="flex items-center gap-2">
-              <span className="text-foreground w-36 shrink-0 truncate text-xs">
-                {row.label}
-              </span>
-              <div className="bg-muted h-2 flex-1 overflow-hidden rounded-full">
-                <div
-                  className="h-full rounded-full transition-all"
-                  style={{
-                    width: `${(row.count / maxCount) * 100}%`,
-                    backgroundColor: row.background,
-                  }}
-                />
-              </div>
-              <span className="text-muted-foreground w-8 shrink-0 text-right text-xs tabular-nums">
-                {row.count}
-              </span>
-            </div>
-          ))}
-        </div>
+        <>
+          <p className="text-muted-foreground mb-2 text-xs">
+            Select an action to open the dashboard with those candidates first.
+          </p>
+          {/* Each row is a real button (Enter/Space, focus ring) over the
+              same label/bar/count layout. The label wraps rather than
+              truncating, so long action names stay fully readable. */}
+          <div className="-mx-1.5 space-y-0.5">
+            {rows.map((row) => (
+              <button
+                key={row.key}
+                type="button"
+                onClick={() => onSelect(row.action)}
+                aria-label={`${row.label}: ${row.count} — open the dashboard with these candidates first`}
+                className="hover:bg-muted/70 focus-visible:ring-ring flex w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-2 text-left transition-colors outline-none focus-visible:ring-2 sm:py-1.5"
+              >
+                <span className="text-foreground w-36 shrink-0 text-xs leading-snug break-words sm:w-44">
+                  {row.label}
+                </span>
+                <span className="bg-muted h-2 flex-1 overflow-hidden rounded-full">
+                  <span
+                    className="block h-full rounded-full transition-all"
+                    style={{
+                      width: `${(row.count / maxCount) * 100}%`,
+                      backgroundColor: row.background,
+                    }}
+                  />
+                </span>
+                <span className="text-muted-foreground w-8 shrink-0 text-right text-xs tabular-nums">
+                  {row.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
       )}
     </section>
   )

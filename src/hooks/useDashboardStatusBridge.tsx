@@ -24,10 +24,46 @@ import {
   canViewDashboardAnalytics,
 } from '@/lib/permissions'
 import type {
+  CandidateAction,
   DashboardBridgeMessage,
   DashboardStatus,
   CandidateNote,
 } from '@/types'
+
+/** "Show this action's candidates first" (null = "No Action"), from a
+ * Dashboard Analytics row click. `key` changes on every click (it's the
+ * navigation's location.key), so re-clicking the same action re-applies it
+ * even after the user has since changed the order from the Action header. */
+export interface ActionSortRequest {
+  action: CandidateAction | null
+  key: string
+}
+
+// Scroll target for longlist:reveal: clears the sticky navbar (h-16) with
+// a little room to spare.
+const REVEAL_TOP_OFFSET = 96
+
+/**
+ * Scrolls the page so the iframe's candidate table (at `top` in the
+ * iframe's own coordinates) sits just below the navbar — unless it's
+ * already in the upper half of the viewport, where moving the page would
+ * only be a needless jump. Returns false while the page isn't tall enough
+ * yet to reach it (the iframe's reported height can land a frame later).
+ */
+function revealIframeOffset(iframe: HTMLIFrameElement | null, top: number) {
+  if (!iframe) return true
+  const topInViewport = iframe.getBoundingClientRect().top + top
+  if (
+    topInViewport >= REVEAL_TOP_OFFSET - 32 &&
+    topInViewport <= window.innerHeight / 2
+  ) {
+    return true
+  }
+  const target = Math.max(0, window.scrollY + topInViewport - REVEAL_TOP_OFFSET)
+  const maxScroll = document.documentElement.scrollHeight - window.innerHeight
+  window.scrollTo({ top: Math.min(target, maxScroll) })
+  return target <= maxScroll
+}
 
 interface UseDashboardStatusBridgeOptions {
   dashboardId: string | undefined
@@ -38,6 +74,9 @@ interface UseDashboardStatusBridgeOptions {
    * canViewDashboardAnalytics, the same helper gating the dashboard card's
    * Analytics button. */
   onOpenAnalytics?: () => void
+  /** Sent down as longlist:action-sort whenever it changes, and again once
+   * the bridge (re)announces itself ready — see ActionSortRequest. */
+  actionSortRequest?: ActionSortRequest | null
 }
 
 /**
@@ -56,6 +95,7 @@ export function useDashboardStatusBridge({
   dashboardId,
   iframeRef,
   onOpenAnalytics,
+  actionSortRequest = null,
 }: UseDashboardStatusBridgeOptions) {
   const queryClient = useQueryClient()
   const { resolvedTheme } = useTheme()
@@ -84,6 +124,17 @@ export function useDashboardStatusBridge({
   useEffect(() => {
     onOpenAnalyticsRef.current = onOpenAnalytics
   })
+  // Same ref pattern: read by the longlist:ready handler, so a request made
+  // before the bridge loaded (navigating in from Dashboard Analytics) is
+  // delivered once it's listening, without re-running the bridge effect.
+  const actionSortRequestRef = useRef(actionSortRequest)
+  useEffect(() => {
+    actionSortRequestRef.current = actionSortRequest
+  })
+  // A longlist:reveal the page couldn't fully honor yet (not tall enough),
+  // retried when the iframe's height next changes; dropped after a few
+  // seconds so a late resize never scrolls the page unexpectedly.
+  const pendingRevealRef = useRef<{ top: number; until: number } | null>(null)
 
   // Resets the reported height when switching to a different dashboard, so
   // it doesn't briefly render the new iframe at the previous one's height
@@ -239,6 +290,12 @@ export function useDashboardStatusBridge({
           canUpdateStatus: canEdit,
           canViewAnalytics,
         })
+        if (actionSortRequestRef.current) {
+          postToIframe({
+            type: 'longlist:action-sort',
+            action: actionSortRequestRef.current.action,
+          })
+        }
 
         const statuses = await queryClient.fetchQuery({
           queryKey,
@@ -334,6 +391,18 @@ export function useDashboardStatusBridge({
       if (data.type === 'longlist:open-analytics') {
         if (data.dashboardId !== id) return
         if (canViewAnalytics) onOpenAnalyticsRef.current?.()
+        return
+      }
+
+      if (data.type === 'longlist:reveal') {
+        if (data.dashboardId !== id) return
+        if (typeof data.top !== 'number' || !Number.isFinite(data.top)) return
+        pendingRevealRef.current = revealIframeOffset(
+          iframeRef.current,
+          data.top,
+        )
+          ? null
+          : { top: data.top, until: Date.now() + 3000 }
         return
       }
 
@@ -530,6 +599,30 @@ export function useDashboardStatusBridge({
       '*',
     )
   }, [resolvedTheme, dashboardId, iframeRef])
+
+  // A new Analytics "show this action first" request on an already-loaded
+  // dashboard: applied in place through the live bridge — no reload, no
+  // second dashboard instance. (Before the bridge is listening this is a
+  // harmless no-op; the longlist:ready handler delivers it instead.)
+  useEffect(() => {
+    if (!dashboardId || !actionSortRequest) return
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: 'longlist:action-sort', action: actionSortRequest.action },
+      '*',
+    )
+  }, [actionSortRequest, dashboardId, iframeRef])
+
+  // Finishes a longlist:reveal once the iframe has grown tall enough.
+  useEffect(() => {
+    const pending = pendingRevealRef.current
+    if (!pending) return
+    if (
+      Date.now() > pending.until ||
+      revealIframeOffset(iframeRef.current, pending.top)
+    ) {
+      pendingRevealRef.current = null
+    }
+  }, [iframeHeight, iframeRef])
 
   return { iframeHeight }
 }

@@ -106,6 +106,12 @@ export type DashboardBridgeMessage =
    */
   | { type: 'longlist:open-analytics'; dashboardId: string | null }
   /**
+   * After applying longlist:action-sort: where the candidate table starts
+   * in the iframe's own (full-content-height) coordinates, so the host can
+   * scroll it into view — the host page owns scrolling, not the iframe.
+   */
+  | { type: 'longlist:reveal'; dashboardId: string | null; top: number }
+  /**
    * A file the dashboard wants saved. The iframe can't do this itself:
    * sandboxed without allow-same-origin, its object URLs are
    * `blob:null/...`, which the browser won't resolve as a download. The
@@ -180,6 +186,14 @@ export type DashboardHostMessage =
       error: string
     }
   | { type: 'longlist:theme-change'; theme: 'light' | 'dark' }
+  /**
+   * Show this action's candidates first (null = "No Action"), via the
+   * bridge's existing Action priority ordering. View state only.
+   */
+  | {
+      type: 'longlist:action-sort'
+      action: import('./database.types').CandidateAction | null
+    }
   | {
       type: 'longlist:viewport-slice'
       /** The slice of the iframe's OWN coordinate space (its full content

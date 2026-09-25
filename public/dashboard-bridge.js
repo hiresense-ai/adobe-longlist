@@ -368,8 +368,14 @@
   // never written.
   // ---------------------------------------------------------------------
   // 0 = dashboard default order, 1 = "▴" (Select → Reject → rest),
-  // 2 = "▾" (Reject → Select → rest).
+  // 2 = "▾" (Reject → Select → rest), 3 = one chosen action first, then
+  // the rest — never reached by the header cycle itself, only by the host's
+  // longlist:action-sort (a Dashboard Analytics "Candidate Actions" row
+  // click). Same partition pipeline, just a one-value leading group;
+  // actionFocusValue null means "No Action" (unset), matching how
+  // actionValueForName() already reports an unset row.
   var actionPriorityMode = 0
+  var actionFocusValue = null
   var ACTION_SCREEN_SELECT = 'Screen Select - HireSense'
   var ACTION_SCREEN_REJECT = 'Screen Reject - HireSense'
   // Bumped whenever actionValuesByName changes (a selection commit or an
@@ -387,11 +393,19 @@
     if (actionPriorityMode === 2) {
       return [ACTION_SCREEN_REJECT, ACTION_SCREEN_SELECT]
     }
+    if (actionPriorityMode === 3) {
+      return [actionFocusValue]
+    }
     return null
   }
 
-  function actionViewKey() {
-    return actionPriorityMode + '|' + actionDataVersion
+  /** Identifies the active ordering itself (not the data under it): mode 3
+   * with a different chosen action is a different ordering, so it must
+   * reset pagination exactly like a header-cycle mode change does. */
+  function actionModeKey() {
+    return actionPriorityMode === 3
+      ? '3|' + String(actionFocusValue)
+      : String(actionPriorityMode)
   }
 
   function actionViewActive() {
@@ -411,13 +425,17 @@
   function applyActionViewToArray(rows) {
     var order = actionPriorityOrder()
     if (!order) return rows
-    var groups = [[], [], []]
+    // One group per leading value, plus a final "everything else" group.
+    var groups = order.map(function () {
+      return []
+    })
+    groups.push([])
     rows.forEach(function (c) {
       var value = actionValueForName(c && c.name)
       var group = order.indexOf(value)
-      groups[group === -1 ? 2 : group].push(c)
+      groups[group === -1 ? order.length : group].push(c)
     })
-    return groups[0].concat(groups[1], groups[2])
+    return [].concat.apply([], groups)
   }
 
   // ---------------------------------------------------------------------
@@ -929,10 +947,15 @@
   // the NEXT click does. stopPropagation for the same reason the Action
   // trigger does — it must never bubble into a dashboard's own header
   // click handlers.
+  //
+  // Mode 3 (one action first, set from Dashboard Analytics — see
+  // applyActionSortRequest) shows as "Action ▴" too, with the chosen action
+  // named in the label; the next click from there restores the default
+  // order rather than entering the Screen cycle mid-way.
   function wireActionHeaderCycle(th) {
     function render() {
       th.textContent =
-        actionPriorityMode === 1
+        actionPriorityMode === 1 || actionPriorityMode === 3
           ? 'Action ▴'
           : actionPriorityMode === 2
             ? 'Action ▾'
@@ -944,7 +967,9 @@
           ? 'ascending'
           : actionPriorityMode === 2
             ? 'descending'
-            : 'none',
+            : actionPriorityMode === 3
+              ? 'other'
+              : 'none',
       )
       var next =
         actionPriorityMode === 0
@@ -952,18 +977,28 @@
           : actionPriorityMode === 1
             ? 'show "Screen Reject" then "Screen Select" first'
             : 'restore the default order'
-      var label = 'Action — click to ' + next
+      var label =
+        actionPriorityMode === 3
+          ? 'Action — showing "' +
+            (actionFocusValue || 'No Action') +
+            '" first, click to ' +
+            next
+          : 'Action — click to ' + next
       th.title = label
       th.setAttribute('aria-label', label)
     }
     render()
+    // Lets an externally-driven mode change (applyActionSortRequest) redraw
+    // every live header with this same render().
+    th.__llRenderActionHeader = render
     th.setAttribute('role', 'button')
     th.setAttribute('tabindex', '0')
     th.style.cursor = 'pointer'
     function cycle(event) {
       event.stopPropagation()
       event.preventDefault()
-      actionPriorityMode = (actionPriorityMode + 1) % 3
+      actionPriorityMode =
+        actionPriorityMode === 3 ? 0 : (actionPriorityMode + 1) % 3
       render()
       schedulePaginationSync()
     }
@@ -1001,6 +1036,92 @@
     th.style.width = '200px'
     th.style.boxSizing = 'border-box'
     headRow.appendChild(th)
+  }
+
+  // ---------------------------------------------------------------------
+  // Analytics → "show this action first" (host message longlist:action-sort,
+  // sent when a Dashboard Analytics "Candidate Actions" row is clicked).
+  // Pure view state, reusing the Action header's own priority pipeline
+  // (mode 3 above): nothing is written, no action value changes, and the
+  // dashboard's own filters/search/column sort stay exactly as they are —
+  // the chosen group is only moved to the front of whatever they produced.
+  // ---------------------------------------------------------------------
+
+  // The candidate table the priority pipeline runs on: the one whose Action
+  // header got wired (wiring already requires window.__ROWS, the same gate
+  // the pipeline itself has).
+  function findPrioritizedCandidateTable() {
+    var th = document.querySelector(
+      'th[' + ACTION_HEADER_ATTR + '][role="button"]',
+    )
+    return th ? th.closest('table') : null
+  }
+
+  // These dashboards keep the candidate table on a tab that isn't the one
+  // shown on load. Opens it through the dashboard's OWN tab control (a real
+  // click, so its own handler does the switching): the control is found by
+  // the id of the hidden panel holding the table — data-tab="candidates"
+  // for panel #tab-candidates in the verified format, plus the standard
+  // aria-controls / href="#id" tab shapes. Anything else is left alone.
+  function revealCandidateTab(table) {
+    if (table.getClientRects().length) return
+    for (
+      var el = table.parentElement;
+      el && el !== document.body;
+      el = el.parentElement
+    ) {
+      if (!el.id) continue
+      var id = window.CSS && CSS.escape ? CSS.escape(el.id) : el.id
+      var shortId =
+        window.CSS && CSS.escape
+          ? CSS.escape(el.id.replace(/^tab-/, ''))
+          : el.id.replace(/^tab-/, '')
+      var control = document.querySelector(
+        '[data-tab="' +
+          id +
+          '"], [data-tab="' +
+          shortId +
+          '"], [aria-controls="' +
+          id +
+          '"], a[href="#' +
+          id +
+          '"]',
+      )
+      if (control) {
+        control.click()
+        return
+      }
+    }
+  }
+
+  function applyActionSortRequest(value) {
+    if (value !== null && typeof value !== 'string') return
+    // Only a real configured action (or null = "No Action") — never an
+    // arbitrary string from a message.
+    if (value !== null && ACTION_OPTIONS.indexOf(value) === -1) return
+    var table = findPrioritizedCandidateTable()
+    if (!table) return // no priority pipeline on this dashboard format
+    actionPriorityMode = 3
+    actionFocusValue = value
+    document
+      .querySelectorAll('th[' + ACTION_HEADER_ATTR + ']')
+      .forEach(function (th) {
+        if (th.__llRenderActionHeader) th.__llRenderActionHeader()
+      })
+    revealCandidateTab(table)
+    schedulePaginationSync()
+    // Ask the host to bring the table into view: this iframe is sized to
+    // its full content height, so the page scroll that matters is the
+    // host's, not this document's.
+    var rect = table.getBoundingClientRect()
+    window.parent.postMessage(
+      {
+        type: 'longlist:reveal',
+        dashboardId: DASHBOARD_ID,
+        top: rect.top + (window.pageYOffset || 0),
+      },
+      '*',
+    )
   }
 
   function extractRowIdentity(tr, nameIdx) {
@@ -2260,8 +2381,8 @@
   //     preserve the page unless the dataset genuinely makes it invalid,
   //     never blindly reset to page 1.
   function reconcileActionView(state) {
-    if (state.lastActionMode !== actionPriorityMode) {
-      state.lastActionMode = actionPriorityMode
+    if (state.lastActionMode !== actionModeKey()) {
+      state.lastActionMode = actionModeKey()
       state.lastActionDataVersion = actionDataVersion
       state.page = 1
       state.dirty = true
@@ -2546,7 +2667,7 @@
         tr: tr,
         index: index,
         details: collectDetailSiblings(tr),
-        group: group === -1 ? 2 : group,
+        group: group === -1 ? order.length : group,
       }
     })
 
@@ -2571,11 +2692,16 @@
     var inOriginalOrder = entries.slice().sort(function (a, b) {
       return a.tr.__llOrigIndex - b.tr.__llOrigIndex
     })
-    var groups = [[], [], []]
+    // One group per leading value (two Screen groups, or the single
+    // Analytics-chosen action), plus the final "everything else" group.
+    var groups = order.map(function () {
+      return []
+    })
+    groups.push([])
     inOriginalOrder.forEach(function (entry) {
       groups[entry.group].push(entry)
     })
-    var ordered = groups[0].concat(groups[1], groups[2])
+    var ordered = [].concat.apply([], groups)
     // Moving (never rebuilding) the dashboard's own nodes: listeners,
     // the injected Action cells, and any open Notes panel all survive.
     // The dashboard never reads DOM order back — its own next render
@@ -3182,6 +3308,10 @@
         actionDataVersion++
         syncActionColumns()
         schedulePaginationSync()
+      }
+
+      if (data.type === 'longlist:action-sort') {
+        applyActionSortRequest(data.action)
       }
 
       if (data.type === 'longlist:status-ack') {
