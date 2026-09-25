@@ -128,12 +128,19 @@ export function Navbar() {
           className="focus-visible:ring-ring focus-visible:ring-offset-background flex shrink-0 items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
         >
           <AdobeLogo className="size-7" />
-          <span className="text-foreground hidden text-lg font-semibold tracking-tight sm:block">
+          {/* Hidden 1024–1279px only: that's where the pill nav appears but the
+              header row can't also fit the wordmark (and, on the home page,
+              a usable search box). The logo mark alone still links home. */}
+          <span className="text-foreground hidden text-lg font-semibold tracking-tight sm:block lg:hidden xl:block">
             Talent Landscape Reports
           </span>
         </Link>
 
-        <nav className="hidden items-center gap-1.5 md:flex">
+        {/* lg, not md: with every role's links the pill nav needs ~1000px, so
+            from 768px it pushed the avatar menu (Profile / Sign out) off
+            screen. Below lg these links live in the avatar dropdown, same as
+            on phones. */}
+        <nav className="hidden items-center gap-1.5 lg:flex">
           {navItems.map((item) => {
             const Icon = item.icon
             return (
@@ -203,14 +210,14 @@ export function Navbar() {
                   Profile
                 </Link>
               </DropdownMenuItem>
-              <DropdownMenuItem asChild className="md:hidden">
+              <DropdownMenuItem asChild className="lg:hidden">
                 <Link to={ROUTES.requirements}>
                   <ClipboardList className="size-4" />
                   Requirements
                 </Link>
               </DropdownMenuItem>
               {showJdAnalytics && (
-                <DropdownMenuItem asChild className="md:hidden">
+                <DropdownMenuItem asChild className="lg:hidden">
                   <Link to={ROUTES.jdAnalytics}>
                     <ChartColumn className="size-4" />
                     JD Analytics
@@ -218,7 +225,7 @@ export function Navbar() {
                 </DropdownMenuItem>
               )}
               {showActionLogs && (
-                <DropdownMenuItem asChild className="md:hidden">
+                <DropdownMenuItem asChild className="lg:hidden">
                   <Link to={ROUTES.actionLogs}>
                     <History className="size-4" />
                     Action Logs
@@ -226,7 +233,7 @@ export function Navbar() {
                 </DropdownMenuItem>
               )}
               {isAdmin && (
-                <DropdownMenuItem asChild className="md:hidden">
+                <DropdownMenuItem asChild className="lg:hidden">
                   <Link to={ROUTES.adminUsers}>
                     <UsersRound className="size-4" />
                     Users
