@@ -82,6 +82,13 @@ export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
     dark: { background: '#4C0519', text: '#FDA4AF', border: '#9F1239' },
     sortOrder: 8,
   },
+  'Candidate Yet to Revert': {
+    value: 'Candidate Yet to Revert',
+    label: 'Candidate Yet to Revert',
+    light: { background: '#FEF3C7', text: '#B45309', border: '#FDE68A' },
+    dark: { background: '#451A03', text: '#FCD34D', border: '#92400E' },
+    sortOrder: 9,
+  },
 }
 
 /** All actions in canonical dropdown order. */

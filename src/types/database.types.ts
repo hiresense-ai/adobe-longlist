@@ -19,6 +19,7 @@ export type CandidateAction =
   | 'Offer - HireSense'
   | 'Screen Select - HireSense'
   | 'Screen Reject - HireSense'
+  | 'Candidate Yet to Revert'
 
 export type UserRole = 'super_admin' | 'admin' | 'viewer'
 
