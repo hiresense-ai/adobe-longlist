@@ -564,7 +564,14 @@
       // every wrapped line a clean, normally-flowing left-aligned stack;
       // .pg-right's own margin-left: auto below still pushes it to the far
       // right on wide screens where everything fits on one line.
-      '.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px; padding: 14px 2px 4px; font-size: 13px; color: var(--ll-muted-fg); }' +
+      // max-width + sticky left: below ~900px the dashboards stack their
+      // layout into a column whose `align-items: flex-start` sizes the
+      // results pane to the table's full max-content width (~1000px), so the
+      // pager inherited that width and its page buttons sat far off-screen on
+      // tablets/phones. Capping it to this frame's own width makes it wrap
+      // instead, and sticky keeps it in view while the table is scrolled
+      // sideways. No effect wherever the pager already fits.
+      '.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 12px; padding: 14px 2px 4px; font-size: 13px; color: var(--ll-muted-fg); position: sticky; left: 0; max-width: calc(100vw - 32px); box-sizing: border-box; }' +
       '.pg-lbl { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--ll-muted-fg); }' +
       // Native <select>: fully stylable in its closed state (all of this),
       // but its OPEN dropdown popup is OS/browser-native-rendered with very
@@ -856,9 +863,20 @@
     return firstRow ? Array.prototype.slice.call(firstRow.children) : []
   }
 
+  // The dashboards append their sort indicator to the active column's own
+  // header text (`${label} ▴` / `${label} ▾`), so after sorting by Name the
+  // header reads "Name ▴" — which the exact-match checks below would miss,
+  // silently turning off pagination and building every Action trigger with
+  // no candidate name (blank values, selections never saved). Stripped here
+  // so a column is found the same way whether or not it's the sorted one.
+  var SORT_INDICATOR_SUFFIX = /[\s▴▾▲▼△▽↑↓⇅↕]+$/
+
   function findColumnIndex(headerCells, matches) {
     for (var i = 0; i < headerCells.length; i++) {
-      var text = (headerCells[i].textContent || '').trim().toLowerCase()
+      var text = (headerCells[i].textContent || '')
+        .trim()
+        .toLowerCase()
+        .replace(SORT_INDICATOR_SUFFIX, '')
       if (matches(text)) return i
     }
     return -1
