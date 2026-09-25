@@ -96,6 +96,31 @@ export const ACTION_LIST: ActionConfigEntry[] = Object.values(
   ACTION_CONFIG,
 ).sort((a, b) => a.sortOrder - b.sortOrder)
 
+/**
+ * Search param on ROUTES.dashboard(id) asking the viewer to show one
+ * action's candidates first (set by a Dashboard Analytics "Candidate
+ * Actions" row click). View state only — handed to the dashboard bridge's
+ * own Action priority ordering, never written anywhere.
+ */
+export const ACTION_SORT_PARAM = 'actionSort'
+/** ACTION_SORT_PARAM's value for "No Action" (candidates with no action set). */
+export const NO_ACTION_SORT_VALUE = '__no_action__'
+
+/**
+ * Reads ACTION_SORT_PARAM: an action value, null for "No Action", or
+ * undefined when absent or not a real action (the URL is user-editable, so
+ * only ACTION_CONFIG's own values are accepted).
+ */
+export function parseActionSortParam(
+  raw: string | null,
+): CandidateAction | null | undefined {
+  if (raw === null) return undefined
+  if (raw === NO_ACTION_SORT_VALUE) return null
+  return Object.hasOwn(ACTION_CONFIG, raw)
+    ? (raw as CandidateAction)
+    : undefined
+}
+
 export function getActionConfig(
   action: CandidateAction | null | undefined,
 ): ActionConfigEntry | null {

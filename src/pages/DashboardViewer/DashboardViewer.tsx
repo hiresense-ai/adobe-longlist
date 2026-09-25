@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, FileWarning, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,11 @@ import { PoweredByHireSense } from '@/components/common/PoweredByHireSense'
 import { useAuth } from '@/hooks/useAuth'
 import { useDashboard } from '@/hooks/useDashboard'
 import { useDashboardHtml } from '@/hooks/useDashboardHtml'
-import { useDashboardStatusBridge } from '@/hooks/useDashboardStatusBridge'
+import {
+  useDashboardStatusBridge,
+  type ActionSortRequest,
+} from '@/hooks/useDashboardStatusBridge'
+import { ACTION_SORT_PARAM, parseActionSortParam } from '@/config/actionConfig'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { canViewDashboardAnalytics } from '@/lib/permissions'
@@ -29,6 +33,18 @@ export function DashboardViewer() {
   // which enforces real access server-side on every call.
   const canViewAnalytics = Boolean(user && canViewDashboardAnalytics(user.role))
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false)
+
+  // ?actionSort=… from a Dashboard Analytics "Candidate Actions" row click:
+  // handed to the bridge, which shows that action's candidates first using
+  // the Action header's own ordering. Keyed by location.key so each click
+  // is a fresh request, even for the same action.
+  const [searchParams] = useSearchParams()
+  const location = useLocation()
+  const actionSortParam = searchParams.get(ACTION_SORT_PARAM)
+  const actionSortRequest = useMemo<ActionSortRequest | null>(() => {
+    const action = parseActionSortParam(actionSortParam)
+    return action === undefined ? null : { action, key: location.key }
+  }, [actionSortParam, location.key])
 
   const {
     data: dashboard,
@@ -50,6 +66,7 @@ export function DashboardViewer() {
     dashboardId: dashboard?.id,
     iframeRef,
     onOpenAnalytics: () => setIsAnalyticsOpen(true),
+    actionSortRequest,
   })
 
   // Sizing policy (a product decision, not a workaround): a short dashboard
