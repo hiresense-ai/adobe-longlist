@@ -1,5 +1,7 @@
 import { supabase } from './client'
 import { invokeEdgeFunction } from '@/lib/edgeFunction'
+import { WORKSPACE } from '@/config/workspaces'
+import { makeActiveWorkspace } from './workspaceSession'
 
 interface LoginResponse {
   access_token: string
@@ -24,6 +26,9 @@ export async function signInWithPassword(email: string, password: string) {
     refresh_token,
   })
   if (error) throw error
+  // This browser now belongs to this workspace — any other workspace's
+  // stored session is dropped (src/supabase/workspaceSession.ts).
+  makeActiveWorkspace(WORKSPACE)
   return data
 }
 
