@@ -221,7 +221,7 @@
       var row = rows[i]
       var name = row[nameIdx] || ''
       var key = name.toLowerCase()
-      var action = actionValuesByName[key] || ''
+      var action = actionDisplay(actionValuesByName[key] || '')
       var note = NOTES_BY_NAME[key] || ''
       out.push(row.concat([action, note]))
     }
@@ -292,6 +292,18 @@
   var STATUS_STYLES = {}
   var ACTION_OPTIONS = []
   var ACTION_STYLES = {}
+  // Display text per stored action value, from the host (init-config's
+  // actionLabels). Presentation only: the values themselves — what's saved,
+  // compared and sorted on — are identical in every workspace. Missing
+  // label = show the value, exactly the previous behavior.
+  var ACTION_LABELS = {}
+  function actionDisplay(value) {
+    return (
+      (value && Object.prototype.hasOwnProperty.call(ACTION_LABELS, value)
+        ? ACTION_LABELS[value]
+        : value) || ''
+    )
+  }
   // Whether candidate status/action EDITS are currently allowed in this
   // document — the host tells us via longlist:init-config's canUpdateStatus
   // flag. Starts false (fail closed) until that message actually arrives.
@@ -662,6 +674,47 @@
   // attribute so the CSS variable fallback in injectBaseStyles() covers
   // dashboards with no theme mechanism of their own. Both paths are safe
   // no-ops where they don't apply.
+  // Optional workspace brand color from the host (init-config's `brand`),
+  // for workspaces whose primary isn't the default red above. Overrides only
+  // the primary/ring/accent tokens, with higher specificity than the base
+  // rules so injection order never matters. Absent (Adobe) = nothing is
+  // injected and the defaults above apply exactly as before. Each value is
+  // checked with CSS.supports, so it can only ever be a color.
+  function applyBrandColors(brand) {
+    var existing = document.getElementById('ll-brand-colors')
+    if (existing) existing.remove()
+    if (!brand || typeof brand !== 'object') return
+    var isColor = function (c) {
+      return typeof c === 'string' && window.CSS && CSS.supports('color', c)
+    }
+    if (!isColor(brand.primary)) return
+    var light = brand.primary
+    var dark = isColor(brand.primaryDark) ? brand.primaryDark : light
+    var style = document.createElement('style')
+    style.id = 'll-brand-colors'
+    style.textContent =
+      'html:not([data-longlist-theme="dark"]):root {' +
+      '--ll-primary: ' +
+      light +
+      ';' +
+      '--ll-ring: color-mix(in oklab, ' +
+      light +
+      ' 50%, transparent);' +
+      '--ll-accent: color-mix(in oklab, ' +
+      light +
+      ' 8%, white);' +
+      '}' +
+      'html[data-longlist-theme="dark"]:root {' +
+      '--ll-primary: ' +
+      dark +
+      ';' +
+      '--ll-ring: color-mix(in oklab, ' +
+      dark +
+      ' 60%, transparent);' +
+      '}'
+    ;(document.head || document.documentElement).appendChild(style)
+  }
+
   function applyHostTheme(theme) {
     document.documentElement.setAttribute('data-longlist-theme', theme)
     if (typeof window.applyTheme !== 'function') return
@@ -980,7 +1033,7 @@
       var label =
         actionPriorityMode === 3
           ? 'Action — showing "' +
-            (actionFocusValue || 'No Action') +
+            (actionDisplay(actionFocusValue) || 'No Action') +
             '" first, click to ' +
             next
           : 'Action — click to ' + next
@@ -1149,8 +1202,8 @@
   function setActionValue(trigger, value) {
     trigger.setAttribute('data-value', value || '')
     var label = trigger.querySelector('[' + ACTION_LABEL_ATTR + ']')
-    if (label) label.textContent = value || 'Select Action'
-    trigger.title = value || 'Select Action'
+    if (label) label.textContent = actionDisplay(value) || 'Select Action'
+    trigger.title = actionDisplay(value) || 'Select Action'
     applyActionStyle(trigger)
   }
 
@@ -1258,7 +1311,7 @@
       opt.className = 'll-action-option'
       opt.setAttribute('role', 'option')
       opt.id = trigger.id + '-opt-' + i
-      opt.textContent = value || 'Select Action'
+      opt.textContent = actionDisplay(value) || 'Select Action'
       opt.style.padding = '8px 10px'
       opt.style.borderRadius = '8px'
       opt.style.fontSize = '13px'
@@ -3300,6 +3353,11 @@
         STATUS_STYLES = data.statusStyles || {}
         ACTION_OPTIONS = Array.isArray(data.actionOrder) ? data.actionOrder : []
         ACTION_STYLES = data.actionStyles || {}
+        ACTION_LABELS =
+          data.actionLabels && typeof data.actionLabels === 'object'
+            ? data.actionLabels
+            : {}
+        applyBrandColors(data.brand)
         EDITABLE = data.canUpdateStatus === true
         ANALYTICS_ENABLED = data.canViewAnalytics === true
         wireSelects()

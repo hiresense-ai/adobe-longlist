@@ -3,6 +3,7 @@ import { Navbar } from './Navbar'
 import { ROUTES } from '@/constants'
 import { cn } from '@/lib/utils'
 import { IS_LOCAL_BACKEND } from '@/supabase/client'
+import { WORKSPACE } from '@/config/workspaces'
 
 export function AppLayout() {
   // The dashboard viewer opts out: it already manages its own height around
@@ -32,7 +33,8 @@ export function AppLayout() {
               : 'bg-red-600 text-white',
           )}
         >
-          {IS_LOCAL_BACKEND ? 'Environment: LOCAL' : 'Environment: REMOTE'}
+          {IS_LOCAL_BACKEND ? 'Environment: LOCAL' : 'Environment: REMOTE'} ·{' '}
+          {WORKSPACE.branding.clientName}
         </div>
       )}
     </div>

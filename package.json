@@ -23,6 +23,13 @@
     "local:status": "supabase status",
     "local:reset": "supabase db reset",
     "local:seed-admin": "node scripts/seed-local-admin.mjs",
+    "lyca:start": "node scripts/lyca-local.mjs start",
+    "lyca:stop": "node scripts/lyca-local.mjs stop",
+    "lyca:status": "node scripts/lyca-local.mjs status",
+    "lyca:reset": "node scripts/lyca-local.mjs reset",
+    "lyca:sync": "node scripts/lyca-local.mjs sync",
+    "lyca:env": "node scripts/lyca-local.mjs env",
+    "lyca:seed": "node scripts/seed-local-lyca.mjs",
     "prod:db-push": "node scripts/prod-deploy.mjs db-push",
     "prod:functions-deploy": "node scripts/prod-deploy.mjs functions-deploy"
   },

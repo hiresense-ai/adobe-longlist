@@ -1,56 +1,63 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types'
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    'Missing Supabase environment variables. Define VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env.local file (see .env.example).',
-  )
-}
+import { WORKSPACE } from '@/config/workspaces'
+import { resolveSupabaseTarget } from '@/supabase/workspaceConfig'
 
 // ---------------------------------------------------------------------------
-// Environment isolation guard.
+// The ONE Supabase client of this page load — for this page's workspace
+// only (src/config/workspaces.ts: /lyca/... is Lyca Mobile, everything else
+// Adobe). It is created once and never re-pointed: there is no code path
+// that switches a running page to another project, and moving between
+// workspaces is always a full page load.
 //
-// Local development must run against the LOCAL Supabase stack
-// (`npm run local:start`), never against the live production project. The
-// production URL is not a secret (it ships in every production bundle), so
-// naming it here costs nothing — and refusing it in dev mode makes the
-// failure loud instead of silently writing test data into production, e.g.
-// after a `vercel env pull` overwrites .env.local with hosted credentials.
-//
-// Production builds (Vercel) run with import.meta.env.DEV === false, so this
-// guard compiles out of the deployed app entirely.
+// Environment isolation guard (resolveSupabaseTarget): a missing or wrong
+// configuration — a workspace sharing another client's project or key,
+// Lyca pointed at Adobe's production project, or local development pointed
+// at production — never yields a client. main.tsx renders a "workspace
+// unavailable" screen instead of the app, and the placeholder below throws
+// on any use, so nothing can silently fall back to another backend.
 // ---------------------------------------------------------------------------
-const PRODUCTION_SUPABASE_URL = 'https://lomiqhcbjivdgophreiw.supabase.co'
-const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost)([:/]|$)/.test(
-  supabaseUrl,
-)
+const resolved = resolveSupabaseTarget(WORKSPACE)
 
-if (import.meta.env.DEV && supabaseUrl === PRODUCTION_SUPABASE_URL) {
-  throw new Error(
-    'REFUSING TO START: local development is pointed at the PRODUCTION ' +
-      'Supabase project. Point .env.local at the local stack instead ' +
-      '(npm run local:start, then copy the API URL and anon key from ' +
-      '`npm run local:status` — see docs/ENVIRONMENTS.md). Never develop ' +
-      'against production.',
-  )
-}
-
-if (import.meta.env.DEV) {
-  console.info(
-    `[adobe-longlist] Environment: ${isLocalBackend ? 'LOCAL' : 'REMOTE'} — Supabase: ${supabaseUrl}`,
-  )
-}
+/** Why this page's workspace can't start, or null when it can. */
+export const WORKSPACE_CONFIG_ERROR: string | null = resolved.ok
+  ? null
+  : resolved.reason
 
 /** True when the app is talking to a Supabase stack on this machine. */
-export const IS_LOCAL_BACKEND = isLocalBackend
+export const IS_LOCAL_BACKEND = resolved.ok && resolved.target.isLocal
 
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-})
+/** This workspace's project URL (for diagnostics/display only). */
+export const SUPABASE_URL = resolved.ok ? resolved.target.url : null
+
+if (import.meta.env.DEV && resolved.ok) {
+  console.info(
+    `[longlist:${WORKSPACE.id}] Environment: ${IS_LOCAL_BACKEND ? 'LOCAL' : 'REMOTE'} — Supabase: ${resolved.target.url}`,
+  )
+}
+
+function unavailableClient(reason: string): SupabaseClient<Database> {
+  return new Proxy({} as SupabaseClient<Database>, {
+    get() {
+      throw new Error(`Supabase client unavailable: ${reason}`)
+    },
+  })
+}
+
+export const supabase: SupabaseClient<Database> = resolved.ok
+  ? createClient<Database>(resolved.target.url, resolved.target.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+        // Only set when the workspace has its own key. Passing
+        // `storageKey: undefined` is NOT the same as omitting it: supabase-js
+        // spreads these options over its defaults, so an explicit undefined
+        // would replace Adobe's default key and sign every existing Adobe
+        // session out. Omitted for Adobe = exactly the options it always had.
+        ...(WORKSPACE.authStorageKey
+          ? { storageKey: WORKSPACE.authStorageKey }
+          : {}),
+      },
+    })
+  : unavailableClient(resolved.reason)

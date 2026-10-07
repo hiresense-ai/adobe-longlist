@@ -19,6 +19,7 @@ import { useAdminUsers } from '@/hooks/useAdminUsers'
 import { useAuth } from '@/hooks/useAuth'
 import { filterAdminUsers } from '@/services/adminUsers.service'
 import { getErrorMessage } from '@/lib/errors'
+import { APP_NAME } from '@/constants'
 import { getInitials } from '@/lib/format'
 import { canViewUser, roleLabel } from '@/lib/permissions'
 import { formatDate, formatRemainingLockMinutes } from '@/utils/date'
@@ -65,7 +66,7 @@ export function AdminUsers() {
           <div>
             <h1 className="text-foreground text-2xl font-semibold">Users</h1>
             <p className="text-muted-foreground text-sm">
-              Manage who can access the Adobe Longlist portal.
+              Manage who can access the {APP_NAME} portal.
             </p>
           </div>
           <Button onClick={() => setIsCreateOpen(true)}>

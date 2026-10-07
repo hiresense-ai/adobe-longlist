@@ -100,3 +100,52 @@ is enforced by RLS in the migrations, not by these grants.
   not silent.
 - Never add production keys to `.env.local`, `.env`, or any committed file.
 - Never bypass `scripts/prod-deploy.mjs` by re-linking manually.
+
+## LYCA MOBILE WORKSPACE (separate Supabase project)
+
+Lyca Mobile uses the same app and code but a **physically separate** Supabase
+project (its own database, Auth, Storage and Edge Functions). Pages under
+`/lyca/...` talk only to Lyca's project; every other URL is Adobe's, unchanged.
+See `src/config/workspaces.ts` and `src/supabase/workspaceConfig.ts`.
+
+### Local stack (second Docker stack, ports 5532x)
+
+```bash
+npm run lyca:start     # builds workspaces/lyca/supabase from the shared migrations,
+                       # functions and seed.sql + workspaces/lyca/migrations; own JWT
+                       # secret and signing key (both gitignored)
+npm run lyca:env       # prints VITE_LYCA_SUPABASE_URL / VITE_LYCA_SUPABASE_ANON_KEY
+npm run lyca:seed      # synthetic local Lyca test data only
+npm run lyca:reset     # rebuild the LOCAL Lyca database from migrations
+npm run lyca:sync      # after editing shared migrations/functions
+npm run lyca:stop
+```
+
+Then open `http://localhost:5173/lyca/login`. Never run the Supabase CLI against
+`workspaces/lyca` directly; `scripts/lyca-local.mjs` refuses anything that isn't
+the local Lyca stack, and the app refuses to start Lyca if its URL/key equals
+Adobe's or Adobe's production project.
+
+### Schema
+
+Lyca = every migration in `supabase/migrations` **plus** the Lyca-only
+migrations in `workspaces/lyca/migrations` (stricter candidate status/notes
+access). Adobe's CLI never reads `workspaces/lyca`. A future shared migration
+that redefines the `dashboard_status` / `candidate_notes` policies must keep
+Lyca's stricter versions (re-run the Lyca security tests).
+
+### Production (not set up yet)
+
+Lyca's hosted project is `adfubeifnsgxwmpfslkt` (already in `vercel.json`'s
+`/lyca` CSP). Migrations and Edge Functions go there ONLY through
+`scripts/lyca-deploy.mjs` (refuses any other ref, and Adobe's outright):
+
+```bash
+LYCA_DEPLOY_CONFIRM=adfubeifnsgxwmpfslkt node scripts/lyca-deploy.mjs db-push-dry-run
+LYCA_DEPLOY_CONFIRM=adfubeifnsgxwmpfslkt node scripts/lyca-deploy.mjs db-push
+LYCA_DEPLOY_CONFIRM=adfubeifnsgxwmpfslkt node scripts/lyca-deploy.mjs functions-deploy
+```
+
+Vercel needs `VITE_LYCA_SUPABASE_URL` / `VITE_LYCA_SUPABASE_ANON_KEY` (the
+publishable key only). Without them `/lyca` shows "unavailable" and never
+falls back to Adobe.

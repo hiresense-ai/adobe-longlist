@@ -1,0 +1,110 @@
+# LYCA MOBILE — local Supabase stack (completely separate from Adobe's).
+#
+# Lyca is a physically separate Supabase project: its own Postgres, Auth,
+# Storage and Edge Functions. This stack is the LOCAL stand-in for it and
+# runs side by side with Adobe's local stack (supabase/config.toml, ports
+# 5432x) on its own ports (5532x), its own Docker network and its own JWT
+# secret, so a token issued by one stack is rejected by the other.
+#
+# Never run the Supabase CLI here directly — use `npm run lyca:*`
+# (scripts/lyca-local.mjs). That script assembles this directory's
+# migrations/ and functions/ from the SAME sources Adobe uses
+# (supabase/migrations, supabase/functions) plus the
+# Lyca-only migrations in workspaces/lyca/migrations, supplies the JWT secret,
+# and refuses anything that isn't this local stack. Those generated copies
+# are gitignored; edit the shared sources, then `npm run lyca:sync`.
+#
+# The CLI is never linked to a hosted project from here.
+project_id = "longlist-lyca-local"
+
+[api]
+port = 55321
+
+[db]
+port = 55322
+shadow_port = 55320
+
+[db.pooler]
+port = 55329
+
+# Built like the hosted Lyca project: grants come from a Lyca migration,
+# not from Adobe's local-only supabase/seed.sql.
+[db.seed]
+enabled = false
+
+[studio]
+port = 55323
+
+[local_smtp]
+port = 55324
+
+# Not needed for this app; keeps the second stack light.
+[analytics]
+enabled = false
+port = 55327
+
+[edge_runtime]
+inspector_port = 58083
+
+[auth]
+# Both of Lyca's token keys differ from every other local stack's — the CLI's
+# defaults are shared by every local project, Adobe's included, so without
+# these a token minted by one local stack would be accepted by the other:
+# - jwt_secret (HS256: the anon/service keys) — supplied by
+#   scripts/lyca-local.mjs from the gitignored workspaces/lyca/.env.local;
+# - signing_keys_path (ES256: user access tokens) — a Lyca-only key that
+#   scripts/lyca-local.mjs generates on first start (gitignored, never
+#   committed).
+jwt_secret = "env(LYCA_LOCAL_JWT_SECRET)"
+signing_keys_path = "./signing_keys.json"
+
+# Edge Function settings — identical to Adobe's (supabase/config.toml): the
+# same function code runs in both projects, each against its own database.
+# admin-users does its own caller-identity check (verifies the JWT and reads
+# profiles.role before anything runs), but the platform-level JWT gate is a
+# cheap first line of defense in front of that, so it stays on.
+[functions.admin-users]
+verify_jwt = true
+
+# change-password only ever acts on the CALLER's own account (the target is
+# read from the verified JWT, never the body), and re-verifies the current
+# password before changing anything. The platform JWT gate stays on for the
+# same reason as admin-users.
+[functions.change-password]
+verify_jwt = true
+
+# auth-login IS the login endpoint — by definition, nobody calling it has a
+# session yet. It performs its own request validation instead (email/password
+# shape, rate limiting, generic error messages).
+[functions.auth-login]
+verify_jwt = false
+
+# dashboard-analytics is read-only, but the roster/breakdown it returns
+# still requires a verified caller identity + role before anything runs
+# (see the function's own module comment for why RLS alone can't gate this).
+[functions.dashboard-analytics]
+verify_jwt = true
+
+# dashboard-edit does its own caller-identity + role + assignment check (see
+# the function's own module comment for why field-level restriction by role
+# can't be expressed through RLS alone). The platform JWT gate stays on for
+# the same reason as the other functions above.
+[functions.dashboard-edit]
+verify_jwt = true
+
+# requirements is the ONLY access path to the requirements table (deny-all
+# RLS — see the requirements migration): it verifies the caller and shapes
+# every response per role/status, including stripping the JD fields from a
+# Viewer's view once a requirement has been contacted. The platform JWT
+# gate stays on for the same reason as the other functions above.
+[functions.requirements]
+verify_jwt = true
+
+# action-logs is the ONLY access path to candidate_action_logs for a normal
+# client (that table has no client SELECT/INSERT/UPDATE/DELETE RLS policy
+# at all — see 20260918000001_candidate_action_logs.sql): it verifies the
+# caller and rejects anyone but a Super Admin with 403 before reading
+# anything. The platform JWT gate stays on for the same reason as the
+# other functions above.
+[functions.action-logs]
+verify_jwt = true
