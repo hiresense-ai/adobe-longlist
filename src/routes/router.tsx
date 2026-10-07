@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, type RouteObject } from 'react-router-dom'
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
@@ -9,6 +9,7 @@ import { ForcePasswordChangeGate } from '@/components/auth/ForcePasswordChangeGa
 import { RouteErrorBoundary } from '@/components/common/RouteErrorBoundary'
 import { NotFound } from '@/pages/NotFound'
 import { ROUTES } from '@/constants'
+import { WORKSPACE } from '@/config/workspaces'
 import { lazyNamed } from '@/lib/lazyNamed'
 
 const Login = lazyNamed(() => import('@/pages/Login'), 'Login')
@@ -32,8 +33,27 @@ const JdAnalytics = lazyNamed(
   'JdAnalytics',
 )
 const ActionLogs = lazyNamed(() => import('@/pages/ActionLogs'), 'ActionLogs')
+const WorkspaceNotFound = lazyNamed(
+  () => import('@/pages/Workspace'),
+  'WorkspaceNotFound',
+)
 
-export const router = createBrowserRouter([
+// A sign-in link for a workspace that doesn't exist (/unknown/login) gets
+// an explicit "workspace not found" — never Adobe's sign-in page. Only the
+// root (Adobe) router needs this: every /lyca/... URL is served by the Lyca
+// router, whose own unmatched paths fall through to NotFound as before.
+const unknownWorkspaceRoutes: RouteObject[] =
+  WORKSPACE.basePath === ''
+    ? [
+        { path: ROUTES.unknownWorkspaceLogin, element: <WorkspaceNotFound /> },
+        {
+          path: ROUTES.unknownWorkspaceForgotPassword,
+          element: <WorkspaceNotFound />,
+        },
+      ]
+    : []
+
+const routes: RouteObject[] = [
   {
     element: <GuestRoute />,
     errorElement: <RouteErrorBoundary />,
@@ -91,5 +111,15 @@ export const router = createBrowserRouter([
       },
     ],
   },
+  ...unknownWorkspaceRoutes,
   { path: ROUTES.notFound, element: <NotFound /> },
-])
+]
+
+// The workspace's basePath is the router's basename: '' for Adobe (its
+// original URLs, unchanged) and '/lyca' for Lyca Mobile, so
+// ROUTES.dashboard(id) is /dashboards/<id> on an Adobe page and
+// /lyca/dashboards/<id> on a Lyca page — every link, redirect and navigate()
+// stays inside the page's own workspace.
+export const router = createBrowserRouter(routes, {
+  basename: WORKSPACE.basePath || undefined,
+})

@@ -1,3 +1,5 @@
+import { WORKSPACE } from '@/config/workspaces'
+
 // Candidate status labels, colors, and ordering all live in a single place:
 // src/config/statusConfig.ts (STATUS_LIST / STATUS_CONFIG). Nothing here
 // duplicates that — components and the dashboard bridge import it directly.
@@ -15,6 +17,10 @@ export const ROUTES = {
   requirements: '/requirements',
   jdAnalytics: '/jd-analytics',
   actionLogs: '/action-logs',
+  // A sign-in link naming a workspace that doesn't exist (Adobe's root
+  // router only — see router.tsx). Real workspaces are routed by basename.
+  unknownWorkspaceLogin: '/:workspace/login',
+  unknownWorkspaceForgotPassword: '/:workspace/forgot-password',
   notFound: '*',
 } as const
 
@@ -46,7 +52,8 @@ export const ALLOWED_CSV_MIME_TYPES = [
 ] as const
 export const MAX_CSV_SIZE_BYTES = 10 * 1024 * 1024
 
-export const APP_NAME = 'Adobe Longlist'
+// "Adobe Longlist" on Adobe pages, "Lyca Mobile Longlist" on Lyca pages.
+export const APP_NAME = WORKSPACE.branding.appName
 export const APP_DESCRIPTION =
   'Secure dashboard portal for tracking and updating candidate status across hiring dashboards.'
 

@@ -20,7 +20,7 @@ export function ForgotPassword() {
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
           <div className="bg-primary text-primary-foreground shadow-soft flex size-12 items-center justify-center rounded-2xl text-2xl font-bold">
-            A
+            {APP_NAME.charAt(0)}
           </div>
           <div>
             <h1 className="text-foreground text-xl font-semibold">

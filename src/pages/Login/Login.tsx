@@ -20,7 +20,7 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
-import loginHeroBg from '@/assets/login-hero-bg.jpg'
+import { WORKSPACE } from '@/config/workspaces'
 import hireSenseLogo from '@/assets/hiresense-logo.png'
 
 // Deliberately not tied to the current password-creation policy: existing
@@ -82,9 +82,10 @@ export function Login() {
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-zinc-950 lg:flex-row">
-      {/* Hero — the reference design's own artwork (Adobe mark, headline,
-          tagline, and decorative chart previews are all baked into this
-          image), used exactly as provided rather than recreated. Purely
+      {/* Hero — the workspace's own artwork (src/config/workspaces.ts;
+          Adobe's has its mark, headline, tagline, and decorative chart
+          previews all baked into the image), used exactly as provided
+          rather than recreated. Purely
           decorative/hidden below 1024px — the card on the right carries no
           duplicate branding, just the sign-in form itself.
           bg-top (not bg-center): on any viewport wider than the image's own
@@ -97,7 +98,7 @@ export function Login() {
       <div
         aria-hidden="true"
         className="animate-in fade-in relative hidden bg-cover bg-top bg-no-repeat duration-700 motion-reduce:animate-none lg:block lg:w-[58%] lg:shrink-0"
-        style={{ backgroundImage: `url(${loginHeroBg})` }}
+        style={{ backgroundImage: `url(${WORKSPACE.branding.loginHeroUrl})` }}
       >
         {/* Blends the hero into the plain dark area beside it — mostly
             transparent so the artwork reads clearly, only darkening and
@@ -116,6 +117,19 @@ export function Login() {
           any desktop size, not just common resolutions. */}
       <div className="flex flex-1 items-center justify-center px-4 py-12 sm:px-6 lg:justify-start lg:pr-12 lg:pl-[clamp(4rem,6vw,6rem)]">
         <div className="animate-in fade-in slide-in-from-bottom-2 w-full max-w-[440px] duration-500 motion-reduce:animate-none">
+          {/* Below 1024px the hero (and the brand baked into it) is hidden.
+              A workspace with an image logo shows it here instead, so its
+              phone/tablet sign-in still says whose workspace it is. Adobe
+              (logo: null) renders exactly as before. */}
+          {WORKSPACE.branding.logo && (
+            <img
+              src={
+                WORKSPACE.branding.logo.darkSrc ?? WORKSPACE.branding.logo.src
+              }
+              alt={WORKSPACE.branding.clientName}
+              className="mx-auto mb-6 h-10 w-auto max-w-[11rem] object-contain lg:hidden"
+            />
+          )}
           <p className="mb-6 text-center text-sm text-white/60">
             Sign in to access your hiring dashboards
           </p>
@@ -147,7 +161,9 @@ export function Login() {
                           <Mail className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-white/40" />
                           <Input
                             type="email"
-                            placeholder="you@adobe.com"
+                            placeholder={
+                              WORKSPACE.branding.placeholders.signInEmail
+                            }
                             autoComplete="email"
                             className="h-11 border-white/15 bg-white/[0.03] pl-10 text-white transition-colors duration-200 placeholder:text-white/30 focus-visible:border-white/30 focus-visible:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-white/20"
                             {...field}

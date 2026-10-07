@@ -16,6 +16,7 @@ import { StatusBadge } from '@/components/status/StatusBadge'
 import { ActionBadge } from '@/components/status/ActionBadge'
 import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
 import { ACTION_LIST, serializeActionStyles } from '@/config/actionConfig'
+import { WORKSPACE } from '@/config/workspaces'
 import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { useAuth } from '@/hooks/useAuth'
@@ -287,6 +288,21 @@ export function useDashboardStatusBridge({
           statusStyles: serializeStatusStyles(),
           actionOrder: ACTION_LIST.map((a) => a.value),
           actionStyles: serializeActionStyles(),
+          // Display text per value (identical to the values on Adobe pages;
+          // "- Lyca" instead of "- Adobe" on Lyca pages — actionConfig.ts).
+          actionLabels: Object.fromEntries(
+            ACTION_LIST.map((a) => [a.value, a.label]),
+          ),
+          // The workspace's brand color for the bridge's own controls —
+          // only for workspaces that override the default red (not Adobe).
+          ...(WORKSPACE.branding.primaryColor
+            ? {
+                brand: {
+                  primary: WORKSPACE.branding.primaryColor,
+                  primaryDark: WORKSPACE.branding.primaryColorDark,
+                },
+              }
+            : {}),
           canUpdateStatus: canEdit,
           canViewAnalytics,
         })
