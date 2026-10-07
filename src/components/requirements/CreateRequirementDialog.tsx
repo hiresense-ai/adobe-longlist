@@ -29,6 +29,7 @@ import {
 import { TagInput } from '@/components/requirements/TagInput'
 import { useCreateRequirement } from '@/hooks/useRequirements'
 import { getErrorMessage } from '@/lib/errors'
+import { WORKSPACE } from '@/config/workspaces'
 import {
   REQUIREMENT_ROLE_TYPES,
   type RequirementRoleType,
@@ -230,7 +231,9 @@ export function CreateRequirementDialog({
                     <FormLabel>Requirement title</FormLabel>
                     <FormControl>
                       <Input
-                        placeholder="e.g. Adobe AEM Architect"
+                        placeholder={
+                          WORKSPACE.branding.placeholders.requirementTitle
+                        }
                         disabled={isSubmitting}
                         {...field}
                       />

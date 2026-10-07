@@ -27,7 +27,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ThemeToggle } from '@/components/common/ThemeToggle'
-import { AdobeLogo } from '@/components/layout/AdobeLogo'
+import { WorkspaceLogo } from '@/components/layout/WorkspaceLogo'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
@@ -127,7 +127,7 @@ export function Navbar() {
           aria-label="Talent Landscape Reports — go to dashboards"
           className="focus-visible:ring-ring focus-visible:ring-offset-background flex shrink-0 items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
         >
-          <AdobeLogo className="size-7" />
+          <WorkspaceLogo className="size-7" />
           {/* Hidden 1024–1279px only: that's where the pill nav appears but the
               header row can't also fit the wordmark (and, on the home page,
               a usable search box). The logo mark alone still links home. */}

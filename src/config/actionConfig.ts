@@ -1,5 +1,17 @@
 import type { CandidateAction } from '@/types'
 import type { StatusPalette } from './statusConfig'
+import { WORKSPACE } from './workspaces'
+
+/**
+ * How a stored action value READS in this page's workspace. The values are
+ * shared by every workspace (one database constraint, one set of analytics,
+ * one bridge) and name the client as "- Adobe"; that suffix is shown as the
+ * workspace's own client — "Interview stage - Lyca" on Lyca pages. Adobe's
+ * labels are its values, unchanged. Display only: nothing stored changes.
+ */
+export function workspaceActionLabel(value: string): string {
+  return value.replace(/ - Adobe$/, ` - ${WORKSPACE.actionClientLabel}`)
+}
 
 /**
  * Single source of truth for the recruiter "Action" dropdown injected next
@@ -21,28 +33,28 @@ export interface ActionConfigEntry {
 export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
   'Interview Reject - Adobe': {
     value: 'Interview Reject - Adobe',
-    label: 'Interview Reject - Adobe',
+    label: workspaceActionLabel('Interview Reject - Adobe'),
     light: { background: '#FEE2E2', text: '#B91C1C', border: '#FECACA' },
     dark: { background: '#7F1D1D', text: '#FCA5A5', border: '#991B1B' },
     sortOrder: 0,
   },
   'Reviewed earlier (SR) - Adobe': {
     value: 'Reviewed earlier (SR) - Adobe',
-    label: 'Reviewed earlier (SR) - Adobe',
+    label: workspaceActionLabel('Reviewed earlier (SR) - Adobe'),
     light: { background: '#F3E8FF', text: '#7E22CE', border: '#E9D5FF' },
     dark: { background: '#3B0764', text: '#D8B4FE', border: '#6B21A8' },
     sortOrder: 1,
   },
   'Reviewed earlier (TR) - Adobe': {
     value: 'Reviewed earlier (TR) - Adobe',
-    label: 'Reviewed earlier (TR) - Adobe',
+    label: workspaceActionLabel('Reviewed earlier (TR) - Adobe'),
     light: { background: '#E0E7FF', text: '#4338CA', border: '#C7D2FE' },
     dark: { background: '#1E1B4B', text: '#A5B4FC', border: '#3730A3' },
     sortOrder: 2,
   },
   'Interview stage - Adobe': {
     value: 'Interview stage - Adobe',
-    label: 'Interview stage - Adobe',
+    label: workspaceActionLabel('Interview stage - Adobe'),
     light: { background: '#DBEAFE', text: '#1D4ED8', border: '#BFDBFE' },
     dark: { background: '#1E3A8A', text: '#93C5FD', border: '#1E40AF' },
     sortOrder: 3,
@@ -56,7 +68,7 @@ export const ACTION_CONFIG: Record<CandidateAction, ActionConfigEntry> = {
   },
   'Offer - Adobe': {
     value: 'Offer - Adobe',
-    label: 'Offer - Adobe',
+    label: workspaceActionLabel('Offer - Adobe'),
     light: { background: '#DCFCE7', text: '#15803D', border: '#BBF7D0' },
     dark: { background: '#052E16', text: '#86EFAC', border: '#166534' },
     sortOrder: 5,

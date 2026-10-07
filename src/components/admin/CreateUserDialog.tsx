@@ -48,6 +48,7 @@ import {
 import { getErrorMessage } from '@/lib/errors'
 import { generateSecurePassword } from '@/lib/generatePassword'
 import { assignableRoles, roleLabel } from '@/lib/permissions'
+import { WORKSPACE } from '@/config/workspaces'
 
 const createUserSchema = z.object({
   firstName: z.string().min(1, 'First name is required'),
@@ -253,7 +254,9 @@ export function CreateUserDialog({
                     <FormControl>
                       <Input
                         type="email"
-                        placeholder="jane.doe@adobe.com"
+                        placeholder={
+                          WORKSPACE.branding.placeholders.newUserEmail
+                        }
                         disabled={isSubmitting}
                         {...field}
                       />

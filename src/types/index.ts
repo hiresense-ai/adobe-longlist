@@ -140,6 +140,10 @@ export type DashboardHostMessage =
       statusStyles: unknown
       actionOrder: import('./database.types').CandidateAction[]
       actionStyles: unknown
+      /** Display text per action value (see workspaceActionLabel). */
+      actionLabels: Record<string, string>
+      /** Workspace brand color for the bridge's controls (absent = default). */
+      brand?: { primary: string; primaryDark: string | null }
       /** Super Admin only (see src/lib/permissions.ts) — tells the iframe
        * whether to render its status/action controls as editable at all. */
       canUpdateStatus: boolean
