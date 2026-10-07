@@ -41,6 +41,11 @@ function envConfig(id: WorkspaceId): RawConfig {
       }
 }
 
+/** A workspace's configured project URL in this build (public), if any. */
+export function workspaceSupabaseUrl(id: WorkspaceId): string | null {
+  return envConfig(id).url?.trim() || null
+}
+
 const normalizeUrl = (url: string) =>
   url.trim().replace(/\/+$/, '').toLowerCase()
 
