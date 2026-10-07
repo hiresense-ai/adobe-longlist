@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/types'
 import { WORKSPACE } from '@/config/workspaces'
 import { resolveSupabaseTarget } from '@/supabase/workspaceConfig'
+import { discardSessionIfNotActive } from '@/supabase/workspaceSession'
 
 // ---------------------------------------------------------------------------
 // The ONE Supabase client of this page load — for this page's workspace
@@ -43,6 +44,11 @@ function unavailableClient(reason: string): SupabaseClient<Database> {
     },
   })
 }
+
+// One signed-in workspace per browser: if another workspace is the active
+// one, this page's leftover session is dropped before the client reads it,
+// so this workspace opens on its sign-in page (src/supabase/workspaceSession.ts).
+if (resolved.ok) discardSessionIfNotActive(WORKSPACE)
 
 export const supabase: SupabaseClient<Database> = resolved.ok
   ? createClient<Database>(resolved.target.url, resolved.target.anonKey, {
