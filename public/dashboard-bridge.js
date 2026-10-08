@@ -217,13 +217,23 @@
     if (nameIdx === -1) return text
 
     var out = [header.concat(['Action', 'Notes'])]
+    // Excel turns any cell containing a line break into wrapped text and
+    // grows the whole row to fit it — one multi-paragraph field (a drafted
+    // opener) makes the sheet unreadable. When the host asks for it (not
+    // Adobe, whose export is untouched), each break becomes a single space.
+    var flatten = SINGLE_LINE_EXPORT_CELLS
+      ? function (v) {
+          return String(v).replace(/[ \t]*(?:\r\n|\r|\n)+[ \t]*/g, ' ')
+        }
+      : null
     for (var i = 1; i < rows.length; i++) {
       var row = rows[i]
       var name = row[nameIdx] || ''
       var key = name.toLowerCase()
       var action = actionDisplay(actionValuesByName[key] || '')
       var note = NOTES_BY_NAME[key] || ''
-      out.push(row.concat([action, note]))
+      var cells = row.concat([action, note])
+      out.push(flatten ? cells.map(flatten) : cells)
     }
     return out
       .map(function (r) {
@@ -297,6 +307,8 @@
   // compared and sorted on — are identical in every workspace. Missing
   // label = show the value, exactly the previous behavior.
   var ACTION_LABELS = {}
+  // Host flag (init-config): flatten line breaks inside exported CSV cells.
+  var SINGLE_LINE_EXPORT_CELLS = false
   function actionDisplay(value) {
     return (
       (value && Object.prototype.hasOwnProperty.call(ACTION_LABELS, value)
@@ -3406,6 +3418,7 @@
             : {}
         applyBrandColors(data.brand)
         EDITABLE = data.canUpdateStatus === true
+        SINGLE_LINE_EXPORT_CELLS = data.singleLineExportCells === true
         ANALYTICS_ENABLED = data.canViewAnalytics === true
         wireSelects()
         syncActionColumns()
