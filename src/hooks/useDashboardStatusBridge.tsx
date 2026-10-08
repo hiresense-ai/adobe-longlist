@@ -303,6 +303,11 @@ export function useDashboardStatusBridge({
                 },
               }
             : {}),
+          // Lyca's dashboards export multi-paragraph text (e.g. the drafted
+          // opener); Excel wraps any cell containing a line break into a
+          // giant row, so the bridge flattens those to spaces. Not sent for
+          // Adobe, whose export stays byte-for-byte as before.
+          ...(WORKSPACE.id !== 'adobe' ? { singleLineExportCells: true } : {}),
           canUpdateStatus: canEdit,
           canViewAnalytics,
         })
