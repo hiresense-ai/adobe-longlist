@@ -31,10 +31,17 @@ import type { ValidationIssue, ValidationResult } from './types'
 // the actual JSON *key shapes* known to appear in real dashboards, plus the
 // originally-documented window.__D/"candidates" shape as a fallback in case
 // some other dashboard family in the wild still uses it.
+//
+// The Talent Intelligence generator (Lyca's dashboards) embeds its
+// candidates as `const DATA={...}, ROWS=[{"rank":1,"n":...}, ...]` and
+// renders its own candidate table with Candidate/Status headers at runtime
+// — the shape the Lyca production dashboard already works with. Additive
+// only: every file accepted before is still accepted.
 const CANDIDATE_DATA_MARKERS = [
   /window\.__D\b/,
   /"candidates"\s*:\s*\[/,
   /"cand"\s*:\s*\[/,
+  /\bROWS\s*=\s*\[\s*\{\s*"rank"\s*:/,
 ]
 
 const MIN_DOCUMENT_LENGTH = 200
@@ -111,7 +118,7 @@ export function validateDocument(document: Document): ValidationResult {
   }
 
   // Business-data presence — the actual "contains all required sections"
-  // check. Any ONE of these three signals is sufficient; they correspond to
+  // check. Any ONE of these signals is sufficient; they correspond to
   // the three shapes this app already knows how to render:
   //   1. An embedded candidate-data script block (see CANDIDATE_DATA_MARKERS
   //      above) — the Talent Landscape generator family.
