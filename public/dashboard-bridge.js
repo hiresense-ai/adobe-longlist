@@ -965,7 +965,44 @@
     )
   }
 
-  function stickyCellStyle(el, isHeader) {
+  // Some dashboard formats (the Talent Intelligence / Lyca generator) paint
+  // each row's fill and rounded ends on every <td> (`tr.row-bg td{...}`,
+  // `tr.crow:hover td{...}`, `tr td:last-child{border-radius...}`) instead
+  // of on the <tr>. There the Action cell must take those same per-cell
+  // rules, not an inline transparent background that overrides them, and
+  // no divider shadow, or it reads as a separate strip beside the row.
+  // Detected from the table's own rendered cells; formats that paint the
+  // <tr> (every Adobe dashboard — none has a td background rule) never
+  // match, so they keep exactly the styling below.
+  var perCellRowTables = new WeakMap()
+  function paintsRowsPerCell(table) {
+    if (perCellRowTables.get(table)) return true
+    var cells = table.querySelectorAll(
+      'tbody tr > td:not([' + ACTION_CELL_ATTR + '])',
+    )
+    for (var i = 0; i < cells.length && i < 40; i++) {
+      var bg = window.getComputedStyle(cells[i]).backgroundColor
+      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') {
+        perCellRowTables.set(table, true)
+        return true
+      }
+    }
+    return false
+  }
+
+  function stickyCellStyle(el, isHeader, perCellRows) {
+    if (perCellRows) {
+      // A plain last column: the dashboard's own td/th rules paint it like
+      // its siblings, and it scrolls with the row. Not sticky — rows here
+      // aren't opaque everywhere (only every other row has a fill), so a
+      // pinned cell would show the columns scrolling underneath it.
+      el.style.position = ''
+      el.style.right = ''
+      el.style.zIndex = ''
+      el.style.background = ''
+      el.style.boxShadow = ''
+      return
+    }
     el.style.position = 'sticky'
     el.style.right = '0'
     el.style.zIndex = isHeader ? '3' : '2'
@@ -1061,10 +1098,16 @@
     })
   }
 
-  function ensureActionHeader(table) {
+  function ensureActionHeader(table, perCellRows) {
     var headRow = (table.querySelector('thead') || table).querySelector('tr')
     if (!headRow) return
-    if (headRow.querySelector('[' + ACTION_HEADER_ATTR + ']')) return
+    var existingTh = headRow.querySelector('[' + ACTION_HEADER_ATTR + ']')
+    if (existingTh) {
+      // Rows may only render (and reveal per-cell painting) after the
+      // header was first injected.
+      if (perCellRows) stickyCellStyle(existingTh, true, true)
+      return
+    }
     var th = document.createElement('th')
     th.setAttribute(ACTION_HEADER_ATTR, '')
     th.textContent = 'Action'
@@ -1075,7 +1118,7 @@
     if (Array.isArray(window.__ROWS)) {
       wireActionHeaderCycle(th)
     }
-    stickyCellStyle(th, true)
+    stickyCellStyle(th, true, perCellRows)
     // A bare "Action" text node has no reason to be anywhere near as wide
     // as the 200px trigger button each body cell contains (see the
     // [ACTION_ATTR] rule in injectBaseStyles) — in ordinary table layout
@@ -1680,13 +1723,16 @@
     return button
   }
 
-  function ensureActionCells(table, nameIdx, minCells) {
+  function ensureActionCells(table, nameIdx, minCells, perCellRows) {
     var rows = table.querySelectorAll('tbody tr')
     rows.forEach(function (tr) {
       if (tr.children.length < minCells) return // e.g. a colspan "no results" row
 
       var existingTd = tr.querySelector('[' + ACTION_CELL_ATTR + ']')
       if (existingTd) {
+        if (perCellRows && existingTd.style.boxShadow) {
+          stickyCellStyle(existingTd, false, true)
+        }
         var trigger = existingTd.querySelector('[' + ACTION_ATTR + ']')
         if (!trigger) return
         var storedName = trigger.getAttribute(ACTION_NAME_ATTR)
@@ -1702,7 +1748,7 @@
       var name = extractRowIdentity(tr, nameIdx)
       var td = document.createElement('td')
       td.setAttribute(ACTION_CELL_ATTR, '')
-      stickyCellStyle(td, false)
+      stickyCellStyle(td, false, perCellRows)
 
       var trigger = createActionTrigger(name)
       td.appendChild(trigger)
@@ -1758,8 +1804,9 @@
         return
       }
       var nameIdx = findColumnIndex(headerCells, isNameHeader)
-      ensureActionHeader(table)
-      ensureActionCells(table, nameIdx, minCells)
+      var perCellRows = paintsRowsPerCell(table)
+      ensureActionHeader(table, perCellRows)
+      ensureActionCells(table, nameIdx, minCells, perCellRows)
     })
   }
 
