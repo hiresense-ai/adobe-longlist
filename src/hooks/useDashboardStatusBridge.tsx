@@ -12,6 +12,11 @@ import {
   listNotesForDashboard,
   upsertCandidateNote,
 } from '@/services/candidateNotes.service'
+import {
+  listCandidateContacts,
+  lookupCandidateContact,
+  saveCandidateContactFeedback,
+} from '@/services/candidateContacts.service'
 import { StatusBadge } from '@/components/status/StatusBadge'
 import { ActionBadge } from '@/components/status/ActionBadge'
 import { STATUS_LIST, serializeStatusStyles } from '@/config/statusConfig'
@@ -21,6 +26,7 @@ import { QUERY_KEYS } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { useAuth } from '@/hooks/useAuth'
 import {
+  canLookupCandidateContacts,
   canUpdateCandidateStatus,
   canViewDashboardAnalytics,
 } from '@/lib/permissions'
@@ -115,6 +121,11 @@ export function useDashboardStatusBridge({
   // Analytics entry point for users the card would show one to, and the
   // longlist:open-analytics handler below re-checks it before opening.
   const canViewAnalytics = canViewDashboardAnalytics(user?.role ?? 'viewer')
+  // Contact lookup (email/phone): only in workspaces that have it set up;
+  // running a lookup spends vendor credits, so Admin/Super Admin only.
+  const contactsEnabled = WORKSPACE.contactLookup
+  const canLookupContacts =
+    contactsEnabled && canLookupCandidateContacts(user?.role ?? 'viewer')
   const [iframeHeight, setIframeHeight] = useState<number | null>(null)
   const modalOpenRef = useRef(false)
   const bodyOverflowBeforeModalRef = useRef<string>('')
@@ -310,6 +321,8 @@ export function useDashboardStatusBridge({
           ...(WORKSPACE.id !== 'adobe' ? { singleLineExportCells: true } : {}),
           canUpdateStatus: canEdit,
           canViewAnalytics,
+          contactsEnabled,
+          canLookupContacts,
         })
         if (actionSortRequestRef.current) {
           postToIframe({
@@ -331,6 +344,22 @@ export function useDashboardStatusBridge({
         })
         queryClient.setQueryData(notesQueryKey, notes)
         postCurrentNotes()
+
+        if (contactsEnabled) {
+          // Not awaited into the critical path above: a slow or failing
+          // contacts call must never hold back statuses/notes/theme.
+          listCandidateContacts(id)
+            .then((contacts) =>
+              postToIframe({ type: 'longlist:init-contacts', contacts }),
+            )
+            .catch((error) =>
+              postToIframe({
+                type: 'longlist:init-contacts',
+                contacts: [],
+                error: getErrorMessage(error, 'Contacts are unavailable'),
+              }),
+            )
+        }
 
         postToIframe({
           type: 'longlist:theme-change',
@@ -475,6 +504,50 @@ export function useDashboardStatusBridge({
         }
       }
 
+      if (
+        data.type === 'longlist:contact-request' ||
+        data.type === 'longlist:contact-feedback'
+      ) {
+        const { payload } = data
+        if (payload.dashboardId !== id || !contactsEnabled) return
+        const isRequest = data.type === 'longlist:contact-request'
+        if (isRequest && !canLookupContacts) {
+          postToIframe({
+            type: 'longlist:contact-update',
+            candidateName: payload.candidateName,
+            error: 'Only Admins can look up contact details.',
+          })
+          return
+        }
+        try {
+          const contact = isRequest
+            ? await lookupCandidateContact(data.payload)
+            : await saveCandidateContactFeedback(data.payload)
+          postToIframe({
+            type: 'longlist:contact-update',
+            candidateName: payload.candidateName,
+            contact,
+          })
+        } catch (error) {
+          const message = getErrorMessage(
+            error,
+            isRequest ? 'Contact lookup failed' : 'Failed to save feedback',
+          )
+          postToIframe({
+            type: 'longlist:contact-update',
+            candidateName: payload.candidateName,
+            error: message,
+          })
+          toast.error(
+            isRequest
+              ? `Couldn't look up ${payload.candidateName}'s contact`
+              : `Couldn't save feedback for ${payload.candidateName}`,
+            { description: message },
+          )
+        }
+        return
+      }
+
       if (data.type === 'longlist:note-update') {
         const { payload } = data
         if (payload.dashboardId !== id) return
@@ -605,6 +678,8 @@ export function useDashboardStatusBridge({
     resolvedTheme,
     canEdit,
     canViewAnalytics,
+    contactsEnabled,
+    canLookupContacts,
   ])
 
   // Theme can change independently of any bridge message (user toggles the
