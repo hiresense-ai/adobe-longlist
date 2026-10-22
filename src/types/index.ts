@@ -91,6 +91,36 @@ export type DashboardBridgeMessage =
         note: string
       }
     }
+  /**
+   * Candidate contact lookup (Lyca): run a contact search for one candidate.
+   * Every vendor call is a click: 'lookup' = the primary source only;
+   * 'backup' = the backup source for just `kinds`; 'refresh' = re-check a
+   * backup search still running (free).
+   */
+  | {
+      type: 'longlist:contact-request'
+      payload: {
+        dashboardId: string
+        candidateName: string
+        linkedinUrl?: string | null
+        mode: 'lookup' | 'backup' | 'refresh'
+        kinds?: Array<'email' | 'phone'>
+      }
+    }
+  /** 👍 / 👎 (with reason) on one looked-up email or phone; verdict null clears it. */
+  | {
+      type: 'longlist:contact-feedback'
+      payload: {
+        dashboardId: string
+        candidateName: string
+        linkedinUrl?: string | null
+        kind: 'email' | 'phone'
+        value: string
+        verdict: 'good' | 'bad' | null
+        reason?:
+          'bounced' | 'wrong_person' | 'not_reachable' | 'no_answer' | null
+      }
+    }
   | { type: 'longlist:ready' }
   | {
       type: 'longlist:resize'
