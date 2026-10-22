@@ -61,6 +61,14 @@ export interface Workspace {
    * workspace has its own key, so the two sessions never share storage.
    */
   authStorageKey: string | undefined
+  /**
+   * Candidate contact lookup (email + phone via SalesQL, BetterContact as
+   * backup) in the dashboard's candidate detail row. Needs the
+   * candidate-contacts Edge Function, its vendor keys and the
+   * candidate_contact_* tables (workspaces/lyca/migrations) in that
+   * workspace's own Supabase project — Lyca only today.
+   */
+  contactLookup: boolean
 }
 
 export const WORKSPACES: Record<WorkspaceId, Workspace> = {
@@ -83,6 +91,7 @@ export const WORKSPACES: Record<WorkspaceId, Workspace> = {
     },
     actionClientLabel: 'Adobe',
     authStorageKey: undefined,
+    contactLookup: false,
   },
   lyca: {
     id: 'lyca',
@@ -108,6 +117,7 @@ export const WORKSPACES: Record<WorkspaceId, Workspace> = {
     },
     actionClientLabel: 'Lyca',
     authStorageKey: 'sb-longlist-lyca-auth-token',
+    contactLookup: true,
   },
 }
 

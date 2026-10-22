@@ -199,6 +199,24 @@
   // everywhere else in this file: by name, lowercased, against
   // actionValuesByName/NOTES_BY_NAME — no separate identity scheme for
   // export.
+  // The email/phone to export for one candidate: 👍 values first, then
+  // unrated ones (in the order shown); 👎 values are never exported.
+  function bestContact(view) {
+    function pick(items) {
+      var choice = null
+      ;(items || []).forEach(function (item) {
+        if (item.verdict === 'bad') return
+        var rank = item.verdict === 'good' ? 2 : 1
+        if (!choice || rank > choice.rank) {
+          choice = { value: item.value, rank: rank }
+        }
+      })
+      return choice ? choice.value : ''
+    }
+    if (!view) return { email: '', phone: '' }
+    return { email: pick(view.emails), phone: pick(view.phones) }
+  }
+
   function injectExportColumns(text) {
     var rows = parseCsv(text)
     if (rows.length === 0) return text
@@ -216,7 +234,9 @@
     // the export exactly as the dashboard built it rather than guess.
     if (nameIdx === -1) return text
 
-    var out = [header.concat(['Action', 'Notes'])]
+    var extraHeader = ['Action', 'Notes']
+    if (CONTACTS_ENABLED) extraHeader.push('Email', 'Phone')
+    var out = [header.concat(extraHeader)]
     // Excel turns any cell containing a line break into wrapped text and
     // grows the whole row to fit it — one multi-paragraph field (a drafted
     // opener) makes the sheet unreadable. When the host asks for it (not
@@ -232,7 +252,20 @@
       var key = name.toLowerCase()
       var action = actionDisplay(actionValuesByName[key] || '')
       var note = NOTES_BY_NAME[key] || ''
-      var cells = row.concat([action, note])
+      var extra = [action, note]
+      if (CONTACTS_ENABLED) {
+        // The row's own profile link (e.g. Lyca's "Profile link" column).
+        var rowUrl = ''
+        for (var c = 0; c < row.length; c++) {
+          if (/linkedin\.com\/(in|pub)\//i.test(row[c])) {
+            rowUrl = row[c]
+            break
+          }
+        }
+        var best = bestContact(contactLookup(rowUrl, name))
+        extra.push(best.email, best.phone)
+      }
+      var cells = row.concat(extra)
       out.push(flatten ? cells.map(flatten) : cells)
     }
     return out
@@ -309,6 +342,48 @@
   var ACTION_LABELS = {}
   // Host flag (init-config): flatten line breaks inside exported CSV cells.
   var SINGLE_LINE_EXPORT_CELLS = false
+  // Contact lookup (init-config contactsEnabled / canLookupContacts) and
+  // the contacts the host has sent. Keyed by LinkedIn profile first — a
+  // name cell can carry extra text (Lyca's shows "Confirmed" under the
+  // name), but the profile link is the same everywhere — and by lowercased
+  // name as a fallback.
+  var CONTACTS_ENABLED = false
+  var CAN_LOOKUP_CONTACTS = false
+  var CONTACTS_BY_KEY = {}
+  var CONTACTS_BY_NAME = {}
+  var contactsReady = false
+
+  // Same normalization as the candidate-contacts Edge Function:
+  // "https://www.LinkedIn.com/in/Jane-Doe/?x" -> "linkedin.com/in/jane-doe"
+  function linkedinKey(url) {
+    var m = /linkedin\.com\/(in|pub)\/([^/?#\s"']+)/i.exec(url || '')
+    if (!m) return null
+    var slug = m[2]
+    try {
+      slug = decodeURIComponent(slug)
+    } catch (e) {
+      // keep the raw slug
+    }
+    return 'linkedin.com/' + m[1].toLowerCase() + '/' + slug.toLowerCase()
+  }
+
+  function rememberContact(view) {
+    if (!view) return
+    var k = linkedinKey(view.linkedinUrl)
+    if (k) CONTACTS_BY_KEY[k] = view
+    if (view.candidateName) {
+      CONTACTS_BY_NAME[view.candidateName.toLowerCase()] = view
+    }
+  }
+
+  function contactLookup(linkedinUrl, name) {
+    var k = linkedinKey(linkedinUrl)
+    return (
+      (k && CONTACTS_BY_KEY[k]) ||
+      (name && CONTACTS_BY_NAME[String(name).toLowerCase()]) ||
+      null
+    )
+  }
   function actionDisplay(value) {
     return (
       (value && Object.prototype.hasOwnProperty.call(ACTION_LABELS, value)
@@ -675,7 +750,31 @@
       '.ll-notes-save:hover:not(:disabled) { opacity: .9; }' +
       '.ll-notes-save:disabled { opacity: .5; cursor: default; }' +
       '.ll-notes-save:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ll-ring); }' +
-      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }'
+      '.ll-notes-saved-indicator { font-size: 12px; color: var(--ll-muted-fg); }' +
+      // Candidate Contact panel (email/phone) — same card as Notes.
+      '.ll-contact-panel { display: flex; flex-direction: column; gap: 10px; }' +
+      '.ll-contact-panel .ll-notes-title { margin-bottom: 0; }' +
+      '.ll-contact-meta { font-size: 11px; color: var(--ll-muted-fg); }' +
+      '.ll-contact-muted { font-size: 13px; color: var(--ll-muted-fg); }' +
+      '.ll-contact-error { font-size: 12px; color: var(--ll-primary); }' +
+      '.ll-contact-empty { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }' +
+      '.ll-contact-block { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--ll-border); }' +
+      '.ll-contact-section { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ll-muted-fg); }' +
+      '.ll-contact-item { display: flex; flex-direction: column; gap: 6px; }' +
+      '.ll-contact-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--ll-fg); }' +
+      '.ll-contact-icon { color: var(--ll-muted-fg); width: 16px; text-align: center; }' +
+      '.ll-contact-value { font-weight: 500; user-select: all; word-break: break-all; }' +
+      '.ll-contact-flag { font-size: 11px; font-weight: 600; color: var(--ll-primary); background: var(--ll-accent); border-radius: 6px; padding: 1px 6px; }' +
+      '.ll-contact-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }' +
+      '.ll-contact-btn { font: inherit; font-size: 12px; height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--ll-border); background: var(--ll-card); color: var(--ll-fg); cursor: pointer; }' +
+      '.ll-contact-btn:hover:not(:disabled) { border-color: var(--ll-primary); color: var(--ll-primary); }' +
+      '.ll-contact-btn:disabled, .ll-contact-thumb:disabled { opacity: .5; cursor: default; }' +
+      '.ll-contact-btn--ghost { background: transparent; }' +
+      '.ll-contact-btn--link { border-color: transparent; background: transparent; color: var(--ll-muted-fg); }' +
+      '.ll-contact-thumb { font-size: 14px; line-height: 1; height: 28px; width: 32px; border-radius: 7px; border: 1px solid var(--ll-border); background: var(--ll-card); cursor: pointer; filter: grayscale(1); opacity: .7; }' +
+      '.ll-contact-thumb[aria-pressed="true"] { filter: none; opacity: 1; border-color: var(--ll-primary); background: var(--ll-accent); }' +
+      '.ll-contact-thumb:hover:not(:disabled) { filter: none; opacity: 1; }' +
+      '.ll-contact-reasons { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-left: 24px; }'
     document.head.appendChild(style)
   }
 
@@ -2156,6 +2255,424 @@
     return panel
   }
 
+  // ---------------------------------------------------------------------
+  // Candidate Contact panel (email + phone).
+  //
+  // Only when the host enables it (init-config contactsEnabled — Lyca).
+  // Sits above Notes in the same detail row. Data comes only from the host
+  // (longlist:init-contacts / longlist:contact-update), which gets it from
+  // the candidate-contacts Edge Function. This document never talks to a
+  // vendor, never sees a key, and is never told which vendor a value came
+  // from — it shows plain "Email" and "Phone" sections.
+  //
+  // Every search is a click (Admins only — canLookupContacts):
+  //   "Get contact"                         -> the primary source.
+  //   "Find phone number" / "Find email"    -> the backup source, for that
+  //   "Find another email/number"              kind only; offered when none
+  //                                            of that kind was found or one
+  //                                            was marked 👎.
+  // 👍/👎 (anyone) only records whether a value actually worked. A backup
+  // search still running is re-checked automatically (free, no new search).
+  // Everything is built with textContent, never innerHTML, since contact
+  // values come from third parties.
+  // ---------------------------------------------------------------------
+  var CONTACT_PANEL_ATTR = 'data-longlist-contact-panel'
+  var CONTACT_REASONS = [
+    ['bounced', 'Email bounced'],
+    ['wrong_person', 'Wrong person'],
+    ['not_reachable', 'Not reachable'],
+    ['no_answer', 'No answer'],
+  ]
+
+  function linkedinUrlFromRow(tr) {
+    var a = tr && tr.querySelector('a[href*="linkedin.com/"]')
+    return a ? a.getAttribute('href') : null
+  }
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag)
+    if (className) node.className = className
+    if (text != null) node.textContent = text
+    return node
+  }
+
+  function copyText(text, button) {
+    function done(ok) {
+      var before = button.textContent
+      button.textContent = ok ? 'Copied' : 'Copy failed'
+      setTimeout(function () {
+        button.textContent = before
+      }, 1200)
+    }
+    // The sandboxed iframe may not get clipboard permission — fall back to
+    // the legacy selection copy, which works inside a user gesture.
+    try {
+      var ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      var ok = document.execCommand('copy')
+      ta.remove()
+      done(ok)
+    } catch (e) {
+      done(false)
+    }
+  }
+
+  function buildContactPanel(name, linkedinUrl) {
+    var panel = el('div', 'll-notes-panel ll-contact-panel')
+    panel.setAttribute(CONTACT_PANEL_ATTR, '')
+    // busyText: what to say while a request is in flight ('' = say nothing,
+    // used by the silent automatic re-check of a backup search).
+    var state = {
+      busy: false,
+      busyText: '',
+      error: '',
+      reasonFor: null,
+      timer: null,
+      checks: 0,
+    }
+    // A backup search still running is re-checked automatically (free — a
+    // status check never starts a new search) every few seconds, for up to
+    // ~6 minutes, while this panel is on screen.
+    var AUTO_CHECK_EVERY_MS = 8000
+    var AUTO_CHECK_MAX = 45
+    var KIND_TEXT = {
+      email: {
+        label: 'Email',
+        none: 'No email found.',
+        noOther: 'No other email found.',
+        find: 'Find email',
+        findAnother: 'Find another email',
+        searching: 'Searching for an email…',
+      },
+      phone: {
+        label: 'Phone',
+        none: 'No phone number found.',
+        noOther: 'No other phone number found.',
+        find: 'Find phone number',
+        findAnother: 'Find another number',
+        searching: 'Searching for a phone number…',
+      },
+    }
+
+    function send(type, extra) {
+      var payload = {
+        dashboardId: DASHBOARD_ID,
+        candidateName: name,
+        linkedinUrl: linkedinUrl,
+      }
+      for (var k in extra) payload[k] = extra[k]
+      window.parent.postMessage({ type: type, payload: payload }, '*')
+    }
+
+    function request(mode, quiet, kinds) {
+      if (state.busy) return
+      state.busy = true
+      state.busyText = quiet
+        ? ''
+        : mode === 'lookup'
+          ? 'Looking up contact details…'
+          : kinds && kinds.length === 1
+            ? KIND_TEXT[kinds[0]].searching
+            : 'Searching…'
+      state.error = ''
+      render()
+      send('longlist:contact-request', { mode: mode, kinds: kinds || [] })
+    }
+
+    function feedback(kind, value, verdict, reason) {
+      if (state.busy) return
+      state.busy = true
+      state.busyText = 'Saving…'
+      state.error = ''
+      state.reasonFor = null
+      render()
+      send('longlist:contact-feedback', {
+        kind: kind,
+        value: value,
+        verdict: verdict,
+        reason: reason || null,
+      })
+    }
+
+    function button(label, className, onClick, disabled) {
+      var b = el('button', className, label)
+      b.type = 'button'
+      b.disabled = !!disabled
+      b.addEventListener('click', function (e) {
+        e.stopPropagation()
+        onClick()
+      })
+      return b
+    }
+
+    function valueRow(kind, item) {
+      var row = el('div', 'll-contact-item')
+      var key = kind + ':' + item.value
+      var line = el('div', 'll-contact-line')
+      line.appendChild(
+        el('span', 'll-contact-icon', kind === 'email' ? '✉' : '☎'),
+      )
+      line.appendChild(el('span', 'll-contact-value', item.value))
+      var meta = [item.type, item.verified === true ? 'Verified' : null]
+        .filter(Boolean)
+        .join(' · ')
+      if (meta) line.appendChild(el('span', 'll-contact-meta', meta))
+      if (item.verdict === 'bad') {
+        var reasonLabel = CONTACT_REASONS.filter(function (r) {
+          return r[0] === item.reason
+        })[0]
+        line.appendChild(
+          el(
+            'span',
+            'll-contact-flag',
+            reasonLabel ? reasonLabel[1] : 'Marked wrong',
+          ),
+        )
+      }
+
+      var actions = el('span', 'll-contact-actions')
+      actions.appendChild(
+        button('Copy', 'll-contact-btn ll-contact-btn--ghost', function () {
+          copyText(item.value, actions.firstChild)
+        }),
+      )
+      var up = button(
+        '👍',
+        'll-contact-thumb',
+        function () {
+          feedback(kind, item.value, item.verdict === 'good' ? null : 'good')
+        },
+        state.busy,
+      )
+      up.setAttribute(
+        'aria-pressed',
+        item.verdict === 'good' ? 'true' : 'false',
+      )
+      up.title =
+        kind === 'email' ? 'Works — email delivered' : 'Works — reached them'
+      var down = button(
+        '👎',
+        'll-contact-thumb',
+        function () {
+          if (item.verdict === 'bad') {
+            feedback(kind, item.value, null)
+            return
+          }
+          state.reasonFor = state.reasonFor === key ? null : key
+          render()
+        },
+        state.busy,
+      )
+      down.setAttribute(
+        'aria-pressed',
+        item.verdict === 'bad' ? 'true' : 'false',
+      )
+      down.title = 'Wrong or not reachable'
+      actions.appendChild(up)
+      actions.appendChild(down)
+      line.appendChild(actions)
+      row.appendChild(line)
+
+      if (state.reasonFor === key) {
+        var reasons = el('div', 'll-contact-reasons')
+        reasons.appendChild(el('span', 'll-contact-meta', 'What went wrong?'))
+        CONTACT_REASONS.forEach(function (r) {
+          if (kind === 'phone' && r[0] === 'bounced') return
+          if (kind === 'email' && r[0] === 'no_answer') return
+          reasons.appendChild(
+            button(r[1], 'll-contact-btn ll-contact-btn--ghost', function () {
+              feedback(kind, item.value, 'bad', r[0])
+            }),
+          )
+        })
+        reasons.appendChild(
+          button('Cancel', 'll-contact-btn ll-contact-btn--link', function () {
+            state.reasonFor = null
+            render()
+          }),
+        )
+        row.appendChild(reasons)
+      }
+      return row
+    }
+
+    // One "Email" / "Phone" section: its values, then what can be done next.
+    function section(kind, items, kindState) {
+      var text = KIND_TEXT[kind]
+      var block = el('div', 'll-contact-block')
+      block.appendChild(el('div', 'll-contact-section', text.label))
+      items.forEach(function (item) {
+        block.appendChild(valueRow(kind, item))
+      })
+
+      var usable = items.filter(function (x) {
+        return x.verdict !== 'bad'
+      })
+      var foot = el('div', 'll-contact-empty')
+      if (kindState.searching) {
+        foot.appendChild(
+          el(
+            'span',
+            'll-contact-muted',
+            text.searching +
+              (CAN_LOOKUP_CONTACTS && state.checks < AUTO_CHECK_MAX
+                ? ' checking again automatically.'
+                : ''),
+          ),
+        )
+        if (CAN_LOOKUP_CONTACTS) {
+          foot.appendChild(
+            button(
+              'Check again',
+              'll-contact-btn',
+              function () {
+                request('refresh')
+              },
+              state.busy,
+            ),
+          )
+        }
+      } else {
+        if (!items.length) {
+          foot.appendChild(el('span', 'll-contact-muted', text.none))
+        } else if (kindState.exhausted && !usable.length) {
+          foot.appendChild(el('span', 'll-contact-muted', text.noOther))
+        }
+        if (kindState.canFind && CAN_LOOKUP_CONTACTS) {
+          foot.appendChild(
+            button(
+              items.length ? text.findAnother : text.find,
+              'll-contact-btn',
+              function () {
+                request('backup', false, [kind])
+              },
+              state.busy,
+            ),
+          )
+        }
+      }
+      if (foot.childNodes.length) block.appendChild(foot)
+      return block
+    }
+
+    function render() {
+      while (panel.firstChild) panel.removeChild(panel.firstChild)
+      panel.appendChild(el('div', 'll-notes-title', 'Contact'))
+
+      if (!contactsReady) {
+        panel.appendChild(
+          el('div', 'll-contact-muted', 'Loading contact details…'),
+        )
+        return
+      }
+
+      var view = contactLookup(linkedinUrl, name)
+
+      if (!view || !view.lookedUp) {
+        if (state.busy) {
+          panel.appendChild(
+            el(
+              'div',
+              'll-contact-muted',
+              state.busyText || 'Looking up contact details…',
+            ),
+          )
+        } else if (CAN_LOOKUP_CONTACTS) {
+          var empty = el('div', 'll-contact-empty')
+          empty.appendChild(
+            el(
+              'span',
+              'll-contact-muted',
+              view && view.error
+                ? 'The lookup didn’t work this time.'
+                : 'No contact details yet.',
+            ),
+          )
+          empty.appendChild(
+            button(
+              view && view.error ? 'Try again' : 'Get contact',
+              'll-notes-save',
+              function () {
+                request('lookup')
+              },
+            ),
+          )
+          panel.appendChild(empty)
+        } else {
+          panel.appendChild(
+            el(
+              'div',
+              'll-contact-muted',
+              'Not looked up yet — an Admin can look this candidate up.',
+            ),
+          )
+        }
+        if (state.error || (view && view.error)) {
+          panel.appendChild(
+            el('div', 'll-contact-error', state.error || view.error),
+          )
+        }
+        return
+      }
+
+      panel.appendChild(section('email', view.emails || [], view.email || {}))
+      panel.appendChild(section('phone', view.phones || [], view.phone || {}))
+
+      if (state.busy && state.busyText) {
+        panel.appendChild(el('div', 'll-contact-muted', state.busyText))
+      }
+      if (state.error || view.error) {
+        panel.appendChild(
+          el('div', 'll-contact-error', state.error || view.error),
+        )
+      }
+
+      // Keep re-checking a backup search that is still running (free).
+      var searching =
+        (view.email && view.email.searching) ||
+        (view.phone && view.phone.searching)
+      if (
+        searching &&
+        CAN_LOOKUP_CONTACTS &&
+        !state.busy &&
+        !state.timer &&
+        state.checks < AUTO_CHECK_MAX
+      ) {
+        state.timer = setTimeout(function () {
+          state.timer = null
+          if (!panel.isConnected) return
+          state.checks++
+          request('refresh', true)
+        }, AUTO_CHECK_EVERY_MS)
+      }
+    }
+
+    panel._llContactRender = render
+    panel._llContactDone = function (error) {
+      state.busy = false
+      state.error = error || ''
+      render()
+    }
+    panel.setAttribute('data-longlist-contact-name', name || '')
+    render()
+    return panel
+  }
+
+  function renderContactPanels(onlyName) {
+    document
+      .querySelectorAll('[' + CONTACT_PANEL_ATTR + ']')
+      .forEach(function (panel) {
+        var n = panel.getAttribute('data-longlist-contact-name') || ''
+        if (onlyName && n.toLowerCase() !== onlyName.toLowerCase()) return
+        if (panel._llContactRender) panel._llContactRender()
+      })
+  }
+
   function injectNotesPanel(td, candidateRow, nameIdx) {
     var name = extractRowIdentity(candidateRow, nameIdx)
 
@@ -2168,6 +2685,11 @@
     var wrap = document.createElement('div')
     wrap.className = 'll-notes-row'
     wrap.appendChild(main)
+    if (CONTACTS_ENABLED) {
+      wrap.appendChild(
+        buildContactPanel(name, linkedinUrlFromRow(candidateRow)),
+      )
+    }
     wrap.appendChild(buildNotesPanel(name))
 
     td.appendChild(wrap)
@@ -3420,9 +3942,36 @@
         EDITABLE = data.canUpdateStatus === true
         SINGLE_LINE_EXPORT_CELLS = data.singleLineExportCells === true
         ANALYTICS_ENABLED = data.canViewAnalytics === true
+        CONTACTS_ENABLED = data.contactsEnabled === true
+        CAN_LOOKUP_CONTACTS =
+          CONTACTS_ENABLED && data.canLookupContacts === true
         wireSelects()
         syncActionColumns()
         ensureAnalyticsButton()
+        return
+      }
+
+      if (data.type === 'longlist:init-contacts') {
+        CONTACTS_BY_KEY = {}
+        CONTACTS_BY_NAME = {}
+        ;(Array.isArray(data.contacts) ? data.contacts : []).forEach(
+          rememberContact,
+        )
+        contactsReady = true
+        renderContactPanels()
+        return
+      }
+
+      if (data.type === 'longlist:contact-update' && data.candidateName) {
+        // candidateName here is the panel's own row identity (what it sent).
+        rememberContact(data.contact)
+        document
+          .querySelectorAll('[' + CONTACT_PANEL_ATTR + ']')
+          .forEach(function (panel) {
+            var n = panel.getAttribute('data-longlist-contact-name') || ''
+            if (n.toLowerCase() !== data.candidateName.toLowerCase()) return
+            if (panel._llContactDone) panel._llContactDone(data.error || '')
+          })
         return
       }
 

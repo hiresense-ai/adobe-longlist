@@ -126,6 +126,14 @@ export function canUpdateCandidateStatus(_role: UserRole): boolean {
   return true
 }
 
+/** Running a contact lookup (spends SalesQL / BetterContact credits) —
+ * Admin and Super Admin. Seeing contacts already found, and giving
+ * 👍/👎 feedback on them, is open to anyone who can see the dashboard.
+ * Mirrored server-side in supabase/functions/candidate-contacts. */
+export function canLookupCandidateContacts(role: UserRole): boolean {
+  return isAtLeastAdmin(role)
+}
+
 /** Uploading, replacing, and deleting dashboards — Super Admin only.
  * Browsing/opening dashboards stays open to every authenticated role;
  * this gates only the write side (upload dialog, Update Candidates bulk
