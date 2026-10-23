@@ -10,6 +10,9 @@ export const ROUTES = {
   // OTP, or reset-link flow. See src/pages/Login/ForgotPassword.tsx.
   forgotPassword: '/forgot-password',
   home: '/',
+  // Post-sign-in landing for workspaces that choose their start page by role
+  // (WORKSPACE.landOnJdAnalytics) — redirects immediately, never rendered.
+  start: '/start',
   dashboardPattern: '/dashboards/:id',
   dashboard: (id: string) => `/dashboards/${id}`,
   profile: '/profile',

@@ -8,6 +8,8 @@ import {
   ChartColumn,
   Check,
   Clock,
+  LayoutGrid,
+  List,
   Loader2,
   Pencil,
   Percent,
@@ -18,9 +20,19 @@ import {
   X,
 } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { WORKSPACE } from '@/config/workspaces'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorState } from '@/components/common/ErrorState'
 import { DashboardAnalyticsDialog } from '@/components/dashboard/DashboardAnalyticsDialog'
@@ -320,6 +332,136 @@ function EditableDateCell({
   )
 }
 
+const SORT_LABELS: Record<SortKey, string> = {
+  submittedAt: 'Submitted date',
+  title: 'JD name',
+  pending: 'Pending',
+  ssHs: 'Screen Select',
+  srHs: 'Screen Reject',
+  ratio: 'Ratio',
+}
+
+type ViewMode = 'list' | 'cards'
+const VIEW_STORAGE_KEY = 'longlist.jdAnalytics.view'
+
+/** The viewer's last List/Cards choice — a per-browser convenience only.
+ * Cards is the default: only an explicit earlier switch to List shows the
+ * table first, and any storage failure (private mode, blocked storage)
+ * simply means Cards. */
+function readStoredView(): ViewMode {
+  try {
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === 'list'
+      ? 'list'
+      : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
+
+function storeView(view: ViewMode) {
+  try {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, view)
+  } catch {
+    // Not remembered — harmless.
+  }
+}
+
+/** Where a JD stands, from its own counts (no new data). */
+function jdStage(row: JdAnalyticsRow): {
+  label: string
+  variant: 'default' | 'secondary' | 'outline'
+} | null {
+  const { total, actioned, pending } = row.candidates
+  if (total === null || pending === null) return null
+  if (row.completedAt || (total > 0 && pending === 0)) {
+    return { label: 'Completed', variant: 'default' }
+  }
+  if (actioned > 0) return { label: 'In progress', variant: 'secondary' }
+  return { label: 'Not started', variant: 'outline' }
+}
+
+/** One JD as a card — the same numbers as its table row, plus how far
+ * through its candidates the team is. Only the Submitted date is shown;
+ * Delivered/Completed dates (and a Super Admin's date edits) live in the
+ * List view. */
+function JdCard({
+  row,
+  metrics,
+  onOpenAnalytics,
+}: {
+  row: JdAnalyticsRow
+  metrics: JdMetrics
+  onOpenAnalytics: () => void
+}) {
+  const { total, actioned } = row.candidates
+  const progress =
+    total !== null && total > 0 ? Math.round((actioned / total) * 100) : null
+  const stage = jdStage(row)
+  const createdBy = row.createdBy?.name || row.createdBy?.email || null
+
+  return (
+    <article className="border-border bg-card shadow-soft hover:border-primary/40 flex flex-col gap-4 rounded-2xl border p-5 transition-colors duration-150">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-foreground line-clamp-2 leading-snug font-semibold">
+            {row.title}
+          </h3>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Submitted {formatDate(row.submittedAt)}
+            {createdBy ? ` · ${createdBy}` : ''}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {stage && <Badge variant={stage.variant}>{stage.label}</Badge>}
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            title="Dashboard Analytics"
+            aria-label={`Dashboard Analytics for ${row.title}`}
+            onClick={onOpenAnalytics}
+          >
+            <BarChart3 />
+          </Button>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-muted-foreground mb-1.5 flex items-center justify-between text-xs">
+          <span>Candidates actioned</span>
+          <span className="text-foreground tabular-nums">
+            {total === null ? '—' : `${actioned} of ${total}`}
+          </span>
+        </div>
+        <Progress
+          value={progress ?? 0}
+          className="h-1.5"
+          aria-label={`${progress ?? 0}% of candidates actioned`}
+        />
+      </div>
+
+      <dl className="grid grid-cols-4 gap-2">
+        {(
+          [
+            ['Pending', metrics.pending ?? '—'],
+            ['Select', metrics.ssHs],
+            ['Reject', metrics.srHs],
+            ['Ratio', formatJdRatio(metrics.ratio)],
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label} className="bg-muted/40 rounded-lg px-2 py-1.5">
+            <dt className="text-muted-foreground text-[11px]">{label}</dt>
+            <dd className="text-foreground text-base font-semibold tabular-nums">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </article>
+  )
+}
+
 /**
  * JD Analytics — one high-level table over every JD/dashboard the caller
  * may see, so nobody has to open dashboards one by one. The data arrives
@@ -347,6 +489,17 @@ export function JdAnalytics() {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('submittedAt')
   const [sortDir, setSortDir] = useState<1 | -1>(-1)
+  // List (table) or Cards — only where the workspace offers Cards (Lyca);
+  // everywhere else this stays the table, exactly as before.
+  const cardsAvailable = WORKSPACE.jdAnalyticsCardView
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    cardsAvailable ? readStoredView() : 'list',
+  )
+  const showCards = cardsAvailable && viewMode === 'cards'
+  function chooseView(view: ViewMode) {
+    setViewMode(view)
+    storeView(view)
+  }
   // Which JD's Dashboard Analytics dialog is open, if any. A row's `id` IS
   // the dashboard's real id (see the dashboard-analytics Edge Function's
   // `overview` action) — never a name lookup — so this is passed straight
@@ -466,6 +619,33 @@ export function JdAnalytics() {
         >
           In Progress
         </Button>
+        {cardsAvailable && (
+          <div
+            role="group"
+            aria-label="View"
+            className="border-border bg-card inline-flex rounded-lg border p-0.5"
+          >
+            {(
+              [
+                ['list', List, 'List'],
+                ['cards', LayoutGrid, 'Cards'],
+              ] as const
+            ).map(([mode, Icon, label]) => (
+              <Button
+                key={mode}
+                type="button"
+                size="sm"
+                variant={viewMode === mode ? 'default' : 'ghost'}
+                aria-pressed={viewMode === mode}
+                className="h-7 gap-1.5 px-2.5"
+                onClick={() => chooseView(mode)}
+              >
+                <Icon className="size-3.5" aria-hidden="true" />
+                {label}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Aggregate summary for the SELECTED DATE FILTER, across every JD it
@@ -511,6 +691,43 @@ export function JdAnalytics() {
         </div>
       )}
 
+      {/* Cards have no column headers to click, so they get the same sort
+          (field + direction) as a compact control instead. */}
+      {showCards && !isLoading && !isError && visible.length > 0 && (
+        <div className="mb-4 flex items-center justify-end gap-2">
+          <span className="text-muted-foreground text-xs">Sort by</span>
+          <Select
+            value={sortKey}
+            onValueChange={(value) => {
+              const key = value as SortKey
+              setSortKey(key)
+              setSortDir(key === 'title' ? 1 : -1)
+            }}
+          >
+            <SelectTrigger size="sm" className="w-40" aria-label="Sort by">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                <SelectItem key={key} value={key}>
+                  {SORT_LABELS[key]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="outline"
+            aria-label={sortDir === 1 ? 'Ascending' : 'Descending'}
+            title={sortDir === 1 ? 'Ascending' : 'Descending'}
+            onClick={() => setSortDir((dir) => (dir === 1 ? -1 : 1))}
+          >
+            {sortDir === 1 ? <ArrowUp /> : <ArrowDown />}
+          </Button>
+        </div>
+      )}
+
       {isLoading && (
         <div className="border-border bg-card space-y-3 rounded-2xl border p-5">
           {Array.from({ length: 5 }).map((_, index) => (
@@ -550,7 +767,22 @@ export function JdAnalytics() {
         />
       )}
 
-      {!isLoading && !isError && visible.length > 0 && (
+      {showCards && !isLoading && !isError && visible.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {visible.map(({ row, metrics }) => (
+            <JdCard
+              key={row.id}
+              row={row}
+              metrics={metrics}
+              onOpenAnalytics={() =>
+                setAnalyticsDashboard({ id: row.id, title: row.title })
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      {!showCards && !isLoading && !isError && visible.length > 0 && (
         <div className="border-border bg-card shadow-soft overflow-hidden rounded-2xl border">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[880px] text-left text-sm">

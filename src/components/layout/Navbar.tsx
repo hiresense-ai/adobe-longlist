@@ -30,6 +30,7 @@ import { ThemeToggle } from '@/components/common/ThemeToggle'
 import { WorkspaceLogo } from '@/components/layout/WorkspaceLogo'
 import { useAuth } from '@/hooks/useAuth'
 import { ROUTES } from '@/constants'
+import { WORKSPACE } from '@/config/workspaces'
 import { getErrorMessage } from '@/lib/errors'
 import { getInitials } from '@/lib/format'
 import {
@@ -109,6 +110,12 @@ export function Navbar() {
         ]
       : []),
   ]
+  // Some workspaces (Lyca) lead with JD Analytics: JD Analytics, Dashboards,
+  // Requirements, … (only when the user can see JD Analytics at all).
+  if (WORKSPACE.jdAnalyticsFirstInNav) {
+    const jd = navItems.findIndex((item) => item.to === ROUTES.jdAnalytics)
+    if (jd > 0) navItems.unshift(...navItems.splice(jd, 1))
+  }
 
   async function handleLogout() {
     try {
@@ -210,13 +217,21 @@ export function Navbar() {
                   Profile
                 </Link>
               </DropdownMenuItem>
+              {showJdAnalytics && WORKSPACE.jdAnalyticsFirstInNav && (
+                <DropdownMenuItem asChild className="lg:hidden">
+                  <Link to={ROUTES.jdAnalytics}>
+                    <ChartColumn className="size-4" />
+                    JD Analytics
+                  </Link>
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem asChild className="lg:hidden">
                 <Link to={ROUTES.requirements}>
                   <ClipboardList className="size-4" />
                   Requirements
                 </Link>
               </DropdownMenuItem>
-              {showJdAnalytics && (
+              {showJdAnalytics && !WORKSPACE.jdAnalyticsFirstInNav && (
                 <DropdownMenuItem asChild className="lg:hidden">
                   <Link to={ROUTES.jdAnalytics}>
                     <ChartColumn className="size-4" />
