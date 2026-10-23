@@ -18,6 +18,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { useAuth } from '@/hooks/useAuth'
+import { landingRoute } from '@/lib/landing'
 import { ROUTES } from '@/constants'
 import { getErrorMessage } from '@/lib/errors'
 import { WORKSPACE } from '@/config/workspaces'
@@ -69,10 +70,12 @@ export function Login() {
     try {
       await login(values.email, values.password)
       toast.success('Welcome back!')
-      // Always land on the Dashboard after login — never restore whatever
-      // page ProtectedRoute's redirect-with-state happened to carry along
-      // (e.g. a page open before a session expired or before logging out).
-      navigate(ROUTES.home, { replace: true })
+      // Always land on the workspace's start page after login (Dashboards;
+      // JD Analytics for Lyca Admins — see landingRoute) — never restore
+      // whatever page ProtectedRoute's redirect-with-state happened to carry
+      // along (e.g. a page open before a session expired or before logging
+      // out).
+      navigate(landingRoute(), { replace: true })
     } catch (error) {
       toast.error(getErrorMessage(error, 'Unable to sign in'))
     } finally {

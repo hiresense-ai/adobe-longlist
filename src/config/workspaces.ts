@@ -69,6 +69,14 @@ export interface Workspace {
    * workspace's own Supabase project — Lyca only today.
    */
   contactLookup: boolean
+  /** JD Analytics comes first in the navigation (JD Analytics, Dashboards,
+   * Requirements, …) instead of after Requirements. */
+  jdAnalyticsFirstInNav: boolean
+  /** JD Analytics offers a Cards view next to the List (table) view. */
+  jdAnalyticsCardView: boolean
+  /** After sign-in, land on JD Analytics (users who can see it — Admin and
+   * Super Admin) instead of Dashboards. Viewers still land on Dashboards. */
+  landOnJdAnalytics: boolean
 }
 
 export const WORKSPACES: Record<WorkspaceId, Workspace> = {
@@ -92,6 +100,9 @@ export const WORKSPACES: Record<WorkspaceId, Workspace> = {
     actionClientLabel: 'Adobe',
     authStorageKey: undefined,
     contactLookup: false,
+    jdAnalyticsFirstInNav: false,
+    jdAnalyticsCardView: false,
+    landOnJdAnalytics: false,
   },
   lyca: {
     id: 'lyca',
@@ -118,6 +129,9 @@ export const WORKSPACES: Record<WorkspaceId, Workspace> = {
     actionClientLabel: 'Lyca',
     authStorageKey: 'sb-longlist-lyca-auth-token',
     contactLookup: true,
+    jdAnalyticsFirstInNav: true,
+    jdAnalyticsCardView: true,
+    landOnJdAnalytics: true,
   },
 }
 

@@ -3,6 +3,7 @@ import { createBrowserRouter, type RouteObject } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import { GuestRoute } from '@/components/auth/GuestRoute'
+import { LandingRedirect } from '@/components/auth/LandingRedirect'
 import { AdminRoute } from '@/components/auth/AdminRoute'
 import { SuperAdminRoute } from '@/components/auth/SuperAdminRoute'
 import { ForcePasswordChangeGate } from '@/components/auth/ForcePasswordChangeGate'
@@ -72,6 +73,9 @@ const routes: RouteObject[] = [
         // path, with no navbar and no route to slip past it.
         element: <ForcePasswordChangeGate />,
         children: [
+          // Post-sign-in landing that picks the start page by role (Lyca:
+          // JD Analytics for Admins). Redirects at once; no app shell.
+          { path: ROUTES.start, element: <LandingRedirect /> },
           {
             element: <AppLayout />,
             children: [
