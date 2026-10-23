@@ -1,6 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { ROUTES } from '@/constants'
+import { landingRoute } from '@/lib/landing'
 import { Loader2 } from 'lucide-react'
 
 /** Redirects already-authenticated users away from guest-only pages (login, forgot password). */
@@ -16,7 +16,7 @@ export function GuestRoute() {
   }
 
   if (session) {
-    return <Navigate to={ROUTES.home} replace />
+    return <Navigate to={landingRoute()} replace />
   }
 
   return <Outlet />
