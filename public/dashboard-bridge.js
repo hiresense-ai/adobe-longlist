@@ -2265,12 +2265,11 @@
   // vendor, never sees a key, and is never told which vendor a value came
   // from — it shows plain "Email" and "Phone" sections.
   //
-  // Every search is a click (Admins only — canLookupContacts):
-  //   "Get contact"                         -> the primary source.
-  //   "Find phone number" / "Find email"    -> the backup source, for that
-  //   "Find another email/number"              kind only; offered when none
-  //                                            of that kind was found or one
-  //                                            was marked 👎.
+  // Searches (Admins only — canLookupContacts; HIR-491):
+  //   "Get contact"                -> the shared contact store, then, for any
+  //                                   kind it lacks, the vendors on their own.
+  //   "Find another email/number"  -> offered only after a 👎 on a contact the
+  //                                   shared store gave, while a vendor is left.
   // 👍/👎 (anyone) only records whether a value actually worked. A backup
   // search still running is re-checked automatically (free, no new search).
   // Everything is built with textContent, never innerHTML, since contact

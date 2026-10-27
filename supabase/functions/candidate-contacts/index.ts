@@ -18,18 +18,20 @@
 // (candidate_contact_lookups) and reused, including across dashboards; and
 // each caller is limited to LOOKUP_LIMIT vendor calls per window.
 //
-// Backup rule — nothing automatic, every vendor call is a click:
+// The flow (HIR-491, decisions in flow.ts):
 //   "Get contact" ('lookup')  -> the shared contact store first (contact-store.ts:
 //                                what any HireSense platform revealed, then
-//                                ZipLabs); only if it has nothing, SalesQL.
-//                                Unconfigured or unreachable: SalesQL, as before.
-//                                SalesQL / BetterContact answers and every 👍/👎
-//                                are written back to the store.
-//   'backup' + kinds          -> BetterContact for just those kinds, offered
-//                                per kind when SalesQL found none of that kind
-//                                or one was marked 👎 ("Find phone number",
-//                                "Find another email"). Each kind is bought
-//                                from the backup at most once per person.
+//                                ZipLabs). For each kind it has nothing for,
+//                                Lyca's vendors run straight away, no click:
+//                                SalesQL, then BetterContact for what SalesQL
+//                                did not find. Store unconfigured or
+//                                unreachable: the vendors, as before. Every
+//                                vendor answer and every 👍/👎 is written back.
+//   'backup' + kinds          -> "Find another email / number": offered only
+//                                after a 👎 on a contact the STORE gave, while
+//                                a vendor not yet asked remains. Runs the same
+//                                vendors for just those kinds. Each kind is
+//                                bought from each vendor at most once per person.
 //   'refresh'                 -> re-check a backup search still running
 //                                (a status check — never charges).
 
@@ -54,6 +56,7 @@ import {
   contactStoreLookup,
   contactStoreSave,
 } from './contact-store.ts'
+import { canFindAnother, contactId, kindsMissing } from './flow.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -220,8 +223,8 @@ Deno.serve(async (req: Request) => {
       }
       case 'feedback': {
         const candidate = findCandidate(candidates, payload)
-        // Only records the verdict. A 👎 makes the panel offer "Find
-        // another email" / "Find phone number" — it never calls a vendor.
+        // Only records the verdict. A 👎 on a store contact makes the panel
+        // offer "Find another email / number" — it never calls a vendor.
         await saveFeedback(admin, candidate, payload, caller.id, dashboardId)
         return json(
           { contact: (await viewsFor(admin, [candidate]))[0] },
@@ -313,6 +316,7 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     ) ?? null
 
   const backupReady = vendorConfigured('bettercontact')
+  const salesqlReady = vendorConfigured('salesql')
   const out = []
   for (const c of candidates) {
     const mine = lookups.filter((l) => l.linkedin_key === c.linkedinKey)
@@ -322,7 +326,9 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     // An answer from the shared contact store counts as the lookup, like SalesQL's.
     const shared = mine.find((l) => l.vendor === 'contact_store')
     const lookedUp =
-      (!!sales && sales.status !== 'error') || shared?.status === 'found'
+      (!!sales && sales.status !== 'error') ||
+      shared?.status === 'found' ||
+      (!!backup && backup.status !== 'error')
 
     // One list per kind, primary source first, duplicates dropped. Which
     // vendor a value came from is never sent to the dashboard.
@@ -364,16 +370,27 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
       const searching =
         backup?.status === 'pending' && !!backup.pending_kinds?.includes(kind)
       const usable = items.filter((x) => x.verdict !== 'bad')
+      const storeValues = new Set(
+        (shared ? (kind === 'email' ? shared.emails : shared.phones) : []).map(
+          (v) => contactId(kind, v.value),
+        ),
+      )
       return {
         searching,
-        // Offered only when a click is useful: none of this kind yet, or one
-        // marked 👎 — and the backup hasn't been asked for this kind before.
+        // "Find another" only after a 👎 on a contact the shared store gave
+        // (HIR-491); a vendor's contact was already the vendors' best.
         canFind:
-          backupReady &&
           lookedUp &&
-          !searched &&
           !searching &&
-          (!items.length || items.some((x) => x.verdict === 'bad')),
+          canFindAnother({
+            kind,
+            items,
+            storeValues,
+            salesqlAsked: !!sales && sales.status !== 'error',
+            backupAsked: !!searched,
+            salesqlReady,
+            backupReady,
+          }),
         exhausted: !!searched && !usable.length,
       }
     }
@@ -480,36 +497,34 @@ async function runLookup(
   if (mode === 'refresh') return
 
   if (mode === 'backup') {
-    // Only kinds not already bought from the backup for this person.
-    const wanted = kinds.filter((k) =>
-      k === 'email' ? !backup?.email_searched : !backup?.phone_searched,
+    // "Find another": only when the panel offers it — after a 👎 on a store
+    // contact, with a vendor left to ask (flow.ts).
+    const view = (await viewsFor(admin, [candidate]))[0]
+    const allowed = kinds.filter(
+      (k) => (k === 'email' ? view?.email : view?.phone)?.canFind,
     )
-    if (!wanted.length) return
-    if (!vendorConfigured('bettercontact')) {
-      throw new HttpError(503, 'The backup contact source is not configured.')
-    }
-    await enforceLimit(admin, callerId)
-    const result = await betterContactLookup(candidate, wanted)
-    await storeBackup(
+    if (!allowed.length) return
+    await runVendors(
       admin,
       candidate,
+      allowed,
+      sales ?? null,
       backup,
-      wanted,
-      result,
       callerId,
       dashboardId,
     )
     return
   }
 
-  // "Get contact": the primary source only — never the backup by itself.
-  if (sales && sales.status !== 'error') return // already looked up
+  // "Get contact": once per person — any earlier answer stands.
   const shared = lookups.find((l) => l.vendor === 'contact_store')
-  if (shared?.status === 'found') return // already answered by the shared store
+  if (sales && sales.status !== 'error') return
+  if (shared?.status === 'found') return
+  if (backup && backup.status !== 'error') return
 
   // The shared contact store first: contacts any HireSense platform already
-  // revealed, then ZipLabs. Only when it has nothing does SalesQL run. If it
-  // can't be reached, the lookup goes on to SalesQL exactly as before.
+  // revealed, then ZipLabs. If it can't be reached, the vendors run as before.
+  let missing: ContactKind[] = ['email', 'phone']
   if (contactStoreConfigured()) {
     await enforceLimit(admin, callerId)
     try {
@@ -523,25 +538,100 @@ async function runLookup(
           callerId,
           dashboardId,
         )
-        return
+        missing = kindsMissing(fromStore, missing)
       }
     } catch (err) {
       console.warn(
-        'contact store unavailable, using SalesQL:',
+        'contact store unavailable, using the vendors:',
         err instanceof Error ? err.message : String(err),
       )
     }
   }
-
-  if (!vendorConfigured('salesql'))
-    throw new HttpError(503, 'Contact lookup is not configured.')
-  await enforceLimit(admin, callerId)
-  const result = await salesqlLookup(candidate)
-  await store(admin, candidate, 'salesql', result, callerId, dashboardId)
-  // What SalesQL found goes to the shared store, so no platform pays for it again.
-  if (result.status === 'found') {
-    await contactStoreSave(candidate.linkedinUrl, 'salesql', result)
+  // For every kind the store had nothing for, the vendors run now — no click.
+  if (missing.length) {
+    await runVendors(
+      admin,
+      candidate,
+      missing,
+      sales ?? null,
+      backup,
+      callerId,
+      dashboardId,
+    )
   }
+}
+
+/**
+ * Lyca's own vendors for `kinds`, in order: SalesQL (once per person), then
+ * BetterContact for each kind SalesQL left without a usable value (once per
+ * kind). Whatever they find goes to the shared store.
+ */
+async function runVendors(
+  admin: Admin,
+  candidate: DashboardCandidate,
+  kinds: ContactKind[],
+  sales: LookupRow | null,
+  backup: LookupRow | null,
+  callerId: string,
+  dashboardId: string,
+) {
+  const salesqlReady = vendorConfigured('salesql')
+  const backupReady = vendorConfigured('bettercontact')
+  if (!salesqlReady && !backupReady) {
+    throw new HttpError(503, 'Contact lookup is not configured.')
+  }
+
+  // What SalesQL gave, minus values the workspace marked 👎.
+  const { feedback } = await rowsFor(admin, [candidate.linkedinKey])
+  const bad = (kind: ContactKind, value: string) =>
+    feedback.some(
+      (f) =>
+        f.contact_kind === kind &&
+        f.verdict === 'bad' &&
+        contactId(kind, f.contact_value) === contactId(kind, value),
+    )
+  const usableFrom = (found: {
+    emails: Array<{ value: string }>
+    phones: Array<{ value: string }>
+  }) => ({
+    emails: found.emails.filter((e) => !bad('email', e.value)),
+    phones: found.phones.filter((p) => !bad('phone', p.value)),
+  })
+
+  let stillMissing = kinds
+  if (sales && sales.status !== 'error') {
+    stillMissing = kindsMissing(usableFrom(sales), kinds)
+  } else if (salesqlReady) {
+    await enforceLimit(admin, callerId)
+    const result = await salesqlLookup(candidate)
+    await store(admin, candidate, 'salesql', result, callerId, dashboardId)
+    // What SalesQL found goes to the shared store, so no platform pays for it again.
+    if (result.status === 'found') {
+      await contactStoreSave(candidate.linkedinUrl, 'salesql', result)
+    }
+    stillMissing =
+      result.status === 'error'
+        ? kinds
+        : kindsMissing(usableFrom(result), kinds)
+  }
+
+  // BetterContact for what is still missing, each kind at most once per person.
+  const wanted = stillMissing.filter((k) =>
+    k === 'email' ? !backup?.email_searched : !backup?.phone_searched,
+  )
+  if (!wanted.length || !backupReady) return
+  if (backup?.status === 'pending') return // already searching; 'refresh' polls it
+  await enforceLimit(admin, callerId)
+  const result = await betterContactLookup(candidate, wanted)
+  await storeBackup(
+    admin,
+    candidate,
+    backup,
+    wanted,
+    result,
+    callerId,
+    dashboardId,
+  )
 }
 
 /** Merges a backup answer for `kinds` into the person's backup row, keeping
