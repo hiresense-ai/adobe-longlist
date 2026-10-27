@@ -13,6 +13,8 @@
 import type { DashboardCandidate } from './candidates.ts'
 
 export type Vendor = 'salesql' | 'bettercontact'
+/** Where a cached answer came from: a vendor, or the shared contact store (contact-store.ts). */
+export type Source = Vendor | 'contact_store'
 
 export interface ContactEmail {
   value: string

@@ -19,7 +19,12 @@
 // each caller is limited to LOOKUP_LIMIT vendor calls per window.
 //
 // Backup rule — nothing automatic, every vendor call is a click:
-//   "Get contact" ('lookup')  -> SalesQL only.
+//   "Get contact" ('lookup')  -> the shared contact store first (contact-store.ts:
+//                                what any HireSense platform revealed, then
+//                                ZipLabs); only if it has nothing, SalesQL.
+//                                Unconfigured or unreachable: SalesQL, as before.
+//                                SalesQL / BetterContact answers and every 👍/👎
+//                                are written back to the store.
 //   'backup' + kinds          -> BetterContact for just those kinds, offered
 //                                per kind when SalesQL found none of that kind
 //                                or one was marked 👎 ("Find phone number",
@@ -40,9 +45,15 @@ import {
   salesqlLookup,
   vendorConfigured,
   type ContactKind,
-  type Vendor,
+  type Source,
   type VendorResult,
 } from './vendors.ts'
+import {
+  contactStoreConfigured,
+  contactStoreFeedback,
+  contactStoreLookup,
+  contactStoreSave,
+} from './contact-store.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -104,7 +115,7 @@ class HttpError extends Error {
 interface LookupRow {
   linkedin_key: string
   linkedin_url: string
-  vendor: Vendor
+  vendor: Source
   status: VendorResult['status']
   emails: Array<{ value: string; type: string | null; status: string | null }>
   phones: Array<{ value: string; type: string | null; valid: boolean | null }>
@@ -308,14 +319,17 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     if (!mine.length) continue
     const sales = mine.find((l) => l.vendor === 'salesql')
     const backup = mine.find((l) => l.vendor === 'bettercontact')
-    const lookedUp = !!sales && sales.status !== 'error'
+    // An answer from the shared contact store counts as the lookup, like SalesQL's.
+    const shared = mine.find((l) => l.vendor === 'contact_store')
+    const lookedUp =
+      (!!sales && sales.status !== 'error') || shared?.status === 'found'
 
     // One list per kind, primary source first, duplicates dropped. Which
     // vendor a value came from is never sent to the dashboard.
     const merge = (kind: ContactKind) => {
       const seen = new Set<string>()
       const items = []
-      for (const row of [sales, backup]) {
+      for (const row of [shared, sales, backup]) {
         if (!row) continue
         for (const raw of kind === 'email' ? row.emails : row.phones) {
           const id = kind === 'email' ? raw.value.toLowerCase() : raw.value
@@ -404,7 +418,7 @@ async function enforceLimit(admin: Admin, callerId: string) {
 async function store(
   admin: Admin,
   candidate: DashboardCandidate,
-  vendor: Vendor,
+  vendor: Source,
   result: VendorResult,
   callerId: string,
   dashboardId: string,
@@ -490,11 +504,44 @@ async function runLookup(
 
   // "Get contact": the primary source only — never the backup by itself.
   if (sales && sales.status !== 'error') return // already looked up
+  const shared = lookups.find((l) => l.vendor === 'contact_store')
+  if (shared?.status === 'found') return // already answered by the shared store
+
+  // The shared contact store first: contacts any HireSense platform already
+  // revealed, then ZipLabs. Only when it has nothing does SalesQL run. If it
+  // can't be reached, the lookup goes on to SalesQL exactly as before.
+  if (contactStoreConfigured()) {
+    await enforceLimit(admin, callerId)
+    try {
+      const fromStore = await contactStoreLookup(candidate.linkedinUrl)
+      if (fromStore.status === 'found') {
+        await store(
+          admin,
+          candidate,
+          'contact_store',
+          fromStore,
+          callerId,
+          dashboardId,
+        )
+        return
+      }
+    } catch (err) {
+      console.warn(
+        'contact store unavailable, using SalesQL:',
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
   if (!vendorConfigured('salesql'))
     throw new HttpError(503, 'Contact lookup is not configured.')
   await enforceLimit(admin, callerId)
   const result = await salesqlLookup(candidate)
   await store(admin, candidate, 'salesql', result, callerId, dashboardId)
+  // What SalesQL found goes to the shared store, so no platform pays for it again.
+  if (result.status === 'found') {
+    await contactStoreSave(candidate.linkedinUrl, 'salesql', result)
+  }
 }
 
 /** Merges a backup answer for `kinds` into the person's backup row, keeping
@@ -547,6 +594,13 @@ async function storeBackup(
     { onConflict: 'linkedin_key,vendor' },
   )
   if (error) throw error
+  // What the backup found for the kinds asked goes to the shared store.
+  if (result.status === 'found') {
+    await contactStoreSave(candidate.linkedinUrl, 'bettercontact', {
+      emails: asksEmail ? result.emails : [],
+      phones: asksPhone ? result.phones : [],
+    })
+  }
 }
 
 async function saveFeedback(
@@ -609,4 +663,12 @@ async function saveFeedback(
     { onConflict: 'linkedin_key,contact_kind,contact_value' },
   )
   if (error) throw error
+  // Shared with every platform: a 👎 here stops others being shown a dead contact.
+  await contactStoreFeedback(
+    candidate.linkedinUrl,
+    kind,
+    value,
+    verdict,
+    verdict === 'bad' ? reason : null,
+  )
 }
