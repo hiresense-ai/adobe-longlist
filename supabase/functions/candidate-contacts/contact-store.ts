@@ -7,7 +7,14 @@
 // Settings (supabase/functions/.env locally, function secrets on the project):
 //   CONTACT_ENRICHMENT_URL       e.g. http://host.docker.internal:4100 for a service on this machine
 //   CONTACT_ENRICHMENT_API_KEY   Lyca's key in that service's PLATFORM_API_KEYS
-// With either missing, nothing here is called and the lookup works exactly as before.
+//   CONTACT_ENRICHMENT_TIMEOUT_MS  optional; how long any one store call may take before Lyca
+//                                gives up on it (default 3000). A lookup that times out is
+//                                treated like the store being down: the vendors run.
+// With URL or key missing, nothing here is called and the lookup works exactly as before.
+//
+// Only the lookup is waited for. Saves and 👍/👎 go to the store in the background
+// (contactStoreSaveLater / contactStoreFeedbackLater), so a slow or down store never delays a
+// reveal; their failures are logged, never shown.
 
 import type {
   ContactEmail,
@@ -16,7 +23,40 @@ import type {
   VendorResult,
 } from './vendors.ts'
 
-const TIMEOUT_MS = 8_000
+export const DEFAULT_TIMEOUT_MS = 3_000
+
+/** CONTACT_ENRICHMENT_TIMEOUT_MS, or 3000 when unset or not a positive number. */
+export function contactStoreTimeoutMs(): number {
+  const raw = Number(Deno.env.get('CONTACT_ENRICHMENT_TIMEOUT_MS')?.trim())
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_TIMEOUT_MS
+}
+
+/**
+ * Lets `task` finish after the response has gone out. In the Supabase edge
+ * runtime that is EdgeRuntime.waitUntil (the worker stays up for it);
+ * elsewhere the promise simply runs on, not awaited. Never throws, and a
+ * failing task is only logged.
+ */
+export function inBackground(task: Promise<unknown>, label: string): void {
+  const guarded = task.catch((err) => {
+    console.warn(
+      `${label} failed:`,
+      err instanceof Error ? err.message : String(err),
+    )
+  })
+  const runtime = (
+    globalThis as {
+      EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void }
+    }
+  ).EdgeRuntime
+  if (typeof runtime?.waitUntil === 'function') {
+    try {
+      runtime.waitUntil(guarded)
+    } catch {
+      // the guarded promise still runs on its own
+    }
+  }
+}
 
 interface StoreContact {
   value: string
@@ -48,7 +88,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(contactStoreTimeoutMs()),
     })
   } catch (err) {
     throw new ContactStoreUnavailable(
@@ -86,8 +126,16 @@ export async function contactStoreLookup(
       kinds: ['email', 'phone'],
     },
   )
+  // A value another platform marked bad is left out, and so is a malformed
+  // entry (no string value): it would otherwise be saved and break the panel.
   const usable = (items?: StoreContact[]) =>
-    (items ?? []).filter((c) => c.status !== 'bad')
+    (Array.isArray(items) ? items : []).filter(
+      (c) =>
+        !!c &&
+        typeof c.value === 'string' &&
+        c.value.trim() !== '' &&
+        c.status !== 'bad',
+    )
   const emails: ContactEmail[] = usable(body.emails).map((c) => ({
     value: c.value,
     type: null,
@@ -178,4 +226,32 @@ export async function contactStoreFeedback(
       err instanceof Error ? err.message : String(err),
     )
   }
+}
+
+/** contactStoreSave without waiting for it: the reveal answers straight away. */
+export function contactStoreSaveLater(
+  linkedinUrl: string,
+  vendor: string,
+  found: { emails: ContactEmail[]; phones: ContactPhone[] },
+): void {
+  if (!contactStoreConfigured()) return
+  inBackground(
+    contactStoreSave(linkedinUrl, vendor, found),
+    'contact store save',
+  )
+}
+
+/** contactStoreFeedback without waiting for it: the 👍/👎 answers straight away. */
+export function contactStoreFeedbackLater(
+  linkedinUrl: string,
+  kind: ContactKind,
+  value: string,
+  verdict: 'good' | 'bad',
+  reason: string | null,
+): void {
+  if (!contactStoreConfigured()) return
+  inBackground(
+    contactStoreFeedback(linkedinUrl, kind, value, verdict, reason),
+    'contact store feedback',
+  )
 }

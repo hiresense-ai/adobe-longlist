@@ -19,6 +19,12 @@ export interface ContactValueView {
   verified: boolean | null
   verdict: ContactVerdict | null
   reason: ContactBadReason | null
+  /** 'store': from the shared contact store. 'vendor': found by Lyca's own
+   * vendors. Never says which vendor. */
+  source: 'store' | 'vendor'
+  /** Whether 👍/👎 is shown: store values, and SalesQL values while
+   * BetterContact has not been asked for that kind (decided server-side). */
+  feedback: boolean
 }
 
 /** Per kind: is a backup search running, can one be started, has the

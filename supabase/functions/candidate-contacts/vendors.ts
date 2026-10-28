@@ -9,6 +9,14 @@
 //           GET  https://app.bettercontact.rocks/api/v2/async/{id}  -> status
 //           "terminated" carries data[0].contact_email_address / _phone_number.
 //           X-API-Key: <key>. A POST is NOT idempotent (re-charges).
+//
+// Settings (supabase/functions/.env locally, function secrets on the project):
+//   SALESQL_API_KEY         SalesQL key; unset = SalesQL is skipped
+//   BETTERCONTACT_API_KEY   BetterContact key; unset = BetterContact is skipped
+//   BETTERCONTACT_API_URL   optional; BetterContact's API base (default
+//                           https://app.bettercontact.rocks/api/v2). Only for
+//                           local tests against a fake server — never set it
+//                           on a hosted project.
 
 import type { DashboardCandidate } from './candidates.ts'
 
@@ -149,7 +157,13 @@ export async function salesqlLookup(
 
 // ---------------------------------------------------------- BetterContact
 
-const BC_BASE = 'https://app.bettercontact.rocks/api/v2'
+export const BC_DEFAULT_BASE = 'https://app.bettercontact.rocks/api/v2'
+
+/** BETTERCONTACT_API_URL (no trailing slash), or BetterContact's own API. */
+export function betterContactBase(): string {
+  const url = Deno.env.get('BETTERCONTACT_API_URL')?.trim().replace(/\/+$/, '')
+  return url || BC_DEFAULT_BASE
+}
 const BC_POLL_EVERY_MS = 3_000
 const BC_POLL_FOR_MS = 20_000
 
@@ -170,7 +184,7 @@ async function bcStart(
   apiKey: string,
 ): Promise<Response> {
   const { first, last } = splitName(candidate.name)
-  return await fetchWithTimeout(`${BC_BASE}/async`, {
+  return await fetchWithTimeout(`${betterContactBase()}/async`, {
     method: 'POST',
     headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -253,7 +267,7 @@ export async function betterContactPoll(
   let res: Response
   try {
     res = await fetchWithTimeout(
-      `${BC_BASE}/async/${encodeURIComponent(requestId)}`,
+      `${betterContactBase()}/async/${encodeURIComponent(requestId)}`,
       {
         headers: { 'X-API-Key': apiKey },
       },
