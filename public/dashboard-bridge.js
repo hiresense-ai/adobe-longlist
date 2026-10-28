@@ -2265,13 +2265,16 @@
   // vendor, never sees a key, and is never told which vendor a value came
   // from — it shows plain "Email" and "Phone" sections.
   //
-  // Every search is a click (Admins only — canLookupContacts):
-  //   "Get contact"                         -> the primary source.
-  //   "Find phone number" / "Find email"    -> the backup source, for that
-  //   "Find another email/number"              kind only; offered when none
-  //                                            of that kind was found or one
-  //                                            was marked 👎.
-  // 👍/👎 (anyone) only records whether a value actually worked. A backup
+  // Searches (Admins only — canLookupContacts; HIR-491):
+  //   "Get contact"                -> the shared contact store, then, for any
+  //                                   kind it lacks, the vendors on their own.
+  //   "Find another email/number"  -> offered (kindState.canFind, decided by
+  //                                   the function) after a 👎 on a value
+  //                                   with a vendor left to ask.
+  // 👍/👎 (anyone) only records whether a value actually worked, and is shown
+  // only where the function says so (item.feedback): store values, and the
+  // first vendor's values while the last one is still left — never on the
+  // last vendor's. Which vendor is never sent here. A backup
   // search still running is re-checked automatically (free, no new search).
   // Everything is built with textContent, never innerHTML, since contact
   // values come from third parties.
@@ -2283,6 +2286,14 @@
     ['not_reachable', 'Not reachable'],
     ['no_answer', 'No answer'],
   ]
+
+  // Whether a contact value shows 👍/👎: the function decides (item.feedback).
+  // An older function without that flag: only store values (source 'store').
+  function contactTakesFeedback(item) {
+    if (!item) return false
+    if (typeof item.feedback === 'boolean') return item.feedback
+    return item.source !== 'vendor'
+  }
 
   function linkedinUrlFromRow(tr) {
     var a = tr && tr.querySelector('a[href*="linkedin.com/"]')
@@ -2441,6 +2452,14 @@
           copyText(item.value, actions.firstChild)
         }),
       )
+      // 👍/👎 only where the function allows it (item.feedback). A value from
+      // the last vendor has none: no "Find another" is left after it.
+      // (No flag and no source = an older function: as before.)
+      if (!contactTakesFeedback(item)) {
+        line.appendChild(actions)
+        row.appendChild(line)
+        return row
+      }
       var up = button(
         '👍',
         'll-contact-thumb',
