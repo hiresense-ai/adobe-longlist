@@ -53,3 +53,12 @@ verify_jwt = true
 # other functions above.
 [functions.action-logs]
 verify_jwt = true
+
+# contact-store-sync (Lyca, HIR-526) is called by a pg_cron + pg_net job, not
+# by a signed-in user, so there is no user JWT to verify. It checks its own
+# secret instead (header x-contact-store-sync-secret against the function
+# secret CONTACT_STORE_SYNC_SECRET, constant-time) and refuses every call
+# while that secret is unset — as on Adobe's project, which only shares the
+# code. It returns counts only.
+[functions.contact-store-sync]
+verify_jwt = false

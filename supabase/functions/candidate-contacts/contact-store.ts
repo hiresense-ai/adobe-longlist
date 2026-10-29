@@ -14,7 +14,9 @@
 //
 // Only the lookup is waited for. Saves and 👍/👎 go to the store in the background
 // (contactStoreSaveLater / contactStoreFeedbackLater), so a slow or down store never delays a
-// reveal; their failures are logged, never shown.
+// reveal; their failures are logged, never shown. A send that lands marks its row synced
+// (store_synced_at, through the `onSent` callback); one that fails leaves the row unsynced and
+// the contact-store-sync job (store-sync.ts) sends it later (HIR-526).
 
 import type {
   ContactEmail,
@@ -64,7 +66,20 @@ interface StoreContact {
   verified: boolean | null
 }
 
-export class ContactStoreUnavailable extends Error {}
+/**
+ * The store could not take a call. `status` is the HTTP status (null when it
+ * was never reached: down, slow, refused) and `code` the store's error code,
+ * e.g. "contact_not_found". The message never holds a contact value.
+ */
+export class ContactStoreUnavailable extends Error {
+  constructor(
+    message: string,
+    public status: number | null = null,
+    public code = '',
+  ) {
+    super(message)
+  }
+}
 
 function settings(): { url: string; key: string } | null {
   const url = Deno.env.get('CONTACT_ENRICHMENT_URL')?.trim()
@@ -76,7 +91,11 @@ export function contactStoreConfigured(): boolean {
   return settings() !== null
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+export async function post<T>(
+  path: string,
+  body: unknown,
+  timeoutMs = contactStoreTimeoutMs(),
+): Promise<T> {
   const s = settings()
   if (!s) throw new ContactStoreUnavailable('not configured')
   let res: Response
@@ -88,7 +107,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(contactStoreTimeoutMs()),
+      signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (err) {
     throw new ContactStoreUnavailable(
@@ -105,9 +124,28 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     }
     throw new ContactStoreUnavailable(
       `HTTP ${res.status}${code ? ` ${code}` : ''}`,
+      res.status,
+      code,
     )
   }
   return (await res.json()) as T
+}
+
+/** GET /ready: true only for a 200, i.e. the store can read and write. Never throws. */
+export async function contactStoreReady(
+  timeoutMs = contactStoreTimeoutMs(),
+): Promise<boolean> {
+  const s = settings()
+  if (!s) return false
+  try {
+    const res = await fetch(`${s.url}/ready`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    await res.body?.cancel()
+    return res.status === 200
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -153,44 +191,87 @@ export async function contactStoreLookup(
   }
 }
 
-/** Saves what a vendor found, so every platform reuses it. Best-effort: logs, never throws. */
+/** One value as the store's POST /v1/contacts takes it. */
+export interface StoreContactInput {
+  kind: ContactKind
+  value: string
+  vendor?: string
+  verified?: true
+}
+
+/** The most contacts the store takes in one POST /v1/contacts. */
+export const SAVE_BATCH = 20
+
+function withValue<T>(items: T[] | null | undefined): T[] {
+  return (Array.isArray(items) ? items : []).filter((c) => {
+    const value = (c as { value?: unknown } | null)?.value
+    return typeof value === 'string' && value.trim() !== ''
+  })
+}
+
+/**
+ * What a vendor found, as the store takes it: emails then phones, a value
+ * only when it is a non-empty string, `verified` only when the vendor said
+ * so. `vendor` null leaves it out (a value that is not one of Lyca's vendors').
+ */
+export function storeContactsFrom(
+  vendor: string | null,
+  found: {
+    emails?: Array<Partial<ContactEmail>> | null
+    phones?: Array<Partial<ContactPhone>> | null
+  },
+): StoreContactInput[] {
+  const from = vendor ? { vendor } : {}
+  return [
+    ...withValue(found.emails).map((e) => ({
+      kind: 'email' as const,
+      value: e.value as string,
+      ...from,
+      ...(e.status === 'Valid' || e.status === 'deliverable'
+        ? { verified: true as const }
+        : {}),
+    })),
+    ...withValue(found.phones).map((p) => ({
+      kind: 'phone' as const,
+      value: p.value as string,
+      ...from,
+      ...(p.valid ? { verified: true as const } : {}),
+    })),
+  ]
+}
+
+/**
+ * Saves what a vendor found, so every platform reuses it. Best-effort: logs,
+ * never throws. True when the store now holds every value (or there was
+ * nothing to send); false when a call failed or the store is not configured.
+ */
 export async function contactStoreSave(
   linkedinUrl: string,
   vendor: string,
   found: { emails: ContactEmail[]; phones: ContactPhone[] },
-): Promise<void> {
-  if (!contactStoreConfigured()) return
-  const contacts = [
-    ...found.emails.map((e) => ({
-      kind: 'email' as const,
-      value: e.value,
-      vendor,
-      ...(e.status === 'Valid' || e.status === 'deliverable'
-        ? { verified: true }
-        : {}),
-    })),
-    ...found.phones.map((p) => ({
-      kind: 'phone' as const,
-      value: p.value,
-      vendor,
-      ...(p.valid ? { verified: true } : {}),
-    })),
-  ]
-    .filter((c) => c.value?.trim())
-    .slice(0, 20)
-  if (!contacts.length) return
+): Promise<boolean> {
+  if (!contactStoreConfigured()) return false
+  const contacts = storeContactsFrom(vendor, found)
   try {
-    await post('/v1/contacts', { linkedin_url: linkedinUrl, contacts })
+    // The store takes at most SAVE_BATCH contacts per call.
+    for (let i = 0; i < contacts.length; i += SAVE_BATCH) {
+      await post('/v1/contacts', {
+        linkedin_url: linkedinUrl,
+        contacts: contacts.slice(i, i + SAVE_BATCH),
+      })
+    }
+    return true
   } catch (err) {
     console.warn(
       'contact store save skipped:',
       err instanceof Error ? err.message : String(err),
     )
+    return false
   }
 }
 
 /** Lyca's thumbs up / down reasons as the store's. */
-const STORE_REASON: Record<
+export const STORE_REASON: Record<
   string,
   'not_reachable' | 'bounced' | 'wrong_person' | 'other'
 > = {
@@ -200,58 +281,102 @@ const STORE_REASON: Record<
   no_answer: 'not_reachable',
 }
 
-/** A thumbs up / down, shared with every platform. Best-effort: logs, never throws. */
+/** POST /v1/contacts/feedback's body for one 👍/👎 (a 👎 reason mapped to the store's). */
+export function storeFeedbackBody(
+  linkedinUrl: string,
+  kind: ContactKind,
+  value: string,
+  verdict: 'good' | 'bad',
+  reason: string | null,
+) {
+  return {
+    linkedin_url: linkedinUrl,
+    kind,
+    value,
+    verdict,
+    ...(verdict === 'bad'
+      ? { reason: STORE_REASON[reason ?? ''] ?? 'other' }
+      : {}),
+  }
+}
+
+/**
+ * A thumbs up / down, shared with every platform. Best-effort: logs, never
+ * throws. True when the store took it.
+ */
 export async function contactStoreFeedback(
   linkedinUrl: string,
   kind: ContactKind,
   value: string,
   verdict: 'good' | 'bad',
   reason: string | null,
-): Promise<void> {
-  if (!contactStoreConfigured()) return
+): Promise<boolean> {
+  if (!contactStoreConfigured()) return false
   try {
-    await post('/v1/contacts/feedback', {
-      linkedin_url: linkedinUrl,
-      kind,
-      value,
-      verdict,
-      ...(verdict === 'bad'
-        ? { reason: STORE_REASON[reason ?? ''] ?? 'other' }
-        : {}),
-    })
+    await post(
+      '/v1/contacts/feedback',
+      storeFeedbackBody(linkedinUrl, kind, value, verdict, reason),
+    )
+    return true
   } catch (err) {
-    // A 404 only means the store never held this value (looked up before the store existed).
+    // A 404 means the store does not hold this value (its save failed, or it
+    // was looked up before the store existed): the feedback row stays
+    // unsynced and the sync job saves the value, then sends the 👍/👎 again.
     console.warn(
       'contact store feedback skipped:',
       err instanceof Error ? err.message : String(err),
     )
+    return false
   }
 }
 
-/** contactStoreSave without waiting for it: the reveal answers straight away. */
+/**
+ * Runs `onSent` once `send` reports the store took everything. A failing
+ * `onSent` (marking the row synced) is only logged by inBackground: the row
+ * then stays unsynced and the sync job sends it again, which is harmless.
+ */
+async function thenMark(
+  send: Promise<boolean>,
+  onSent?: () => unknown,
+): Promise<void> {
+  if ((await send) && onSent) await onSent()
+}
+
+/**
+ * contactStoreSave without waiting for it: the reveal answers straight away.
+ * `onSent` runs once the store holds every value (it marks the row synced).
+ */
 export function contactStoreSaveLater(
   linkedinUrl: string,
   vendor: string,
   found: { emails: ContactEmail[]; phones: ContactPhone[] },
+  onSent?: () => unknown,
 ): void {
   if (!contactStoreConfigured()) return
   inBackground(
-    contactStoreSave(linkedinUrl, vendor, found),
+    thenMark(contactStoreSave(linkedinUrl, vendor, found), onSent),
     'contact store save',
   )
 }
 
-/** contactStoreFeedback without waiting for it: the 👍/👎 answers straight away. */
+/**
+ * contactStoreFeedback without waiting for it: the 👍/👎 answers straight away.
+ * `onSent` runs once the store took it (it marks the feedback row synced).
+ */
 export function contactStoreFeedbackLater(
   linkedinUrl: string,
   kind: ContactKind,
   value: string,
   verdict: 'good' | 'bad',
   reason: string | null,
+  onSent?: () => unknown,
 ): void {
   if (!contactStoreConfigured()) return
   inBackground(
-    contactStoreFeedback(linkedinUrl, kind, value, verdict, reason),
+    thenMark(
+      contactStoreFeedback(linkedinUrl, kind, value, verdict, reason),
+      onSent,
+    ),
     'contact store feedback',
   )
 }
