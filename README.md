@@ -17,6 +17,7 @@ A secure internal dashboard portal. Authenticated users sign in, browse HTML hir
 - [Deployment](#deployment)
 - [Troubleshooting](#troubleshooting)
 - [Production checklist](#production-checklist)
+- [Lyca contact reveal](#lyca-contact-reveal)
 
 ## Project overview
 
@@ -236,3 +237,7 @@ Already covered in [Supabase setup](#supabase-setup) — there's nothing separat
 ## Production checklist
 
 See [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md).
+
+## Lyca contact reveal
+
+Lyca Mobile's workspace can reveal a candidate's email and phone (shared contact store, then SalesQL, then BetterContact). See [docs/CONTACT_REVEAL.md](docs/CONTACT_REVEAL.md); environments in [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md).

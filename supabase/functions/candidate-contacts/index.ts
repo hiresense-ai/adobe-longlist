@@ -877,5 +877,8 @@ async function saveFeedback(
         saved.id,
         saved.updated_at,
       ),
+    // When the 👍/👎 was saved: a later re-send of it (the sync job, a retry)
+    // can then never undo a newer verdict in the store.
+    saved.updated_at,
   )
 }

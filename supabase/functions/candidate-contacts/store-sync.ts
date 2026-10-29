@@ -21,13 +21,28 @@
 //             vendor rows without a single value (not_found, error, a search
 //             still running) are marked without a call ("settled"). A row
 //             that later gets values is written again, so it is null again.
-//   feedback  every row, after the lookups: a 👍/👎 on a value needs that
-//             value stored first. While the person still has an unsynced
-//             vendor row with values, its feedback waits for a later run. A
-//             404 contact_not_found (the store does not hold the value) saves
-//             the value from Lyca's own row, then sends the 👍/👎 once more.
+//   feedback  every row, after the lookups, with `given_at` = the row's
+//             updated_at (when the 👍/👎 was saved; the live send does the
+//             same). The store ignores a verdict older than the one it holds
+//             and the same verdict sent twice, so a re-send (a first run
+//             after the 28 Oct backfill, a send that timed out but landed)
+//             changes nothing. A store from before given_at answers 422
+//             invalid_request: sent once more without it (postFeedback).
+//             A 👍/👎 on a value needs that value stored first: while the
+//             person has an unsynced vendor row with values written less than
+//             FEEDBACK_WAIT_MS (24 h) ago, its feedback waits for a later run
+//             and does not use one of the run's rows. After that the row is
+//             failing for its own reason and the 👍/👎 goes anyway. A 404
+//             contact_not_found (the store does not hold the value) saves the
+//             value from Lyca's own row, then sends the 👍/👎 once more.
 //             Clearing a thumb deletes the row; the store keeps its last
 //             verdict (as before HIR-526: the store has no "clear").
+//
+// Bounds: at most SYNC_MAX_ROWS rows that take a store call per run, feedback
+// read in at most FEEDBACK_SCAN_PAGES pages (each SYNC_MAX_ROWS more rows than
+// the last, waiting ones skipped), and nothing new
+// after SYNC_BUDGET_MS: every call's timeout is cut to what is left of the
+// run, retries included. A run out of time leaves the rest for the next one.
 //
 // Errors: the store down / slow / 5xx / 429 / 401 / 403 stops the run with
 // the rows left null. 409 (busy) leaves that row for the next run. A 400 /
@@ -41,6 +56,7 @@
 import {
   ContactStoreUnavailable,
   post,
+  postFeedback,
   SAVE_BATCH,
   storeContactsFrom,
   storeFeedbackBody,
@@ -54,6 +70,10 @@ export const SYNC_CALL_TIMEOUT_MS = 10_000
 export const SYNC_MAX_ROWS = 200
 /** A run starts no new row after this long, well inside the Edge Function limit. */
 export const SYNC_BUDGET_MS = 50_000
+/** A 👍/👎 waits for its person's unsynced values at most this long (by that row's updated_at). */
+export const FEEDBACK_WAIT_MS = 24 * 60 * 60 * 1000
+/** Pages of feedback (SYNC_MAX_ROWS each) read per run at most, waiting ones included. */
+export const FEEDBACK_SCAN_PAGES = 5
 
 export interface LookupSyncRow {
   id: string
@@ -85,6 +105,7 @@ export interface PersonSyncRow {
   emails: unknown
   phones: unknown
   store_synced_at: string | null
+  updated_at: string
 }
 
 /** Everything the job reads and writes in Lyca's database (store-sync-db.ts). */
@@ -93,7 +114,7 @@ export interface SyncDb {
   settleLookups(): Promise<number>
   /** Unsynced rows of salesql / bettercontact, oldest first. */
   unsyncedLookups(limit: number): Promise<LookupSyncRow[]>
-  /** Unsynced feedback rows, oldest first. */
+  /** Unsynced feedback rows, oldest first (then by id). */
   unsyncedFeedback(limit: number): Promise<FeedbackSyncRow[]>
   /** Every lookup row of these people. */
   personRows(keys: string[]): Promise<PersonSyncRow[]>
@@ -119,7 +140,11 @@ export interface SyncOptions {
   maxRows?: number
   budgetMs?: number
   callTimeoutMs?: number
+  /** The run's clock (budget and call timeouts). */
   now?: () => number
+  /** Wall-clock time, for how long feedback waits (FEEDBACK_WAIT_MS). */
+  wallNow?: () => number
+  feedbackWaitMs?: number
 }
 
 /** A database error whose message is only a code: safe to log (store-sync-db.ts). */
@@ -157,10 +182,12 @@ function describe(err: unknown): string {
 }
 
 class StopRun extends Error {}
+/** The run's time is used up: the rest waits for the next run (not an error). */
+class OutOfTime extends Error {}
 
-/** Rethrows what must stop the run (as StopRun); returns for a per-row failure. */
+/** Rethrows what must stop the run (as StopRun / OutOfTime); returns for a per-row failure. */
 function stopOn(err: unknown): void {
-  if (err instanceof StopRun) throw err
+  if (err instanceof StopRun || err instanceof OutOfTime) throw err
   if (isOutage(err)) throw new StopRun(describe(err))
 }
 
@@ -246,6 +273,8 @@ export async function runSync(
   const maxRows = options.maxRows ?? SYNC_MAX_ROWS
   const timeout = options.callTimeoutMs ?? SYNC_CALL_TIMEOUT_MS
   const now = options.now ?? Date.now
+  const wallNow = options.wallNow ?? Date.now
+  const waitLimit = options.feedbackWaitMs ?? FEEDBACK_WAIT_MS
   const deadline = now() + (options.budgetMs ?? SYNC_BUDGET_MS)
   const counts: SyncCounts = {
     status: 'ok',
@@ -253,7 +282,16 @@ export async function runSync(
     feedback: { sent: 0, waiting: 0, rejected: 0, failed: 0 },
     more: false,
   }
-  const send = (path: string, body: unknown) => post(path, body, timeout)
+  const timeLeft = () => now() < deadline
+  /** Each call gets at most what is left of the run (OutOfTime when nothing is). */
+  const callTimeout = () => {
+    const left = deadline - now()
+    if (left <= 0) throw new OutOfTime('run budget used')
+    return Math.max(1, Math.min(timeout, left))
+  }
+  const send = (path: string, body: unknown) => post(path, body, callTimeout())
+  const sendFeedback = (body: ReturnType<typeof storeFeedbackBody>) =>
+    postFeedback(body, callTimeout())
 
   /** Saves one person's values; returns how many the store refused. Throws StopRun on an outage. */
   async function save(
@@ -271,7 +309,7 @@ export async function runSync(
       } catch (err) {
         stopOn(err)
         if (!isRefusal(err)) throw err
-        // One bad value refuses the whole call: send them one by one.
+        // One bad value refuses the whole call: send them one by one (while time is left).
         for (const contact of chunk) {
           try {
             await send('/v1/contacts', {
@@ -289,6 +327,7 @@ export async function runSync(
     return refused
   }
 
+  /** Rows that took a store call (or were marked) this run; waiting feedback does not count. */
   let processed = 0
   try {
     counts.lookups.settled += await db.settleLookups()
@@ -297,10 +336,7 @@ export async function runSync(
     const lookups = await db.unsyncedLookups(maxRows)
     if (lookups.length >= maxRows) counts.more = true
     for (const row of lookups) {
-      if (now() >= deadline) {
-        counts.more = true
-        break
-      }
+      if (!timeLeft()) throw new OutOfTime('run budget used')
       processed += 1
       // Only Lyca's own vendors' values go to the store: never its own answers back.
       const vendorRow =
@@ -317,6 +353,7 @@ export async function runSync(
         if (await db.markLookup(row.id, row.updated_at))
           counts.lookups.sent += 1
       } catch (err) {
+        if (err instanceof OutOfTime) throw err
         counts.lookups.failed += 1
         stopOn(err)
         console.warn(
@@ -326,75 +363,94 @@ export async function runSync(
       }
     }
 
-    // 2. Feedback, oldest first, with whatever room is left in this run.
-    const room = maxRows - processed
-    if (room <= 0 || now() >= deadline) {
-      counts.more = true
-      return counts
-    }
-    const feedback = await db.unsyncedFeedback(room)
-    if (feedback.length >= room) counts.more = true
-    const people = await db.personRows([
-      ...new Set(feedback.map((f) => f.linkedin_key)),
-    ])
-    for (const f of feedback) {
-      if (now() >= deadline) {
+    // 2. Feedback, oldest first, in pages, until the run's rows are used up.
+    // A 👍/👎 waiting for its person's values is skipped without using a row.
+    // Each page reads from the start again, as many more rows as were already
+    // seen (sent rows drop out of the unsynced set, the others are skipped).
+    const seen = new Set<string>()
+    for (let page = 0; ; page++) {
+      if (processed >= maxRows) {
         counts.more = true
         break
       }
-      const mine = people.filter((p) => p.linkedin_key === f.linkedin_key)
-      // A vendor row whose values are not in the store yet: those first (a later run).
-      const valuesPending = mine.some(
-        (p) =>
-          p.store_synced_at === null &&
-          (p.vendor === 'salesql' || p.vendor === 'bettercontact') &&
-          lookupContacts(p).length > 0,
-      )
-      if (valuesPending) {
-        counts.feedback.waiting += 1
+      if (page >= FEEDBACK_SCAN_PAGES) {
         counts.more = true
-        continue
+        break
       }
-      const url =
-        mine.find((p) => p.linkedin_url)?.linkedin_url ??
-        profileUrlOf(f.linkedin_key)
-      const body = storeFeedbackBody(
-        url,
-        f.contact_kind,
-        f.contact_value,
-        f.verdict,
-        f.reason,
-      )
-      try {
-        try {
-          await send('/v1/contacts/feedback', body)
-        } catch (err) {
-          if (!isNotFound(err)) throw err
-          // The store does not hold the value: save it from Lyca's own row, then once more.
-          const value = valueFromRows(mine, f)
-          if (!value) throw err
-          const refused = await save(url, [value])
-          if (refused) throw err
-          await send('/v1/contacts/feedback', body)
+      if (!timeLeft()) throw new OutOfTime('run budget used')
+      const limit = seen.size + maxRows
+      const fetched = await db.unsyncedFeedback(limit)
+      const feedback = fetched.filter((f) => !seen.has(f.id))
+      if (!feedback.length) break
+      for (const f of feedback) seen.add(f.id)
+      const people = await db.personRows([
+        ...new Set(feedback.map((f) => f.linkedin_key)),
+      ])
+      for (const f of feedback) {
+        if (processed >= maxRows) {
+          counts.more = true
+          break
         }
-        if (await db.markFeedback(f.id, f.updated_at)) counts.feedback.sent += 1
-      } catch (err) {
-        if (err instanceof StopRun || isOutage(err)) counts.feedback.failed += 1
-        stopOn(err)
-        if (isRefusal(err) || isNotFound(err)) {
-          // The store will never take this one: drop it so it never blocks the queue.
-          if (await db.markFeedback(f.id, f.updated_at))
-            counts.feedback.rejected += 1
+        if (!timeLeft()) throw new OutOfTime('run budget used')
+        const mine = people.filter((p) => p.linkedin_key === f.linkedin_key)
+        if (waitsForValues(mine, wallNow(), waitLimit)) {
+          counts.feedback.waiting += 1
+          counts.more = true
           continue
         }
-        counts.feedback.failed += 1
-        console.warn(
-          'contact store sync: one feedback row left for later:',
-          describe(err),
+        processed += 1
+        const url =
+          mine.find((p) => p.linkedin_url)?.linkedin_url ??
+          profileUrlOf(f.linkedin_key)
+        // given_at = when the 👍/👎 was saved: the store ignores it if it
+        // already holds this verdict or a newer one (first runs, retries).
+        const body = storeFeedbackBody(
+          url,
+          f.contact_kind,
+          f.contact_value,
+          f.verdict,
+          f.reason,
+          f.updated_at,
         )
+        try {
+          try {
+            await sendFeedback(body)
+          } catch (err) {
+            if (!isNotFound(err)) throw err
+            // The store does not hold the value: save it from Lyca's own row, then once more.
+            const value = valueFromRows(mine, f)
+            if (!value) throw err
+            const refused = await save(url, [value])
+            if (refused) throw err
+            await sendFeedback(body)
+          }
+          if (await db.markFeedback(f.id, f.updated_at))
+            counts.feedback.sent += 1
+        } catch (err) {
+          if (err instanceof OutOfTime) throw err
+          if (err instanceof StopRun || isOutage(err))
+            counts.feedback.failed += 1
+          stopOn(err)
+          if (isRefusal(err) || isNotFound(err)) {
+            // The store will never take this one: drop it so it never blocks the queue.
+            if (await db.markFeedback(f.id, f.updated_at))
+              counts.feedback.rejected += 1
+            continue
+          }
+          counts.feedback.failed += 1
+          console.warn(
+            'contact store sync: one feedback row left for later:',
+            describe(err),
+          )
+        }
       }
+      if (fetched.length < limit) break // that was the last page
     }
   } catch (err) {
+    if (err instanceof OutOfTime) {
+      counts.more = true
+      return counts
+    }
     if (!(err instanceof StopRun)) throw err
     counts.status = 'stopped'
     counts.more = true
@@ -404,6 +460,26 @@ export async function runSync(
     )
   }
   return counts
+}
+
+/**
+ * Whether a 👍/👎 waits for its person's values: one of Lyca's vendor rows
+ * with values is not in the store yet, and was written less than `limitMs`
+ * ago. An older unsynced row is failing for its own reason; the 👍/👎 then
+ * goes anyway (a 404 saves the value from Lyca's row first).
+ */
+export function waitsForValues(
+  rows: PersonSyncRow[],
+  wallNow: number,
+  limitMs: number,
+): boolean {
+  return rows.some(
+    (p) =>
+      p.store_synced_at === null &&
+      (p.vendor === 'salesql' || p.vendor === 'bettercontact') &&
+      lookupContacts(p).length > 0 &&
+      wallNow - Date.parse(p.updated_at) < limitMs,
+  )
 }
 
 /** The 👍/👎'd value as Lyca's own row holds it (the row of the feedback's vendor first). */

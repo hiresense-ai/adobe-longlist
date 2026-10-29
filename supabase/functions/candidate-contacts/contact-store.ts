@@ -288,7 +288,9 @@ export function storeFeedbackBody(
   value: string,
   verdict: 'good' | 'bad',
   reason: string | null,
+  givenAt?: string | null,
 ) {
+  const at = givenAtOf(givenAt)
   return {
     linkedin_url: linkedinUrl,
     kind,
@@ -297,12 +299,47 @@ export function storeFeedbackBody(
     ...(verdict === 'bad'
       ? { reason: STORE_REASON[reason ?? ''] ?? 'other' }
       : {}),
+    ...(at ? { given_at: at } : {}),
+  }
+}
+
+/**
+ * `given_at` for the store: when the 👍/👎 was saved (the feedback row's
+ * updated_at), as ISO 8601 UTC. Null for anything that is not a time.
+ */
+export function givenAtOf(time: string | null | undefined): string | null {
+  if (!time) return null
+  const ms = Date.parse(time)
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null
+}
+
+/**
+ * POST /v1/contacts/feedback. The body carries `given_at` (the store ignores
+ * a verdict older than the one it holds, and the same verdict sent twice), so
+ * re-sending a 👍/👎 is harmless. A store from before `given_at` refuses the
+ * unknown field (422 invalid_request): then it is sent once more without it.
+ */
+export async function postFeedback(
+  body: ReturnType<typeof storeFeedbackBody>,
+  timeoutMs = contactStoreTimeoutMs(),
+): Promise<void> {
+  try {
+    await post('/v1/contacts/feedback', body, timeoutMs)
+  } catch (err) {
+    const olderStore =
+      err instanceof ContactStoreUnavailable &&
+      err.status === 422 &&
+      err.code === 'invalid_request' &&
+      'given_at' in body
+    if (!olderStore) throw err
+    const { given_at: _givenAt, ...withoutTime } = body
+    await post('/v1/contacts/feedback', withoutTime, timeoutMs)
   }
 }
 
 /**
  * A thumbs up / down, shared with every platform. Best-effort: logs, never
- * throws. True when the store took it.
+ * throws. True when the store took it. `givenAt`: when it was saved.
  */
 export async function contactStoreFeedback(
   linkedinUrl: string,
@@ -310,12 +347,12 @@ export async function contactStoreFeedback(
   value: string,
   verdict: 'good' | 'bad',
   reason: string | null,
+  givenAt?: string | null,
 ): Promise<boolean> {
   if (!contactStoreConfigured()) return false
   try {
-    await post(
-      '/v1/contacts/feedback',
-      storeFeedbackBody(linkedinUrl, kind, value, verdict, reason),
+    await postFeedback(
+      storeFeedbackBody(linkedinUrl, kind, value, verdict, reason, givenAt),
     )
     return true
   } catch (err) {
@@ -361,7 +398,8 @@ export function contactStoreSaveLater(
 
 /**
  * contactStoreFeedback without waiting for it: the 👍/👎 answers straight away.
- * `onSent` runs once the store took it (it marks the feedback row synced).
+ * `onSent` runs once the store took it (it marks the feedback row synced);
+ * `givenAt` is when the 👍/👎 was saved (sent as the store's `given_at`).
  */
 export function contactStoreFeedbackLater(
   linkedinUrl: string,
@@ -370,11 +408,12 @@ export function contactStoreFeedbackLater(
   verdict: 'good' | 'bad',
   reason: string | null,
   onSent?: () => unknown,
+  givenAt?: string | null,
 ): void {
   if (!contactStoreConfigured()) return
   inBackground(
     thenMark(
-      contactStoreFeedback(linkedinUrl, kind, value, verdict, reason),
+      contactStoreFeedback(linkedinUrl, kind, value, verdict, reason, givenAt),
       onSent,
     ),
     'contact store feedback',

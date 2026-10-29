@@ -12,10 +12,12 @@
 // Call:  POST, header x-contact-store-sync-secret: <CONTACT_STORE_SYNC_SECRET>
 //        verify_jwt is off (supabase/config.toml): the secret is the only key.
 // Answer: counts only, e.g. {"status":"ok","lookups":{"sent":3,...},...};
+//         {"status":"skipped","reason":"store_not_configured"} while
+//         CONTACT_ENRICHMENT_URL or CONTACT_ENRICHMENT_API_KEY is unset, and
 //         {"status":"skipped","reason":"store_not_ready"} while GET /ready is
-//         not 200 or CONTACT_ENRICHMENT_URL / _API_KEY are unset (nothing is
-//         read or sent then). 401 for a wrong secret; 503 while
-//         CONTACT_STORE_SYNC_SECRET is unset or shorter than 32 characters.
+//         not 200 (nothing is read or sent then). 401 for a wrong secret; 503
+//         while CONTACT_STORE_SYNC_SECRET is unset or shorter than 32
+//         characters. 500 {"error":"Sync failed"} for a database error.
 //
 // Settings (function secrets): CONTACT_STORE_SYNC_SECRET, plus the store's
 // CONTACT_ENRICHMENT_URL and CONTACT_ENRICHMENT_API_KEY that candidate-contacts

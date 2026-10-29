@@ -108,6 +108,10 @@ project (its own database, Auth, Storage and Edge Functions). Pages under
 `/lyca/...` talk only to Lyca's project; every other URL is Adobe's, unchanged.
 See `src/config/workspaces.ts` and `src/supabase/workspaceConfig.ts`.
 
+Lyca's contact reveal (shared contact store, SalesQL, BetterContact, 👍/👎, the
+10-minute store catch-up and its settings) is described in
+[CONTACT_REVEAL.md](CONTACT_REVEAL.md).
+
 ### Local stack (second Docker stack, ports 5532x)
 
 ```bash

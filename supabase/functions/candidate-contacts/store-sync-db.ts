@@ -88,6 +88,7 @@ export function supabaseSyncDb(client: Client): SyncDb {
         )
         .is('store_synced_at', null)
         .order('updated_at', { ascending: true })
+        .order('id', { ascending: true })
         .limit(limit)
       if (error) fail('read feedback', error)
       return (data ?? []) as FeedbackSyncRow[]
@@ -99,7 +100,7 @@ export function supabaseSyncDb(client: Client): SyncDb {
         const { data, error } = await client
           .from(LOOKUPS)
           .select(
-            'linkedin_key, linkedin_url, vendor, status, emails, phones, store_synced_at',
+            'linkedin_key, linkedin_url, vendor, status, emails, phones, store_synced_at, updated_at',
           )
           .in('linkedin_key', keys.slice(i, i + 50))
         if (error) fail('read people', error)

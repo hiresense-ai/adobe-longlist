@@ -50,6 +50,10 @@ interface FakeStore {
   down: boolean
   /** Values the store refuses (422 invalid_contact_value). */
   invalid: Set<string>
+  /** A store from before given_at: an unknown field is 422 invalid_request. */
+  noGivenAt: boolean
+  /** Runs before every answer (e.g. to move a test clock). */
+  onCall?: () => void
 }
 
 function fakeStore(): FakeStore {
@@ -58,6 +62,7 @@ function fakeStore(): FakeStore {
     held: new Set(),
     down: false,
     invalid: new Set(),
+    noGivenAt: false,
   }
   const reply = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -68,6 +73,7 @@ function fakeStore(): FakeStore {
     const path = new URL(String(input)).pathname
     const body = init?.body ? JSON.parse(String(init.body)) : {}
     store.calls.push({ path, body })
+    store.onCall?.()
     if (store.down)
       throw new TypeError('error sending request: connection refused')
     if (path === '/ready') return reply({ status: 'ready' })
@@ -81,6 +87,9 @@ function fakeStore(): FakeStore {
       return reply({ emails: [], phones: [] })
     }
     if (path === '/v1/contacts/feedback') {
+      if (store.noGivenAt && 'given_at' in body) {
+        return reply({ error: { code: 'invalid_request' } }, 422)
+      }
       const key = `${body.linkedin_url}|${body.kind}|${body.value}`
       if (!store.held.has(key))
         return reply({ error: { code: 'contact_not_found' } }, 404)
@@ -571,22 +580,26 @@ Deno.test(
     const two = await runSync(db)
     assertEquals(two.feedback, { sent: 1, waiting: 0, rejected: 0, failed: 0 })
     const last = store.calls.at(-1)!
+    // given_at: when the 👍/👎 was saved (the row's updated_at).
     assertEquals(last.body, {
       linkedin_url: JOHN,
       kind: 'email',
       value: 'john@example.com',
       verdict: 'bad',
       reason: 'not_reachable',
+      given_at: fb.updated_at,
     })
 
-    // An unsynced vendor row holding values: its feedback waits for it.
+    // An unsynced vendor row holding values, written just now: its feedback waits for it.
     const store2 = fakeStore()
     store2.down = false
     const pending = lookup('l-2', { store_synced_at: null })
     const fb2 = thumb('f-2', { verdict: 'good', reason: null })
     const { db: db2 } = fakeDb([pending], [fb2])
     const leak = { ...db2, unsyncedLookups: () => Promise.resolve([]) }
-    const waited = await runSync(leak)
+    const waited = await runSync(leak, {
+      wallNow: () => Date.parse(pending.updated_at) + 60_000,
+    })
     assertEquals(waited.feedback.waiting, 1)
     assertEquals(store2.calls.length, 0)
 
@@ -658,11 +671,196 @@ Deno.test('sync: bounded by rows per run and by time', async () => {
   assertEquals(capped.lookups.sent, 2)
   assertEquals(capped.more, true)
 
+  // Every store call takes 60 "ms" of a 100 ms budget: the first row goes,
+  // the second starts (40 left) and lands, nothing new starts after that.
   let t = 0
   store.calls.length = 0
-  const timed = await runSync(db, { budgetMs: 100, now: () => (t += 60) })
-  // started at 60, deadline 160: row at 120 goes, the next check (180) stops.
-  assertEquals(timed.lookups.sent, 1)
+  store.onCall = () => (t += 60)
+  const timed = await runSync(db, { budgetMs: 100, now: () => t })
+  assertEquals(timed.status, 'ok')
+  assertEquals(timed.lookups.sent, 2)
   assertEquals(timed.more, true)
-  assertEquals(rows.filter((r) => r.store_synced_at === null).length, 2)
+  assertEquals(store.calls.length, 2)
+  assertEquals(rows.filter((r) => r.store_synced_at === null).length, 1)
 })
+
+Deno.test(
+  'sync: one-by-one retries stop at the deadline; the row stays for the next run',
+  async () => {
+    configure()
+    const store = fakeStore()
+    store.invalid.add('+15550101')
+    const row = lookup('l-1', {
+      phones: [
+        { value: '+15550101', type: null, valid: null },
+        { value: '+15550100', type: null, valid: true },
+      ],
+    })
+    const { db } = fakeDb([row])
+    let t = 0
+    store.onCall = () => (t += 60)
+    // Batch refused at 60, first value alone lands at 120 (40 were left), then no time.
+    const out = await runSync(db, { budgetMs: 100, now: () => t })
+    assertEquals(out.status, 'ok')
+    assertEquals(out.more, true)
+    assertEquals(out.lookups, {
+      sent: 0,
+      settled: 0,
+      dropped_values: 0,
+      failed: 0,
+    })
+    assertEquals(store.calls.length, 2)
+    assertEquals(row.store_synced_at, null)
+  },
+)
+
+Deno.test(
+  'sync: a hanging store call is cut at the run deadline, not the 10 s call timeout',
+  async () => {
+    configure()
+    fakeStore()
+    globalThis.fetch = ((_: string | URL, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(init.signal?.reason ?? new Error('aborted')),
+        )
+      })) as typeof fetch
+    const { db } = fakeDb([lookup('l-1')])
+    const started = Date.now()
+    const { out } = await captureLogs(() =>
+      runSync(db, { budgetMs: 80, callTimeoutMs: 10_000 }),
+    )
+    const elapsed = Date.now() - started
+    if (elapsed > 2_000) throw new Error(`took ${elapsed} ms`)
+    assertEquals(out.more, true)
+  },
+)
+
+Deno.test(
+  'sync: waiting feedback uses no row of the run, and waits 24 h at most',
+  async () => {
+    configure()
+    const store = fakeStore()
+    store.held.add(`${JANE}|email|jane@example.com`)
+    // John's values are not in the store yet (his lookup row is unsynced).
+    const pending = lookup('l-john')
+    const waiting = thumb('f-john')
+    const ready = thumb('f-jane', {
+      linkedin_key: 'linkedin.com/in/jane-roe',
+      contact_value: 'jane@example.com',
+      verdict: 'good',
+      reason: null,
+    })
+    const janeRow = lookup('l-jane', {
+      linkedin_key: 'linkedin.com/in/jane-roe',
+      linkedin_url: JANE,
+      emails: [{ value: 'jane@example.com', type: null, status: null }],
+      phones: [],
+      store_synced_at: '2026-10-29T07:00:00.000Z',
+    })
+    const { db } = fakeDb([pending, janeRow], [waiting, ready])
+    const noLookups = { ...db, unsyncedLookups: () => Promise.resolve([]) }
+    // One row per run: the waiting 👍/👎 (older) does not take it, Jane's does.
+    const fresh = await runSync(noLookups, {
+      maxRows: 1,
+      wallNow: () => Date.parse(pending.updated_at) + 60_000,
+    })
+    assertEquals(fresh.feedback, {
+      sent: 1,
+      waiting: 1,
+      rejected: 0,
+      failed: 0,
+    })
+    if (!ready.store_synced_at)
+      throw new Error("Jane's feedback must be marked")
+    assertEquals(waiting.store_synced_at, null)
+
+    // 25 h later John's row is still unsynced: his 👍/👎 goes anyway, the 404
+    // saving the value from Lyca's own row first.
+    const late = await runSync(noLookups, {
+      wallNow: () => Date.parse(pending.updated_at) + 25 * 60 * 60 * 1000,
+    })
+    assertEquals(late.feedback, { sent: 1, waiting: 0, rejected: 0, failed: 0 })
+    assertEquals(
+      store.calls.slice(-3).map((c) => c.path),
+      ['/v1/contacts/feedback', '/v1/contacts', '/v1/contacts/feedback'],
+    )
+  },
+)
+
+Deno.test(
+  'given_at: the live send and the job carry it; an older store gets it once more without',
+  async () => {
+    configure()
+    const store = fakeStore()
+    store.held.add(`${JOHN}|email|john@example.com`)
+    const done: Promise<unknown>[] = []
+    ;(globalThis as { EdgeRuntime?: unknown }).EdgeRuntime = {
+      waitUntil: (p: Promise<unknown>) => done.push(p),
+    }
+    let marked = 0
+    try {
+      // Live: PostgREST's microsecond time is sent as ISO 8601 UTC.
+      contactStoreFeedbackLater(
+        JOHN,
+        'email',
+        'john@example.com',
+        'bad',
+        'bounced',
+        () => (marked += 1),
+        '2026-10-29T08:00:00.123456+00:00',
+      )
+      await Promise.all(done)
+      assertEquals(store.calls[0]!.body.given_at, '2026-10-29T08:00:00.123Z')
+      assertEquals(marked, 1)
+
+      // A store from before given_at: 422 invalid_request, then once without it.
+      store.calls.length = 0
+      store.noGivenAt = true
+      contactStoreFeedbackLater(
+        JOHN,
+        'email',
+        'john@example.com',
+        'good',
+        null,
+        () => (marked += 1),
+        '2026-10-29T08:05:00.000Z',
+      )
+      await Promise.all(done)
+      assertEquals(
+        store.calls.map((c) => 'given_at' in c.body),
+        [true, false],
+      )
+      assertEquals(marked, 2)
+    } finally {
+      delete (globalThis as { EdgeRuntime?: unknown }).EdgeRuntime
+    }
+
+    // The job: the same, from the row's updated_at.
+    store.calls.length = 0
+    const fb = thumb('f-1', { verdict: 'good', reason: null })
+    const { db } = fakeDb(
+      [lookup('l-1', { store_synced_at: '2026-10-29T07:00:00.000Z' })],
+      [fb],
+    )
+    const out = await runSync(db)
+    assertEquals(out.feedback.sent, 1)
+    assertEquals(
+      store.calls.map((c) => c.body.given_at ?? null),
+      [fb.updated_at, null],
+    )
+    if (!fb.store_synced_at) throw new Error('feedback must be marked')
+
+    // A store that knows given_at gets exactly one call.
+    store.noGivenAt = false
+    store.calls.length = 0
+    const fb2 = thumb('f-2', { verdict: 'bad', reason: 'wrong_person' })
+    const { db: db2 } = fakeDb(
+      [lookup('l-2', { store_synced_at: '2026-10-29T07:00:00.000Z' })],
+      [fb2],
+    )
+    await runSync(db2)
+    assertEquals(store.calls.length, 1)
+    assertEquals(store.calls[0]!.body.reason, 'wrong_person')
+  },
+)
