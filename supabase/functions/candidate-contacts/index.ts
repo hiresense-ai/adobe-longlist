@@ -79,6 +79,8 @@ import {
   valuesByOrigin,
   type PersonRows,
 } from './flow.ts'
+import { upsertUnsynced, type RowVersion } from './store-sync.ts'
+import { markSynced } from './store-sync-db.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -441,6 +443,10 @@ async function enforceLimit(admin: Admin, callerId: string) {
   }
 }
 
+/**
+ * Saves a lookup row; it counts as not yet in the shared store until a send of
+ * exactly this version lands (store-sync.ts). Returns that version.
+ */
 async function store(
   admin: Admin,
   candidate: DashboardCandidate,
@@ -448,8 +454,10 @@ async function store(
   result: VendorResult,
   callerId: string,
   dashboardId: string,
-) {
-  const { error } = await admin.from('candidate_contact_lookups').upsert(
+): Promise<RowVersion> {
+  return await upsertUnsynced(
+    admin,
+    'candidate_contact_lookups',
     {
       linkedin_key: candidate.linkedinKey,
       linkedin_url: candidate.linkedinUrl,
@@ -463,12 +471,14 @@ async function store(
       dashboard_id: dashboardId,
       candidate_name: candidate.name,
       requested_by: callerId,
-      updated_at: new Date().toISOString(),
     },
-    { onConflict: 'linkedin_key,vendor' },
+    'linkedin_key,vendor',
   )
-  if (error) throw error
 }
+
+/** Marks a lookup row synced once its send landed (only that same version). */
+const markLookupSynced = (admin: Admin, saved: RowVersion) => () =>
+  markSynced(admin, 'candidate_contact_lookups', saved.id, saved.updated_at)
 
 async function runLookup(
   admin: Admin,
@@ -668,11 +678,24 @@ async function runVendors(
   } else if (salesqlReady) {
     await enforceLimit(admin, callerId)
     const result = await salesqlLookup(candidate)
-    await store(admin, candidate, 'salesql', result, callerId, dashboardId)
+    const saved = await store(
+      admin,
+      candidate,
+      'salesql',
+      result,
+      callerId,
+      dashboardId,
+    )
     // What SalesQL found goes to the shared store, so no platform pays for it
-    // again — in the background, so the reveal never waits on the store.
+    // again — in the background, so the reveal never waits on the store. The
+    // row is marked synced when it lands; if not, contact-store-sync sends it.
     if (result.status === 'found') {
-      contactStoreSaveLater(candidate.linkedinUrl, 'salesql', result)
+      contactStoreSaveLater(
+        candidate.linkedinUrl,
+        'salesql',
+        result,
+        markLookupSynced(admin, saved),
+      )
     }
     stillMissing =
       result.status === 'error'
@@ -727,7 +750,9 @@ async function storeBackup(
           ? 'error'
           : 'not_found'
 
-  const { error } = await admin.from('candidate_contact_lookups').upsert(
+  const saved = await upsertUnsynced(
+    admin,
+    'candidate_contact_lookups',
     {
       linkedin_key: candidate.linkedinKey,
       linkedin_url: candidate.linkedinUrl,
@@ -747,17 +772,20 @@ async function storeBackup(
       dashboard_id: dashboardId,
       candidate_name: candidate.name,
       requested_by: callerId,
-      updated_at: new Date().toISOString(),
     },
-    { onConflict: 'linkedin_key,vendor' },
+    'linkedin_key,vendor',
   )
-  if (error) throw error
-  // What the backup found for the kinds asked goes to the shared store (in the background).
-  if (result.status === 'found') {
-    contactStoreSaveLater(candidate.linkedinUrl, 'bettercontact', {
-      emails: asksEmail ? result.emails : [],
-      phones: asksPhone ? result.phones : [],
-    })
+  // The row's values go to the shared store (in the background): all of them,
+  // not only this search's kind, so marking the row synced never skips a
+  // value an earlier send failed to deliver (a value the store holds is not
+  // duplicated). Marked when it lands; if not, contact-store-sync sends it.
+  if (result.status === 'found' && (emails.length || phones.length)) {
+    contactStoreSaveLater(
+      candidate.linkedinUrl,
+      'bettercontact',
+      { emails, phones },
+      markLookupSynced(admin, saved),
+    )
   }
 }
 
@@ -816,8 +844,9 @@ async function saveFeedback(
     return
   }
 
-  const now = new Date().toISOString()
-  const { error } = await admin.from('candidate_contact_feedback').upsert(
+  const saved = await upsertUnsynced(
+    admin,
+    'candidate_contact_feedback',
     {
       linkedin_key: candidate.linkedinKey,
       contact_kind: kind,
@@ -829,18 +858,27 @@ async function saveFeedback(
       candidate_name: candidate.name,
       created_by: callerId,
       updated_by: callerId,
-      updated_at: now,
     },
-    { onConflict: 'linkedin_key,contact_kind,contact_value' },
+    'linkedin_key,contact_kind,contact_value',
   )
-  if (error) throw error
   // Shared with every platform: a 👎 here stops others being shown a dead
-  // contact. In the background, so the 👍/👎 never waits on the store.
+  // contact. In the background, so the 👍/👎 never waits on the store. Marked
+  // synced when it lands; if not, contact-store-sync sends it later.
   contactStoreFeedbackLater(
     candidate.linkedinUrl,
     kind,
     value,
     verdict,
     verdict === 'bad' ? reason : null,
+    () =>
+      markSynced(
+        admin,
+        'candidate_contact_feedback',
+        saved.id,
+        saved.updated_at,
+      ),
+    // When the 👍/👎 was saved: a later re-send of it (the sync job, a retry)
+    // can then never undo a newer verdict in the store.
+    saved.updated_at,
   )
 }

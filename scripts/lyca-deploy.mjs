@@ -11,6 +11,12 @@
  *   db-push-dry-run           show what db-push would apply (changes nothing)
  *   db-push                   apply pending migrations
  *   functions-deploy [name]   deploy one / every Edge Function
+ *   db-query <file.sql>       run one SQL file on the Lyca database (through
+ *                             the Management API, `supabase db query
+ *                             --linked`). For one-off setup that must not
+ *                             live in a migration, e.g. the contact-store-sync
+ *                             schedule (HIR-526), whose secret is not in git.
+ *                             Prints the query's result only, never the file.
  *
  * Every command runs in a throw-away work directory assembled from the same
  * sources as the local Lyca stack (supabase/migrations + workspaces/lyca/
@@ -21,6 +27,7 @@
 import { spawnSync } from 'node:child_process'
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -47,9 +54,16 @@ const commands = [
   'db-push-dry-run',
   'db-push',
   'functions-deploy',
+  'db-query',
 ]
 if (!commands.includes(command)) {
   fail(`usage: node scripts/lyca-deploy.mjs <${commands.join(' | ')}>`)
+}
+const sqlFile = command === 'db-query' && name ? resolve(name) : null
+if (command === 'db-query') {
+  if (!sqlFile || !sqlFile.endsWith('.sql') || !existsSync(sqlFile)) {
+    fail('usage: node scripts/lyca-deploy.mjs db-query <existing file.sql>')
+  }
 }
 if (LYCA_PROJECT_REF === ADOBE_PRODUCTION_PROJECT_REF) {
   fail('Lyca ref equals the Adobe production ref.')
@@ -116,6 +130,8 @@ try {
   if (command === 'db-push-dry-run')
     ok = cli(['db', 'push', '--linked', '--dry-run'])
   if (command === 'db-push') ok = cli(['db', 'push', '--linked'])
+  if (command === 'db-query')
+    ok = cli(['db', 'query', '--linked', '--file', `"${sqlFile}"`])
   if (command === 'functions-deploy') {
     const names = name
       ? [name]

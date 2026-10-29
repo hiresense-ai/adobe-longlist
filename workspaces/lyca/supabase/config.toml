@@ -108,3 +108,8 @@ verify_jwt = true
 # other functions above.
 [functions.action-logs]
 verify_jwt = true
+
+# contact-store-sync (HIR-526) is called by a pg_cron + pg_net job and checks
+# its own secret (CONTACT_STORE_SYNC_SECRET) — see supabase/config.toml.
+[functions.contact-store-sync]
+verify_jwt = false
