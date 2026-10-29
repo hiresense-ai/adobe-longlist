@@ -25,6 +25,9 @@ export interface ContactValueView {
   /** Whether 👍/👎 is shown: store values, and SalesQL values while
    * BetterContact has not been asked for that kind (decided server-side). */
   feedback: boolean
+  /** Its own source called it invalid (a SalesQL "Invalid" email, an
+   * is_valid:false phone). Only listed while nothing usable exists. */
+  invalid?: boolean
 }
 
 /** Per kind: is a backup search running, can one be started, has the
@@ -33,6 +36,9 @@ export interface ContactKindState {
   searching: boolean
   canFind: boolean
   exhausted: boolean
+  /** A source failed (the store down, a vendor error) and nothing usable
+   * came back: "temporarily unavailable, try again", not "not found". */
+  unavailable?: boolean
 }
 
 export interface CandidateContactView {

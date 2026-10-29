@@ -29,11 +29,13 @@
 //                    offered (as "Find email / number") for a kind with no
 //                    value at all that a vendor never answered for.
 
+import { logStoreFailure } from './contact-store.ts'
+import { normalizePhone } from './phone.ts'
 import type { ContactKind, VendorResult } from './vendors.ts'
 
 export interface Found {
-  emails: Array<{ value: string }>
-  phones: Array<{ value: string }>
+  emails: Array<{ value: string; status?: string | null }>
+  phones: Array<{ value: string; valid?: boolean | null }>
 }
 
 /** A stored value is only used when `value` is a non-empty string. */
@@ -52,28 +54,60 @@ function valuesOf<T extends { value?: unknown }>(
   return (Array.isArray(list) ? list : []).filter(usableValue)
 }
 
-/** The kinds, from those asked, that `found` has no value for. */
+/**
+ * A value its own vendor said is bad (HIR-528): a SalesQL email with status
+ * "Invalid" (or a BetterContact "undeliverable"), a phone with is_valid false.
+ * It does not count as found: the next vendor is asked for that kind.
+ */
+export function isInvalid(
+  kind: ContactKind,
+  v: { status?: unknown; valid?: unknown } | null | undefined,
+): boolean {
+  if (!v) return false
+  if (kind === 'phone') return v.valid === false
+  const status = typeof v.status === 'string' ? v.status.toLowerCase() : ''
+  return status === 'invalid' || status === 'undeliverable'
+}
+
+/** The row's values of one kind that count as found: malformed and invalid ones dropped. */
+type AnyValue = { value?: unknown; status?: unknown; valid?: unknown }
+
+export function usableValuesOf(
+  row:
+    | { emails?: AnyValue[] | null; phones?: AnyValue[] | null }
+    | null
+    | undefined,
+  kind: ContactKind,
+): Array<AnyValue & { value: string }> {
+  return valuesOf<AnyValue>(row, kind).filter((v) => !isInvalid(kind, v))
+}
+
+/** The kinds, from those asked, that `found` has no usable value for. */
 export function kindsMissing(
   found: Found | null,
   kinds: ContactKind[],
 ): ContactKind[] {
-  return kinds.filter((kind) => !valuesOf(found, kind).length)
-}
-
-/** How a value is compared: emails ignore case, phones are taken as stored. */
-export function contactId(kind: ContactKind, value: string): string {
-  return kind === 'email' ? value.trim().toLowerCase() : value.trim()
+  return kinds.filter((kind) => !usableValuesOf(found, kind).length)
 }
 
 /**
- * How a value is matched to Lyca's vendor rows when deciding its origin:
- * emails ignore case, phones compare digits only (the store may format a
- * number differently from the vendor that found it).
+ * How two values are compared everywhere (de-dup, "marked bad", "is it new",
+ * feedback, origin): emails trimmed and lower-cased; phones in the shared
+ * format (phone.ts), the text as stored when it is not a phone.
  */
+export function contactId(kind: ContactKind, value: string): string {
+  if (kind === 'email') return value.trim().toLowerCase()
+  return normalizePhone(value) ?? value.trim()
+}
+
+/** Whether two values of a kind are the same contact. */
+export function sameContact(kind: ContactKind, a: string, b: string): boolean {
+  return contactId(kind, a) === contactId(kind, b)
+}
+
+/** How a value is matched to Lyca's vendor rows when deciding its origin. */
 function sourceKey(kind: ContactKind, value: string): string {
-  return kind === 'email'
-    ? value.trim().toLowerCase()
-    : value.replace(/[^\d]/g, '') || value.trim()
+  return contactId(kind, value)
 }
 
 /** What the dashboard is told: a store value, or one of Lyca's vendors'. */
@@ -172,6 +206,8 @@ export interface ContactItem {
   source: ContactSource
   /** Whether 👍/👎 is shown for this value (decided here, see the header). */
   feedback: boolean
+  /** Its own vendor said it is bad (isInvalid): shown as such, hidden when a usable one exists. */
+  invalid: boolean
 }
 
 /**
@@ -211,10 +247,13 @@ export function mergeContacts(
         reason: f?.reason ?? null,
         source: sourceOf(kind, raw.value, rows),
         feedback: takesFeedback(kind, raw.value, rows),
+        invalid: isInvalid(kind, raw),
       })
     }
   }
-  return items
+  // A value its vendor called invalid is only shown while nothing better exists.
+  const better = items.some((x) => !x.invalid && x.verdict !== 'bad')
+  return better ? items.filter((x) => !x.invalid) : items
 }
 
 /** The values of a kind, by origin, as canFindAnother takes them. */
@@ -233,26 +272,70 @@ export function valuesByOrigin(
   return { storeValues, salesqlValues }
 }
 
+/** The store's lookup answer: the values, plus the kinds ZipLabs is still fetching. */
+export interface StoreAnswer extends VendorResult {
+  /** Kinds a paid ZipLabs fetch is still running for (SHARED_CONTRACT.md §2). */
+  pending?: ContactKind[]
+  /** When to ask again, with `pending`. */
+  retryAfterMs?: number | null
+}
+
+/** A `pending` kind is waited for at most this long before asking again (once). */
+export const PENDING_WAIT_MAX_MS = 5_000
+const PENDING_WAIT_DEFAULT_MS = 1_000
+
+export interface StoreFirstOptions {
+  /** How to wait for `retry_after_ms` (tests pass a fake). */
+  sleep?: (ms: number) => Promise<void>
+  /** Called when the store could not answer (down, slow, an error answer). */
+  onUnavailable?: (err: unknown) => void
+}
+
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
 /**
  * "Get contact": the shared store first, then which kinds Lyca's vendors must
  * run for. Any store failure (down, slow, an error answer) is swallowed and
  * every kind goes to the vendors — a reveal never shows a store error.
+ *
+ * A kind the store answers as `pending` (ZipLabs still fetching it) is not
+ * bought from a vendor yet: wait `retry_after_ms` (at most 5 s), ask once more,
+ * and only what is then still missing (pending or not) goes to the vendors.
  */
 export async function storeFirst(
-  lookup: () => Promise<VendorResult>,
+  lookup: () => Promise<StoreAnswer>,
   kinds: ContactKind[],
+  options: StoreFirstOptions = {},
 ): Promise<{ fromStore: VendorResult | null; missing: ContactKind[] }> {
+  let answer: StoreAnswer
   try {
-    const fromStore = await lookup()
-    if (fromStore.status !== 'found') return { fromStore: null, missing: kinds }
-    return { fromStore, missing: kindsMissing(fromStore, kinds) }
+    answer = await lookup()
   } catch (err) {
-    console.warn(
-      'contact store unavailable, using the vendors:',
-      err instanceof Error ? err.message : String(err),
-    )
+    logStoreFailure('contact store unavailable, using the vendors', err)
+    options.onUnavailable?.(err)
     return { fromStore: null, missing: kinds }
   }
+  const pending = (Array.isArray(answer.pending) ? answer.pending : []).filter(
+    (k) => kinds.includes(k),
+  )
+  if (pending.length) {
+    const after = Number(answer.retryAfterMs)
+    const ms =
+      Number.isFinite(after) && after >= 0 ? after : PENDING_WAIT_DEFAULT_MS
+    await (options.sleep ?? wait)(Math.min(ms, PENDING_WAIT_MAX_MS))
+    try {
+      const again = await lookup()
+      // The second answer is the newer one; the first stands if it says less.
+      if (again.status === 'found' || answer.status !== 'found') answer = again
+    } catch (err) {
+      logStoreFailure(
+        'contact store re-ask failed, using the first answer',
+        err,
+      )
+    }
+  }
+  if (answer.status !== 'found') return { fromStore: null, missing: kinds }
+  return { fromStore: answer, missing: kindsMissing(answer, kinds) }
 }
 
 export interface VendorsLeft {
@@ -274,15 +357,55 @@ export function kindsToResume(
   left: VendorsLeft,
 ): ContactKind[] {
   return kinds.filter((kind) => {
-    const anyValue = [rows.shared, rows.salesql, rows.bettercontact].some(
-      (row) => valuesOf(row, kind).length > 0,
-    )
-    if (anyValue) return false
+    if (hasUsable(rows, kind)) return false
     return (
       (left.salesqlReady && !left.salesqlAsked) ||
       (left.backupReady && !backupAskedFor(kind, rows))
     )
   })
+}
+
+/** Any source holds a usable value of this kind (invalid ones do not count). */
+function hasUsable(rows: PersonRows, kind: ContactKind): boolean {
+  return [rows.shared, rows.salesql, rows.bettercontact].some(
+    (row) => usableValuesOf(row, kind).length > 0,
+  )
+}
+
+/**
+ * Whether the shared store was really asked for this person: its answer is
+ * recorded as the contact_store row (found / not_found). No row (a lookup from
+ * before the store, or with the store unset) or status 'error' (the store was
+ * down or slow) means it was not.
+ */
+export function storeAsked(rows: PersonRows): boolean {
+  const status = rows.shared?.status
+  return !!rows.shared && status !== 'error'
+}
+
+/**
+ * The kinds to ask the store for before any paid vendor on a later "Get
+ * contact" (HIR-528): kinds with no usable value, while the store was never
+ * really asked for this person.
+ */
+export function kindsForStore(
+  rows: PersonRows,
+  kinds: ContactKind[],
+  storeReady: boolean,
+): ContactKind[] {
+  if (!storeReady || storeAsked(rows)) return []
+  return kinds.filter((kind) => !hasUsable(rows, kind))
+}
+
+/**
+ * A kind with nothing usable while a source failed (the store down, a vendor
+ * error): "temporarily unavailable, try again", never a final "not found".
+ */
+export function kindUnavailable(rows: PersonRows, kind: ContactKind): boolean {
+  if (hasUsable(rows, kind)) return false
+  return [rows.shared, rows.salesql, rows.bettercontact].some(
+    (row) => row?.status === 'error',
+  )
 }
 
 export interface FindAnotherInput {

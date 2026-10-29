@@ -172,7 +172,8 @@ Deno.test(
     )
     assertEquals(
       mergeContacts('phone', rows, noVerdicts).map((p) => p.source),
-      ['vendor', 'vendor'],
+      // HIR-528: one phone format, so the two spellings are one number.
+      ['vendor'],
     )
     assertEquals(sourceOf('phone', '+15550100', rows), 'vendor')
     assertEquals(sourceOf('email', 'jane.roe@example.net', rows), 'store')

@@ -199,16 +199,16 @@ Deno.test('nothing is called while unconfigured', async () => {
 // --- Timeout --------------------------------------------------------------
 
 Deno.test(
-  'timeout: 3000 ms by default, CONTACT_ENRICHMENT_TIMEOUT_MS overrides',
+  'timeout: 8000 ms by default (HIR-528), CONTACT_ENRICHMENT_TIMEOUT_MS overrides',
   () => {
     Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
-    assertEquals(DEFAULT_TIMEOUT_MS, 3000)
-    assertEquals(contactStoreTimeoutMs(), 3000)
+    assertEquals(DEFAULT_TIMEOUT_MS, 8000)
+    assertEquals(contactStoreTimeoutMs(), 8000)
     Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', '1500')
     assertEquals(contactStoreTimeoutMs(), 1500)
     for (const bad of ['', 'abc', '0', '-5']) {
       Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', bad)
-      assertEquals(contactStoreTimeoutMs(), 3000)
+      assertEquals(contactStoreTimeoutMs(), 8000)
     }
     Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
   },
