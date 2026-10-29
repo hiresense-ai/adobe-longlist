@@ -62,6 +62,7 @@ import {
   storeFeedbackBody,
   type StoreContactInput,
 } from './contact-store.ts'
+import { sameContact } from './flow.ts'
 import type { ContactKind } from './vendors.ts'
 
 /** One store call in the job may take this long (the run as a whole is bounded too). */
@@ -181,14 +182,23 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.name : 'error'
 }
 
-class StopRun extends Error {}
+class StopRun extends Error {
+  /** The store refused Lyca's key (401 / 403): logged as an error, not a warning. */
+  keyRefused = false
+}
 /** The run's time is used up: the rest waits for the next run (not an error). */
 class OutOfTime extends Error {}
 
 /** Rethrows what must stop the run (as StopRun / OutOfTime); returns for a per-row failure. */
 function stopOn(err: unknown): void {
   if (err instanceof StopRun || err instanceof OutOfTime) throw err
-  if (isOutage(err)) throw new StopRun(describe(err))
+  if (isOutage(err)) {
+    const stop = new StopRun(describe(err))
+    stop.keyRefused =
+      err instanceof ContactStoreUnavailable &&
+      (err.status === 401 || err.status === 403)
+    throw stop
+  }
 }
 
 /** The version of a row just written: what its "synced" mark must match. */
@@ -454,10 +464,16 @@ export async function runSync(
     if (!(err instanceof StopRun)) throw err
     counts.status = 'stopped'
     counts.more = true
-    console.warn(
-      'contact store sync stopped, the rest waits for the next run:',
-      err.message,
-    )
+    if (err.keyRefused) {
+      console.error(
+        `contact store sync stopped: ${err.message} — the store refused Lyca's key; check CONTACT_ENRICHMENT_API_KEY`,
+      )
+    } else {
+      console.warn(
+        'contact store sync stopped, the rest waits for the next run:',
+        err.message,
+      )
+    }
   }
   return counts
 }
@@ -499,7 +515,7 @@ function valueFromRows(
     const match = storeContactsFrom(vendor, {
       emails: f.contact_kind === 'email' ? asList(row.emails) : [],
       phones: f.contact_kind === 'phone' ? asList(row.phones) : [],
-    }).find((c) => c.value === f.contact_value)
+    }).find((c) => sameContact(f.contact_kind, c.value, f.contact_value))
     if (match) return match
   }
   return null

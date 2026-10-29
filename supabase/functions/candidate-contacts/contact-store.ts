@@ -7,9 +7,12 @@
 // Settings (supabase/functions/.env locally, function secrets on the project):
 //   CONTACT_ENRICHMENT_URL       e.g. http://host.docker.internal:4100 for a service on this machine
 //   CONTACT_ENRICHMENT_API_KEY   Lyca's key in that service's PLATFORM_API_KEYS
-//   CONTACT_ENRICHMENT_TIMEOUT_MS  optional; how long any one store call may take before Lyca
-//                                gives up on it (default 3000). A lookup that times out is
-//                                treated like the store being down: the vendors run.
+//   CONTACT_ENRICHMENT_TIMEOUT_MS  optional; how long a reveal waits for the store's lookup
+//                                (default 8000: a first ZipLabs answer through the store takes
+//                                several seconds, SHARED_CONTRACT.md §3). A lookup that times
+//                                out is treated like the store being down: the vendors run.
+//                                Background saves and 👍/👎 have their own short timeout
+//                                (BACKGROUND_TIMEOUT_MS), so they never hold a worker long.
 // With URL or key missing, nothing here is called and the lookup works exactly as before.
 //
 // Only the lookup is waited for. Saves and 👍/👎 go to the store in the background
@@ -25,9 +28,11 @@ import type {
   VendorResult,
 } from './vendors.ts'
 
-export const DEFAULT_TIMEOUT_MS = 3_000
+export const DEFAULT_TIMEOUT_MS = 8_000
+/** Background saves and 👍/👎 (not waited for by anyone) give up after this long. */
+export const BACKGROUND_TIMEOUT_MS = 3_000
 
-/** CONTACT_ENRICHMENT_TIMEOUT_MS, or 3000 when unset or not a positive number. */
+/** CONTACT_ENRICHMENT_TIMEOUT_MS, or 8000 when unset or not a positive number. */
 export function contactStoreTimeoutMs(): number {
   const raw = Number(Deno.env.get('CONTACT_ENRICHMENT_TIMEOUT_MS')?.trim())
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_TIMEOUT_MS
@@ -156,14 +161,19 @@ export async function contactStoreReady(
  */
 export async function contactStoreLookup(
   linkedinUrl: string,
-): Promise<VendorResult> {
-  const body = await post<{ emails?: StoreContact[]; phones?: StoreContact[] }>(
-    '/v1/contacts/lookup',
-    {
-      linkedin_url: linkedinUrl,
-      kinds: ['email', 'phone'],
-    },
-  )
+  kinds: ContactKind[] = ['email', 'phone'],
+): Promise<
+  VendorResult & { pending?: ContactKind[]; retryAfterMs?: number | null }
+> {
+  const body = await post<{
+    emails?: StoreContact[]
+    phones?: StoreContact[]
+    pending?: unknown
+    retry_after_ms?: unknown
+  }>('/v1/contacts/lookup', {
+    linkedin_url: linkedinUrl,
+    kinds,
+  })
   // A value another platform marked bad is left out, and so is a malformed
   // entry (no string value): it would otherwise be saved and break the panel.
   const usable = (items?: StoreContact[]) =>
@@ -184,11 +194,43 @@ export async function contactStoreLookup(
     type: null,
     valid: c.verified,
   }))
+  // ZipLabs still fetching these kinds (SHARED_CONTRACT.md §2). An older store
+  // never sends it: nothing pending.
+  const pending = (Array.isArray(body.pending) ? body.pending : []).filter(
+    (k): k is ContactKind =>
+      (k === 'email' || k === 'phone') && kinds.includes(k),
+  )
+  const retryAfter = Number(body.retry_after_ms)
   return {
     status: emails.length || phones.length ? 'found' : 'not_found',
     emails,
     phones,
+    ...(pending.length
+      ? {
+          pending,
+          retryAfterMs: Number.isFinite(retryAfter) ? retryAfter : null,
+        }
+      : {}),
   }
+}
+
+/**
+ * Logs a failed store call without any contact data. A 401 / 403 means Lyca's
+ * key is wrong or revoked, which no retry fixes: logged as an error, so it is
+ * noticed; anything else (down, slow, busy) is a warning.
+ */
+export function logStoreFailure(label: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  if (
+    err instanceof ContactStoreUnavailable &&
+    (err.status === 401 || err.status === 403)
+  ) {
+    console.error(
+      `${label}: ${message} — the store refused Lyca's key; check CONTACT_ENRICHMENT_API_KEY`,
+    )
+    return
+  }
+  console.warn(`${label}: ${message}`)
 }
 
 /** One value as the store's POST /v1/contacts takes it. */
@@ -255,17 +297,18 @@ export async function contactStoreSave(
   try {
     // The store takes at most SAVE_BATCH contacts per call.
     for (let i = 0; i < contacts.length; i += SAVE_BATCH) {
-      await post('/v1/contacts', {
-        linkedin_url: linkedinUrl,
-        contacts: contacts.slice(i, i + SAVE_BATCH),
-      })
+      await post(
+        '/v1/contacts',
+        {
+          linkedin_url: linkedinUrl,
+          contacts: contacts.slice(i, i + SAVE_BATCH),
+        },
+        BACKGROUND_TIMEOUT_MS,
+      )
     }
     return true
   } catch (err) {
-    console.warn(
-      'contact store save skipped:',
-      err instanceof Error ? err.message : String(err),
-    )
+    logStoreFailure('contact store save skipped', err)
     return false
   }
 }
@@ -353,16 +396,14 @@ export async function contactStoreFeedback(
   try {
     await postFeedback(
       storeFeedbackBody(linkedinUrl, kind, value, verdict, reason, givenAt),
+      BACKGROUND_TIMEOUT_MS,
     )
     return true
   } catch (err) {
     // A 404 means the store does not hold this value (its save failed, or it
     // was looked up before the store existed): the feedback row stays
     // unsynced and the sync job saves the value, then sends the 👍/👎 again.
-    console.warn(
-      'contact store feedback skipped:',
-      err instanceof Error ? err.message : String(err),
-    )
+    logStoreFailure('contact store feedback skipped', err)
     return false
   }
 }

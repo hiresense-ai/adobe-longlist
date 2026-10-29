@@ -2355,6 +2355,8 @@
       email: {
         label: 'Email',
         none: 'No email found.',
+        unavailable:
+          'Email lookup is temporarily unavailable. Try again shortly.',
         noOther: 'No other email found.',
         find: 'Find email',
         findAnother: 'Find another email',
@@ -2363,6 +2365,8 @@
       phone: {
         label: 'Phone',
         none: 'No phone number found.',
+        unavailable:
+          'Phone lookup is temporarily unavailable. Try again shortly.',
         noOther: 'No other phone number found.',
         find: 'Find phone number',
         findAnother: 'Find another number',
@@ -2429,7 +2433,16 @@
         el('span', 'll-contact-icon', kind === 'email' ? '✉' : '☎'),
       )
       line.appendChild(el('span', 'll-contact-value', item.value))
-      var meta = [item.type, item.verified === true ? 'Verified' : null]
+      // A value its own source called invalid (HIR-528) is only shown while
+      // nothing better exists, and says so.
+      var meta = [
+        item.type,
+        item.invalid
+          ? 'Marked invalid by the source'
+          : item.verified === true
+            ? 'Verified'
+            : null,
+      ]
         .filter(Boolean)
         .join(' · ')
       if (meta) line.appendChild(el('span', 'll-contact-meta', meta))
@@ -2530,8 +2543,11 @@
       })
 
       var usable = items.filter(function (x) {
-        return x.verdict !== 'bad'
+        return x.verdict !== 'bad' && !x.invalid
       })
+      // A source failed and nothing usable came back (HIR-528): not a final
+      // "not found", the next try may find it.
+      var unavailable = !!kindState.unavailable && !usable.length
       var foot = el('div', 'll-contact-empty')
       if (kindState.searching) {
         foot.appendChild(
@@ -2557,7 +2573,9 @@
           )
         }
       } else {
-        if (!items.length) {
+        if (unavailable) {
+          foot.appendChild(el('span', 'll-contact-muted', text.unavailable))
+        } else if (!items.length) {
           foot.appendChild(el('span', 'll-contact-muted', text.none))
         } else if (kindState.exhausted && !usable.length) {
           foot.appendChild(el('span', 'll-contact-muted', text.noOther))
@@ -2565,7 +2583,11 @@
         if (kindState.canFind && CAN_LOOKUP_CONTACTS) {
           foot.appendChild(
             button(
-              items.length ? text.findAnother : text.find,
+              unavailable
+                ? 'Try again'
+                : items.length
+                  ? text.findAnother
+                  : text.find,
               'll-contact-btn',
               function () {
                 request('backup', false, [kind])

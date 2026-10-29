@@ -14,12 +14,24 @@ The code is in `supabase/functions/candidate-contacts/`, with the flow decisions
 
 "Get contact" asks, in this order, and stops at the first source that has a value for each kind (email, phone):
 
-1. **Lyca's own rows.** A person looked up before is never bought again. Only kinds that still have no value, and that a vendor never answered for, are searched again.
+1. **Lyca's own rows.** A person looked up before is never bought again. Only kinds that still have no usable value are searched again: first in the store if it was never really asked for this person (it was down at the time, or the lookup predates it), then with a vendor that never answered for that kind.
 2. **The shared contact store** at `CONTACT_ENRICHMENT_URL` (the contact-enrichment service). It holds what any HireSense platform has already revealed. If it has nothing usable, it asks ZipLabs on demand.
-   - If the store is down, slow (longer than `CONTACT_ENRICHMENT_TIMEOUT_MS`) or answers with an error, Lyca goes straight on to its vendors. No error is shown.
+   - Lyca waits up to `CONTACT_ENRICHMENT_TIMEOUT_MS` (8 s by default), because a first ZipLabs answer takes several seconds.
+   - **Still fetching.** The store may answer `pending` for a kind (ZipLabs is still fetching it) with `retry_after_ms`. Lyca then pays no vendor for that kind yet: it waits that long (at most 5 s), asks the store once more, and only what is still missing then goes to the vendors.
+   - If the store is down, slow or answers with an error, Lyca goes on to its vendors. That is recorded (a `contact_store` row with status `error`), so a later "Get contact" asks the store again.
 3. **SalesQL**, automatically, for each kind the store did not have.
 4. **BetterContact**, automatically, for each kind SalesQL did not find.
    - BetterContact answers later. The panel checks back (a free status check, never a new charge).
+
+**A vendor value its own vendor calls bad does not count as found.** That means a SalesQL email with status "Invalid", or a phone with `is_valid: false`. BetterContact is asked for that kind. Such a value is shown, marked "invalid by the source", only while nothing better exists.
+
+**One paid call per person and vendor at a time.** Two recruiters, two tabs or a double click on the same person pay SalesQL once and BetterContact once:
+- Before paying, the request claims the person and vendor in `candidate_contact_claims`, with an insert that does nothing if the row exists.
+- The request that gets the row pays and saves the answer, then deletes the row.
+- The others wait (up to 30 s) and show the saved answer.
+- A claim older than 3 minutes was left by a request that died, and is taken over.
+
+**Outage is not "no contact".** If the store or a vendor failed and nothing usable came back, the panel says the lookup is temporarily unavailable and offers "Try again". It never shows a final "No email found" in that case.
 
 The dashboard only ever sees "Email" and "Phone", plus whether a value came from the store or from Lyca's own vendors. It is never told which vendor.
 
@@ -34,9 +46,17 @@ It is never offered on BetterContact values, because there is no vendor left to 
 **"Find another email / number" is offered:**
 - after a 👎 on a store value: the next vendor not yet asked for that kind (SalesQL, else BetterContact);
 - after a 👎 on a SalesQL value: BetterContact, if not yet asked for that kind;
-- as "Find email / number" for a kind with no value that a vendor never answered for.
+- as "Find email / number" for a kind with no value that a vendor never answered for, or that the store was never really asked for.
 
 It is never offered after BetterContact. Each kind is bought from each vendor at most once per person.
+
+"Find another", and resuming a person looked up before, **ask the store first** for the kinds wanted. A value the store has that is new for this person (not shown yet, not marked 👎) answers that kind without a paid vendor.
+
+**One phone format for every comparison.** The rule is in `phone.ts`, the same as contact-enrichment and HireTap:
+- India (+91) is the default country.
+- `+91 98765 43210`, `098765 43210` and `9876543210` are one number.
+
+The comparisons that use it: de-duplication, "is this marked 👎", "is this new" for Find another, and which row a 👍/👎 belongs to. Rows keep the vendor's own text; only the comparisons use the shared format.
 
 ## What is saved where
 
@@ -44,6 +64,7 @@ It is never offered after BetterContact. Each kind is bought from each vendor at
 | --- | --- |
 | `candidate_contact_lookups` (Lyca's Supabase) | One row per person and source (`contact_store`, `salesql`, `bettercontact`): the emails and phones found, status, which kinds were searched. Service role only, no browser access. |
 | `candidate_contact_feedback` (Lyca's Supabase) | One current 👍/👎 (with reason) per value. Service role only. |
+| `candidate_contact_claims` (Lyca's Supabase) | A paid vendor call in progress: at most one per person and vendor, normally empty. Service role only. |
 | The shared contact store | Every value SalesQL or BetterContact found, and every 👍/👎, so no HireSense platform pays for the same contact twice. Stored encrypted by the contact-enrichment service. |
 
 ## Keeping the store in step (HIR-526)
@@ -68,15 +89,20 @@ It is never offered after BetterContact. Each kind is bought from each vendor at
 | --- | --- |
 | `CONTACT_ENRICHMENT_URL` | The contact-enrichment service. Unset: the store is skipped and the vendors run as before. |
 | `CONTACT_ENRICHMENT_API_KEY` | Lyca's key for that service. |
-| `CONTACT_ENRICHMENT_TIMEOUT_MS` | How long a reveal waits for the store (default 3000). Use **8000** once the store's ZipLabs-on-demand is live, because a first ZipLabs answer takes longer. |
+| `CONTACT_ENRICHMENT_TIMEOUT_MS` | How long a reveal waits for the store (default **8000**). Keep 8000 on Lyca prod before ZipLabs on demand goes live on the store. Background saves and 👍/👎 have their own 3 s timeout. |
 | `CONTACT_STORE_SYNC_SECRET` | The catch-up job's own key: the cron job sends it as header `x-contact-store-sync-secret`. While unset, `contact-store-sync` refuses every call. The cron job reads it from Supabase Vault. |
 | `SALESQL_API_KEY`, `BETTERCONTACT_API_KEY` | The vendors. Unset: that vendor is skipped. |
+| `SALESQL_API_URL`, `BETTERCONTACT_API_URL` | Local tests against a fake vendor only. Never set them on a hosted project. |
+
+A store answer of 401 or 403 means Lyca's key is wrong or revoked. It is logged as an error, not a warning.
 
 Locally these go in `supabase/functions/.env`, which is gitignored. Never commit a value.
 
 ## Going live
 
 Migrations and functions reach the Lyca project only through `scripts/lyca-deploy.mjs` (see [ENVIRONMENTS.md](ENVIRONMENTS.md)).
+
+**Always migrations before functions.** For example, `20261029000002_contact_lookup_claims.sql` must be applied before the `candidate-contacts` that uses the claims. Without the table, every paid lookup fails instead of paying.
 
 The catch-up job needs one more step: a secret and a schedule that must not live in git. The user does this with a go-live script kept outside the repo (`qa-runs/2026-10-29/lyca-store-sync/lyca-store-sync-go-live.ps1`, with its own README). It:
 - applies the migration;

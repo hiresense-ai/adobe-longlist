@@ -17,8 +17,15 @@
 //                           https://app.bettercontact.rocks/api/v2). Only for
 //                           local tests against a fake server — never set it
 //                           on a hosted project.
+//   SALESQL_API_URL         optional; SalesQL's API base (default
+//                           https://api-public.salesql.com/v1). Same: local
+//                           tests against a fake server only.
+//
+// A vendor's error text never carries the request (it would hold the
+// LinkedIn URL): a failed call says only that the source could not be reached.
 
 import type { DashboardCandidate } from './candidates.ts'
+import { normalizePhone } from './phone.ts'
 
 export type Vendor = 'salesql' | 'bettercontact'
 /** Where a cached answer came from: a vendor, or the shared contact store (contact-store.ts). */
@@ -95,7 +102,7 @@ export async function salesqlLookup(
   const apiKey = key('SALESQL_API_KEY')
   if (!apiKey) return errorResult('Contact lookup is not configured.')
 
-  const url = new URL('https://api-public.salesql.com/v1/persons/enrich')
+  const url = new URL(`${salesqlBase()}/persons/enrich`)
   url.searchParams.set('linkedin_url', candidate.linkedinUrl)
 
   let res: Response
@@ -106,9 +113,9 @@ export async function salesqlLookup(
         accept: 'application/json',
       },
     })
-  } catch (err) {
+  } catch {
     return errorResult(
-      `Contact lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      'Contact lookup failed: the source could not be reached.',
     )
   }
 
@@ -145,7 +152,12 @@ export async function salesqlLookup(
   const phones: ContactPhone[] = []
   for (const p of Array.isArray(body.phones) ? body.phones : []) {
     const value = typeof p?.phone === 'string' ? p.phone.trim() : ''
-    if (!value || phones.some((x) => x.value === value)) continue
+    const id = normalizePhone(value) ?? value
+    if (
+      !value ||
+      phones.some((x) => (normalizePhone(x.value) ?? x.value) === id)
+    )
+      continue
     phones.push({
       value,
       type: typeof p.type === 'string' ? p.type : null,
@@ -153,6 +165,14 @@ export async function salesqlLookup(
     })
   }
   return finish(emails, phones)
+}
+
+export const SALESQL_DEFAULT_BASE = 'https://api-public.salesql.com/v1'
+
+/** SALESQL_API_URL (no trailing slash), or SalesQL's own API. */
+export function salesqlBase(): string {
+  const url = Deno.env.get('SALESQL_API_URL')?.trim().replace(/\/+$/, '')
+  return url || SALESQL_DEFAULT_BASE
 }
 
 // ---------------------------------------------------------- BetterContact
@@ -218,9 +238,9 @@ export async function betterContactLookup(
   let res: Response
   try {
     res = await bcStart(candidate, kinds, apiKey)
-  } catch (err) {
+  } catch {
     return errorResult(
-      `Backup contact search failed: ${err instanceof Error ? err.message : String(err)}`,
+      'Backup contact search failed: the source could not be reached.',
     )
   }
   if (res.status === 401)
@@ -272,13 +292,13 @@ export async function betterContactPoll(
         headers: { 'X-API-Key': apiKey },
       },
     )
-  } catch (err) {
+  } catch {
     return {
       status: 'pending',
       emails: [],
       phones: [],
       requestId,
-      error: `Backup contact check failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: 'Backup contact check failed: the source could not be reached.',
     }
   }
   if (res.status === 401)
