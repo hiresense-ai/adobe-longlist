@@ -152,12 +152,10 @@ export async function salesqlLookup(
   const phones: ContactPhone[] = []
   for (const p of Array.isArray(body.phones) ? body.phones : []) {
     const value = typeof p?.phone === 'string' ? p.phone.trim() : ''
-    const id = normalizePhone(value) ?? value
-    if (
-      !value ||
-      phones.some((x) => (normalizePhone(x.value) ?? x.value) === id)
-    )
-      continue
+    // A value the shared phone rule refuses (e.g. "12345") is not a phone:
+    // not kept, so BetterContact is asked for one (BUG-4).
+    const id = normalizePhone(value)
+    if (!id || phones.some((x) => normalizePhone(x.value) === id)) continue
     phones.push({
       value,
       type: typeof p.type === 'string' ? p.type : null,
@@ -343,7 +341,9 @@ export async function betterContactPoll(
       typeof lead.contact_phone_number === 'string'
         ? lead.contact_phone_number.trim()
         : ''
-    if (phone) phones.push({ value: phone, type: 'Mobile', valid: null })
+    // Only a value the shared phone rule accepts is a phone.
+    if (normalizePhone(phone))
+      phones.push({ value: phone, type: 'Mobile', valid: null })
   }
   const credits =
     typeof body.credits_consumed === 'number' ? body.credits_consumed : null
