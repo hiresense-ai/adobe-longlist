@@ -4,6 +4,55 @@ How Lyca finds a candidate's email and phone, what it keeps, and how it stays in
 
 The code is in `supabase/functions/candidate-contacts/`, with the flow decisions in `flow.ts`. The catch-up job is `supabase/functions/contact-store-sync/`.
 
+## What is live and what is in review (3 Nov 2026)
+
+| State | What |
+| --- | --- |
+| **Live on Lyca production** (`main`, PRs #39/#40 and #43/#44) | "Get contact" asks the store (3 s, no `ziplabs: false`), then SalesQL, then BetterContact, both automatic; the vendors' answers and every 👍/👎 go to the store in the background; Find another after a 👎 goes to the next vendor not yet asked |
+| **In review** | #46 (HIR-526): `store_synced_at` and the catch-up job. #47 (HIR-528): claims, one phone format, an 8 s store wait, `pending`, outages shown as such. #48 (HIR-537): `CONTACT_VENDORS_VIA_SERVICE`. This document describes the three together |
+| **Not built** | Showing the service's email `check` in the panel (it is stored only); a rate limit on the panel's automatic re-check while the setting is on |
+
+Whether the store's secrets are set on the Lyca project, and whether the catch-up job is scheduled, cannot be seen from the repo.
+
+## The flow at a glance
+
+```mermaid
+sequenceDiagram
+  participant U as Recruiter (dashboard panel)
+  participant H as Lyca app (useDashboardStatusBridge)
+  participant F as Edge function candidate-contacts
+  participant DB as Lyca Postgres
+  participant S as Contact service
+  participant V as SalesQL / BetterContact
+  U->>H: Get contact
+  H->>F: POST {action: lookup, payload}
+  F->>DB: role, dashboard access, candidate in the dashboard file, 60 lookups per 10 min
+  F->>DB: rows already held for this person
+  alt CONTACT_VENDORS_VIA_SERVICE=true
+    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds, name, company} (at least 20 s)
+    S-->>F: values with status and check, pending and retry_after_ms
+    opt a kind pending
+      F->>S: the same lookup once more (at most 5 s later)
+    end
+    F->>DB: the contact_store row (values, check, pending_kinds, *_searched)
+  else setting off
+    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds} (8 s, store only plus ZipLabs)
+    F->>DB: the contact_store row (status error when the store failed)
+    F->>DB: claim the person and vendor (candidate_contact_claims)
+    F->>V: SalesQL, then BetterContact, for the kinds still missing
+    F->>DB: salesql / bettercontact rows, claim released
+    F--)S: POST /v1/contacts (in the background, the catch-up job re-sends)
+  end
+  F-->>H: emails and phones, source store or vendor, searching, unavailable
+  H-->>U: values, or "temporarily unavailable, Try again", never a vendor name
+  U->>H: 👍 / 👎, then Find another
+  H->>F: POST {action: feedback or lookup, payload}
+  F--)S: POST /v1/contacts/feedback with given_at (in the background)
+  opt Find another, setting on
+    F->>S: POST /v1/contacts/find-another {linkedin_url, kind, shown}
+  end
+```
+
 ## The reveal
 
 **Who can do what:**
@@ -52,9 +101,10 @@ It is never offered after BetterContact. Each kind is bought from each vendor at
 
 "Find another", and resuming a person looked up before, **ask the store first** for the kinds wanted. A value the store has that is new for this person (not shown yet, not marked 👎) answers that kind without a paid vendor.
 
-**One phone format for every comparison.** The rule is in `phone.ts`, the same as contact-enrichment and HireTap:
+**One phone format for every comparison.** The rule is in `phone.ts`, the shared one that contact-enrichment and HireTap use, with one difference:
 - India (+91) is the default country.
 - `+91 98765 43210`, `098765 43210` and `9876543210` are one number.
+- The difference: the service (`src/contacts/contact-value.ts`) and HireTap also refuse a number that starts `+0`, and a `+91` number that is not 12 digits in all. `phone.ts` keeps both as phones, so such a value is a phone here and not in the store.
 
 The comparisons that use it: de-duplication, "is this marked 👎", "is this new" for Find another, and which row a 👍/👎 belongs to. Rows keep the vendor's own text; only the comparisons use the shared format.
 
@@ -78,7 +128,7 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 2. **What the recruiter sees.**
    - The values the service returns whose `status` isn't `bad`, shown as today.
    - Each email keeps the service's email check (`check.result`: `valid`, `invalid` or `unknown`) in Lyca's row. Lyca runs no email check of its own and hides nothing because of it.
-   - The service may go past an email that fails its check, so one answer can hold an invalid and a valid email. Both are shown, each with its own `check`.
+   - The service may go past an email that fails its check, so one answer can hold an invalid and a valid email. Both are shown. Each keeps its own `check` in the row, but the panel does not show the check yet (`flow.ts` does not pass it on), so the recruiter cannot tell them apart.
    - Every value takes 👍/👎, because after any 👎 the service can look further.
 3. **"Find another" is `POST /v1/contacts/find-another`** with `{ linkedin_url, kind, shown }`, after a 👎. `shown` holds every value of that kind Lyca already shows.
    - `exhausted: true` means every source was asked, and the panel says "No other email / number found".
