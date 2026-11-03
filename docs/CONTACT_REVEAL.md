@@ -52,9 +52,11 @@ It is never offered after BetterContact. Each kind is bought from each vendor at
 
 "Find another", and resuming a person looked up before, **ask the store first** for the kinds wanted. A value the store has that is new for this person (not shown yet, not marked 👎) answers that kind without a paid vendor.
 
-**One phone format for every comparison.** The rule is in `phone.ts`, the same as contact-enrichment and HireTap:
+**One phone format for every comparison.** The rule is in `phone.ts`, exactly contact-enrichment's `docs/PHONE.md` (HireTap uses the same rule):
 - India (+91) is the default country.
 - `+91 98765 43210`, `098765 43210` and `9876543210` are one number.
+- A result starting `+0` is not a phone, and a `+91` number is a phone only with 12 digits in all.
+- **A value the rule refuses is not a phone at all** (for example SalesQL's `12345`, even with `is_valid: true`). It is not kept, not shown and not counted as found, so BetterContact is asked for a phone.
 
 The comparisons that use it: de-duplication, "is this marked 👎", "is this new" for Find another, and which row a 👍/👎 belongs to. Rows keep the vendor's own text; only the comparisons use the shared format.
 

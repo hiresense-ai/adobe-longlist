@@ -45,13 +45,19 @@ function usableValue<T extends { value?: unknown }>(
   return !!v && typeof v.value === 'string' && v.value.trim() !== ''
 }
 
-/** The row's values of one kind, malformed ones (no string value) dropped. */
+/**
+ * The row's values of one kind, malformed ones dropped: no string value, or a
+ * phone the shared phone rule refuses (phone.ts; e.g. "12345"). Such a phone
+ * is never shown or counted as found, so the next vendor is asked (BUG-4).
+ */
 function valuesOf<T extends { value?: unknown }>(
   row: { emails?: T[] | null; phones?: T[] | null } | null | undefined,
   kind: ContactKind,
 ): Array<T & { value: string }> {
   const list = row ? (kind === 'email' ? row.emails : row.phones) : null
-  return (Array.isArray(list) ? list : []).filter(usableValue)
+  return (Array.isArray(list) ? list : [])
+    .filter(usableValue)
+    .filter((v) => kind !== 'phone' || normalizePhone(v.value) !== null)
 }
 
 /**
