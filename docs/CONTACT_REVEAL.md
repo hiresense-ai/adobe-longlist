@@ -71,12 +71,14 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 
 1. **"Get contact" is one `POST /v1/contacts/lookup`.**
    - It is sent without `ziplabs: false`, so the service runs Lyca's order from its `WATERFALLS`: the store, then SalesQL, BetterContact, and ZipLabs last.
+   - It carries the candidate's `name` and `company` (what Lyca sends BetterContact today; left out when empty). The service gives them to BetterContact only and never stores them. Find another sends them too.
    - Lyca waits `CONTACT_ENRICHMENT_TIMEOUT_MS`, but never less than 20 s, because each vendor in the order can take its own timeout.
    - A kind in `pending` is waited for (`retry_after_ms`, at most 5 s) and asked once more. A kind still pending shows "Searching…", and the panel's automatic re-check asks the service again for that kind only.
    - A person looked up before is asked again only for kinds that are still pending, or that no source has answered (the last call failed, or Lyca's own vendors never ran for that kind before the switch).
 2. **What the recruiter sees.**
    - The values the service returns whose `status` isn't `bad`, shown as today.
    - Each email keeps the service's email check (`check.result`: `valid`, `invalid` or `unknown`) in Lyca's row. Lyca runs no email check of its own and hides nothing because of it.
+   - The service may go past an email that fails its check, so one answer can hold an invalid and a valid email. Both are shown, each with its own `check`.
    - Every value takes 👍/👎, because after any 👎 the service can look further.
 3. **"Find another" is `POST /v1/contacts/find-another`** with `{ linkedin_url, kind, shown }`, after a 👎. `shown` holds every value of that kind Lyca already shows.
    - `exhausted: true` means every source was asked, and the panel says "No other email / number found".

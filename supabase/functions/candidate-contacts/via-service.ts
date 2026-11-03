@@ -170,14 +170,54 @@ export function parseServiceAnswer(
   }
 }
 
+/**
+ * The person a call is about. `name` and `company` are what Lyca sends
+ * BetterContact today (vendors.ts: the candidate's name and employer); the
+ * service passes them to BetterContact only and never stores them.
+ */
+export interface ServicePerson {
+  linkedinUrl: string
+  name?: string | null
+  company?: string | null
+}
+
+/** A profile URL alone, or the person with name and company. */
+export type PersonInput = string | ServicePerson
+
+/** The name as BetterContact gets it from Lyca (vendors.ts splitName), as one string. */
+export function cleanName(full: string | null | undefined): string {
+  return (full ?? '')
+    .replace(/[^\p{L}\p{M}\s'.-]/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** linkedin_url, plus `name` / `company` when not empty. */
+export function personFields(person: PersonInput): {
+  linkedin_url: string
+  name?: string
+  company?: string
+} {
+  const p = typeof person === 'string' ? { linkedinUrl: person } : person
+  const name = cleanName(p.name)
+  const company = (p.company ?? '').trim()
+  return {
+    linkedin_url: p.linkedinUrl,
+    ...(name ? { name } : {}),
+    ...(company ? { company } : {}),
+  }
+}
+
 /** POST /v1/contacts/lookup through Lyca's order (no `ziplabs: false`). Throws ContactStoreUnavailable. */
 export async function serviceLookup(
-  linkedinUrl: string,
+  person: PersonInput,
   kinds: ContactKind[],
 ): Promise<ServiceAnswer> {
   const body = await post(
     '/v1/contacts/lookup',
-    { linkedin_url: linkedinUrl, kinds },
+    { ...personFields(person), kinds },
     viaServiceTimeoutMs(),
   )
   return parseServiceAnswer(body, kinds)
@@ -185,13 +225,13 @@ export async function serviceLookup(
 
 /** POST /v1/contacts/find-another for one kind. Throws ContactStoreUnavailable. */
 export async function serviceFindAnother(
-  linkedinUrl: string,
+  person: PersonInput,
   kind: ContactKind,
   shown: string[],
 ): Promise<ServiceAnswer> {
   const body = await post(
     '/v1/contacts/find-another',
-    { linkedin_url: linkedinUrl, kind, shown },
+    { ...personFields(person), kind, shown },
     viaServiceTimeoutMs(),
   )
   return parseServiceAnswer(body, [kind])
@@ -498,14 +538,14 @@ function shownValues(rows: PersonRows, kind: ContactKind): string[] {
  */
 async function lookupAndSave(
   deps: ViaServiceDeps,
-  linkedinUrl: string,
+  person: PersonInput,
   kinds: ContactKind[],
 ): Promise<void> {
   let outcome: ServiceOutcome
   try {
     outcome = {
       answer: await askWithPending(
-        () => serviceLookup(linkedinUrl, kinds),
+        () => serviceLookup(person, kinds),
         kinds,
         deps.sleep,
       ),
@@ -528,7 +568,7 @@ async function lookupAndSave(
  */
 export async function runViaService(
   deps: ViaServiceDeps,
-  linkedinUrl: string,
+  person: PersonInput,
   mode: 'lookup' | 'backup' | 'refresh',
   kinds: ContactKind[],
 ): Promise<void> {
@@ -542,7 +582,7 @@ export async function runViaService(
 
   if (mode === 'refresh') {
     const pending = KINDS.filter((k) => pendingFor(rows, k))
-    if (pending.length) await lookupAndSave(deps, linkedinUrl, pending)
+    if (pending.length) await lookupAndSave(deps, person, pending)
     return
   }
 
@@ -550,7 +590,7 @@ export async function runViaService(
     const ask = serviceLookedUp(rows) ? kindsToAskAgain(rows) : KINDS
     if (!ask.length) return
     await deps.enforceLimit()
-    await lookupAndSave(deps, linkedinUrl, ask)
+    await lookupAndSave(deps, person, ask)
     return
   }
 
@@ -563,12 +603,12 @@ export async function runViaService(
   const thumbsDown = (k: ContactKind) =>
     itemsOf(k, rows, verdicts).some((x) => x.verdict === 'bad')
   const toLookUp = allowed.filter((k) => !thumbsDown(k))
-  if (toLookUp.length) await lookupAndSave(deps, linkedinUrl, toLookUp)
+  if (toLookUp.length) await lookupAndSave(deps, person, toLookUp)
   for (const kind of allowed.filter(thumbsDown)) {
     let answer: ServiceAnswer
     try {
       answer = await askWithPending(
-        () => serviceFindAnother(linkedinUrl, kind, shownValues(rows, kind)),
+        () => serviceFindAnother(person, kind, shownValues(rows, kind)),
         [kind],
         deps.sleep,
       )

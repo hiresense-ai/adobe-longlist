@@ -743,7 +743,12 @@ async function runLookupViaService(
         },
         enforceLimit: () => enforceLimit(admin, callerId),
       },
-      candidate.linkedinUrl,
+      // name and company go to BetterContact inside the service, as Lyca sends them today.
+      {
+        linkedinUrl: candidate.linkedinUrl,
+        name: candidate.name,
+        company: candidate.company,
+      },
       mode,
       kinds,
     )

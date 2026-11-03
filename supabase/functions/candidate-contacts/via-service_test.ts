@@ -822,3 +822,163 @@ Deno.test(
     ])
   },
 )
+
+// --- name and company for BetterContact (contact-enrichment #19/#20) ----------
+
+onTest(
+  'lookup and find-another send name and company, as Lyca sends BetterContact; empty ones are left out',
+  async () => {
+    const calls = stubFetch([
+      json({
+        has: { email: true, phone: false },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+      json({ has: { email: false }, exhausted: true, emails: [] }),
+      json({ has: { email: false, phone: false }, emails: [], phones: [] }),
+    ])
+    const john = {
+      linkedinUrl: URL_,
+      name: '  John  Doe (PhD) ',
+      company: ' Example Corp ',
+    }
+    const { deps, state } = memory()
+    await runViaService(deps, john, 'lookup', [])
+    assertEquals(calls[0]!.body, {
+      linkedin_url: URL_,
+      name: 'John Doe PhD',
+      company: 'Example Corp',
+      kinds: ['email', 'phone'],
+    })
+    state.verdicts = thumbsDown
+    await runViaService(deps, john, 'backup', ['email'])
+    assertEquals(calls[1]!.url, `${SERVICE}/v1/contacts/find-another`)
+    assertEquals(calls[1]!.body, {
+      linkedin_url: URL_,
+      name: 'John Doe PhD',
+      company: 'Example Corp',
+      kind: 'email',
+      shown: ['john.doe@example.com'],
+    })
+    // No company, a name with nothing left after cleaning: only the URL.
+    const { deps: other } = memory()
+    await runViaService(
+      other,
+      { linkedinUrl: URL_, name: ' !! ', company: null },
+      'lookup',
+      [],
+    )
+    assertEquals(calls[2]!.body, {
+      linkedin_url: URL_,
+      kinds: ['email', 'phone'],
+    })
+    noVendorCalls(calls)
+  },
+)
+
+// --- the chain goes past an email that fails the check (EMAIL_CHECK_GATES_CHAIN)
+
+onTest(
+  'an invalid and a valid email together: both shown as today, each keeps its own check',
+  async () => {
+    const calls = stubFetch([
+      json({
+        found_in: 'bettercontact',
+        found_in_by_kind: { email: 'bettercontact', phone: 'none' },
+        has: { email: true, phone: false },
+        emails: [
+          {
+            value: 'jd@example.com',
+            status: 'unknown',
+            verified: true,
+            check: {
+              result: 'valid',
+              reason: null,
+              checked_at: '2026-11-03T08:00:00.000Z',
+            },
+          },
+          {
+            value: 'john.doe@example.com',
+            status: 'unknown',
+            verified: null,
+            check: {
+              result: 'invalid',
+              reason: 'mailbox_not_found',
+              checked_at: '2026-11-03T07:59:00.000Z',
+            },
+          },
+        ],
+        phones: [],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(
+      deps,
+      { linkedinUrl: URL_, name: 'John Doe' },
+      'lookup',
+      [],
+    )
+    noVendorCalls(calls)
+    assertEquals(state.rows.shared?.emails, [
+      { value: 'jd@example.com', type: null, status: 'Valid', check: 'valid' },
+      {
+        value: 'john.doe@example.com',
+        type: null,
+        status: null,
+        check: 'invalid',
+      },
+    ])
+    assertEquals(state.rows.shared?.email_searched, false)
+    assertEquals(state.rows.shared?.phone_searched, true)
+    const items = itemsOf('email', state.rows, [])
+    assertEquals(
+      items.map((x) => [x.value, x.verified, x.invalid, x.feedback]),
+      [
+        ['jd@example.com', true, false, true],
+        ['john.doe@example.com', null, false, true],
+      ],
+    )
+    assertEquals(view(state.rows, [], 'email'), {
+      searching: false,
+      canFind: false,
+      exhausted: false,
+      unavailable: false,
+    })
+    // A later answer that re-checks the second email updates only its own check.
+    stubFetch([
+      json({
+        has: { email: false },
+        exhausted: true,
+        emails: [
+          {
+            value: 'John.Doe@example.com',
+            status: 'unknown',
+            verified: null,
+            check: { result: 'unknown', reason: null, checked_at: null },
+          },
+        ],
+      }),
+    ])
+    state.verdicts = [
+      {
+        contact_kind: 'email',
+        contact_value: 'jd@example.com',
+        verdict: 'bad',
+        reason: 'bounced',
+      },
+    ]
+    await runViaService(deps, URL_, 'backup', ['email'])
+    assertEquals(
+      state.rows.shared?.emails.map((e) => [
+        e.value,
+        (e as { check?: string }).check,
+      ]),
+      [
+        ['jd@example.com', 'valid'],
+        ['john.doe@example.com', 'unknown'],
+      ],
+    )
+  },
+)
