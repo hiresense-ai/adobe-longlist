@@ -10,7 +10,7 @@ The code is in `supabase/functions/candidate-contacts/`, with the flow decisions
 | --- | --- |
 | **Live on Lyca production** (`main`, PRs #39/#40 and #43/#44) | "Get contact" asks the store (3 s, no `ziplabs: false`), then SalesQL, then BetterContact, both automatic; the vendors' answers and every 👍/👎 go to the store in the background; Find another after a 👎 goes to the next vendor not yet asked |
 | **In review** | #46 (HIR-526): `store_synced_at` and the catch-up job. #47 (HIR-528): claims, one phone format, an 8 s store wait, `pending`, outages shown as such. #48 (HIR-537): `CONTACT_VENDORS_VIA_SERVICE`. This document describes the three together |
-| **Not built** | Showing the service's email `check` in the panel (it is stored only); a rate limit on the panel's automatic re-check while the setting is on |
+| **Not built** | Showing the service's email `check` in the panel (it is stored only) |
 
 Whether the store's secrets are set on the Lyca project, and whether the catch-up job is scheduled, cannot be seen from the repo.
 
@@ -124,7 +124,8 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - It is sent without `ziplabs: false`, so the service runs Lyca's order from its `WATERFALLS`: the store, then SalesQL, BetterContact, and ZipLabs last.
    - It carries the candidate's `name` and `company` (what Lyca sends BetterContact today; left out when empty). The service gives them to BetterContact only and never stores them. Find another sends them too.
    - Lyca waits `CONTACT_ENRICHMENT_TIMEOUT_MS`, but never less than 20 s, because each vendor in the order can take its own timeout.
-   - A kind in `pending` is waited for (`retry_after_ms`, at most 5 s) and asked once more. A kind still pending shows "Searching…", and the panel's automatic re-check asks the service again for that kind only.
+   - A kind in `pending` is waited for (`retry_after_ms`, at most 5 s) and asked once more. A kind still pending shows "Searching…". The panel's automatic re-check (every 8 s) asks the service again for the pending kinds only, never a full lookup.
+   - The re-check stops 60 s after the kind first became pending (`PENDING_RECHECK_MAX_MS`; the start time is kept in the row's `vendor_request_id` as `pending_since=<time>`). The kind then shows "temporarily unavailable" with "Try again", which starts a new 60 s window. So the re-check makes at most about 8 service calls per window, and Lyca's lookup limit is not needed for it.
    - A person looked up before is asked again only for kinds that are still pending, or that no source has answered (the last call failed, or Lyca's own vendors never ran for that kind before the switch).
 2. **What the recruiter sees.**
    - The values the service returns whose `status` isn't `bad`, shown as today.
@@ -135,12 +136,14 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - `exhausted: true` means every source was asked, and the panel says "No other email / number found".
    - "Find email / number", for an empty kind no source answered, is a lookup for that kind.
 4. **👍/👎** are saved in Lyca's table and reach the store (`POST /v1/contacts/feedback`), as before.
-5. **Outages.** Any failure is "temporarily unavailable, try again". That covers a 503 (`vendors_unavailable` or `store_unavailable`), a timeout, a refused key, and a 409 `find_another_not_available` (Lyca missing from the service's `WATERFALLS`). Nothing final is recorded, and it is never "not found".
+5. **Outages.** Any failure is "temporarily unavailable, try again". That covers a 503 (`vendors_unavailable` or `store_unavailable`, including every vendor refusing), a timeout, a refused key, and a 409 `find_another_not_available` (Lyca missing from the service's `WATERFALLS`). Nothing final is recorded, and it is never "not found".
+   - **Part of an answer unavailable.** A lookup or find-another answer lists in `unavailable` the kinds with no usable value because a vendor for them was down, timed out or refused (absent or `[]`: none). Such a kind is not marked as searched: it shows "temporarily unavailable" with "Try again", and the next "Get contact", "Try again" or re-check asks for it again. The row's `error` says a source was unavailable.
    - On "Get contact", the `contact_store` row records that the call failed (status `error` when it holds nothing).
    - On "Find another", nothing is written, and the request answers 503 with that message.
 6. **Lyca's tables are as before.** The service's answer is the person's `contact_store` row in `candidate_contact_lookups`. While on, two of that row's columns have a meaning:
    - `email_searched` / `phone_searched`: every source was asked for that kind;
-   - `pending_kinds`: the kinds the service was still fetching.
+   - `pending_kinds`: the kinds the service was still fetching;
+   - `vendor_request_id`: `pending_since=<time>`, when that began.
 
    Rows from Lyca's own vendors before the switch are kept and shown. Their values take 👍/👎, and "Find another" for them goes to the service.
 

@@ -22,7 +22,15 @@
 //   An outage      -> any failure (503 vendors_unavailable / store_unavailable,
 //                     a timeout, a refused key) is "temporarily unavailable,
 //                     try again" and nothing final is recorded: never "not
-//                     found".
+//                     found". So is a kind the answer lists in `unavailable`
+//                     (a vendor for it was down, timed out or refused): it is
+//                     not marked as searched, and the next "Get contact",
+//                     "Try again" or re-check asks for it again.
+//   Re-check       -> the panel re-checks (8 s apart) only while a kind is
+//                     `pending`, and only that kind. A pending kind stops
+//                     being re-checked PENDING_RECHECK_MAX_MS (60 s) after
+//                     it began: it then shows "temporarily unavailable" with
+//                     "Try again", which starts a new window.
 // The wait is CONTACT_ENRICHMENT_TIMEOUT_MS, at least 20 s while on (each
 // vendor slot of the service's order can take its own timeout).
 //
@@ -30,10 +38,12 @@
 // candidate_contact_lookups, as before. Its values are what the service
 // returned that is not marked bad. Each email also keeps the service's email
 // check result (`check`: valid / invalid / unknown); Lyca runs no check of its
-// own and hides nothing because of it. Two of the row's columns get a meaning
-// for this row while on: email_searched / phone_searched = every source was
-// asked for that kind (nothing more to find), and pending_kinds = the kinds
-// the service was still fetching.
+// own and hides nothing because of it. Three of the row's columns get a
+// meaning for this row while on: email_searched / phone_searched = every
+// source was asked for that kind (nothing more to find), pending_kinds = the
+// kinds the service was still fetching, and vendor_request_id =
+// "pending_since=<ISO time>", when that began. `error` says a call failed or
+// a kind's vendors were unavailable.
 //
 // Kept free of Supabase so it can be tested on its own (via-service_test.ts):
 // index.ts gives it the person's rows and a way to write the row.
@@ -106,6 +116,8 @@ export interface ServiceAnswer {
   retryAfterMs: number | null
   /** find-another only: every source of Lyca's order was asked. */
   exhausted?: boolean
+  /** Kinds asked for with no usable value because a vendor for them was down, timed out or refused (absent: none). */
+  unavailable?: ContactKind[]
 }
 
 interface WireContact {
@@ -151,6 +163,12 @@ export function parseServiceAnswer(
     (k): k is ContactKind =>
       (k === 'email' || k === 'phone') && kinds.includes(k),
   )
+  const unavailable = (
+    Array.isArray(b.unavailable) ? b.unavailable : []
+  ).filter(
+    (k): k is ContactKind =>
+      (k === 'email' || k === 'phone') && kinds.includes(k),
+  )
   const wireHas = (b.has ?? {}) as Record<string, unknown>
   const has: Partial<Record<ContactKind, boolean>> = {}
   for (const kind of kinds) {
@@ -166,6 +184,7 @@ export function parseServiceAnswer(
     has,
     pending,
     retryAfterMs: pending.length && Number.isFinite(retry) ? retry : null,
+    ...(unavailable.length ? { unavailable } : {}),
     ...(typeof b.exhausted === 'boolean' ? { exhausted: b.exhausted } : {}),
   }
 }
@@ -274,10 +293,27 @@ export interface ServiceRowFields {
   email_searched: boolean
   phone_searched: boolean
   pending_kinds: ContactKind[] | null
+  /** "pending_since=<ISO time>" while a kind is pending, else null. */
+  vendor_request_id: string | null
   error: string | null
 }
 
 export const SERVICE_UNREACHABLE = 'The contact service could not be reached.'
+export const SOURCE_UNAVAILABLE =
+  'A contact source was temporarily unavailable.'
+
+/** A pending kind is re-checked for at most this long after it began; then "temporarily unavailable". */
+export const PENDING_RECHECK_MAX_MS = 60_000
+
+const SINCE = 'pending_since='
+
+/** When the row's pending began (ms), or null. */
+export function pendingSince(row: PersonRows['shared']): number | null {
+  const raw = row?.vendor_request_id
+  if (typeof raw !== 'string' || !raw.startsWith(SINCE)) return null
+  const ms = Date.parse(raw.slice(SINCE.length))
+  return Number.isFinite(ms) ? ms : null
+}
 
 const list = <T>(x: T[] | null | undefined): T[] => (Array.isArray(x) ? x : [])
 
@@ -308,6 +344,9 @@ export type ServiceOutcome =
  *   records the kinds still pending and, per kind asked for, whether every
  *   source was asked (lookup: `has` false and not pending; find-another:
  *   `exhausted`);
+ * - a kind in the answer's `unavailable` is never marked as searched: the row
+ *   says a source was unavailable, and the panel says "temporarily
+ *   unavailable" for it;
  * - an outage changes no value and nothing final: the row says the call
  *   failed (status 'error' when it holds nothing), so the panel says
  *   "temporarily unavailable" and offers "Try again".
@@ -316,7 +355,9 @@ export function nextServiceRow(
   existing: PersonRows['shared'],
   kinds: ContactKind[],
   outcome: ServiceOutcome,
+  now: number = Date.now(),
 ): ServiceRowFields {
+  const heldSince = pendingSince(existing)
   const heldEmails = list(existing?.emails) as StoredContact[]
   const heldPhones = list(existing?.phones) as StoredContact[]
   const heldPending = list(existing?.pending_kinds).filter(
@@ -335,6 +376,10 @@ export function nextServiceRow(
       email_searched: searched.email,
       phone_searched: searched.phone,
       pending_kinds: heldPending.length ? heldPending : null,
+      vendor_request_id:
+        heldPending.length && heldSince !== null
+          ? `${SINCE}${new Date(heldSince).toISOString()}`
+          : null,
       error: SERVICE_UNREACHABLE,
     }
   }
@@ -350,27 +395,60 @@ export function nextServiceRow(
     kinds.includes('phone') ? answer.phones : [],
   )
   const pending = answer.pending.filter((k) => kinds.includes(k))
+  const unavailableNow = (answer.unavailable ?? []).filter(
+    (k) => kinds.includes(k) && !pending.includes(k),
+  )
   for (const kind of kinds) {
-    if (pending.includes(kind)) continue
+    if (pending.includes(kind) || unavailableNow.includes(kind)) continue
     const nothingLeft = findAnother
       ? answer.exhausted === true
       : answer.has[kind] === false
     if (nothingLeft) searched[kind] = true
   }
   const allPending = [...new Set([...heldPending, ...pending])]
+  // A kind not asked now that was unavailable before stays so.
+  const holds = (k: ContactKind) =>
+    (k === 'email' ? emails : phones).some(
+      (v) => typeof v?.value === 'string' && v.value.trim() !== '',
+    )
+  const stillUnavailable = existing?.error
+    ? KINDS.filter(
+        (k) =>
+          !kinds.includes(k) &&
+          !searched[k] &&
+          !holds(k) &&
+          !heldPending.includes(k),
+      )
+    : []
+  const unavailable = [...unavailableNow, ...stillUnavailable]
+  // The pending window: kept while a kind that was pending still is, new otherwise.
+  // A window already past its limit is not kept: "Try again" starts a new one.
+  const keepsWindow =
+    heldSince !== null &&
+    now - heldSince <= PENDING_RECHECK_MAX_MS &&
+    list(existing?.pending_kinds).some((k) => allPending.includes(k))
+  const since = allPending.length
+    ? keepsWindow && heldSince !== null
+      ? heldSince
+      : now
+    : null
   return {
     status:
       emails.length || phones.length
         ? 'found'
         : allPending.length
           ? 'pending'
-          : 'not_found',
+          : unavailable.length
+            ? 'error'
+            : 'not_found',
     emails,
     phones,
     email_searched: searched.email,
     phone_searched: searched.phone,
     pending_kinds: allPending.length ? allPending : null,
-    error: null,
+    vendor_request_id:
+      since === null ? null : `${SINCE}${new Date(since).toISOString()}`,
+    error: unavailable.length ? SOURCE_UNAVAILABLE : null,
   }
 }
 
@@ -384,10 +462,22 @@ export interface ServiceKindState {
   unavailable: boolean
 }
 
-const pendingFor = (rows: PersonRows, kind: ContactKind) =>
+/** The kind is pending at the service (whatever its age). */
+const pendingAt = (rows: PersonRows, kind: ContactKind) =>
   !!rows.shared &&
   rows.shared.status !== 'error' &&
   list(rows.shared.pending_kinds).includes(kind)
+
+/** Pending for longer than PENDING_RECHECK_MAX_MS (or with no start time): no longer re-checked. */
+const pendingExpired = (rows: PersonRows, kind: ContactKind, now: number) => {
+  if (!pendingAt(rows, kind)) return false
+  const since = pendingSince(rows.shared)
+  return since === null || now - since > PENDING_RECHECK_MAX_MS
+}
+
+/** Pending, and still within its re-check window. */
+const pendingFor = (rows: PersonRows, kind: ContactKind, now = Date.now()) =>
+  pendingAt(rows, kind) && !pendingExpired(rows, kind, now)
 
 /** Every source of the service's order was asked for this kind. */
 export const exhaustedFor = (rows: PersonRows, kind: ContactKind) =>
@@ -422,9 +512,14 @@ export function serviceLookedUp(rows: PersonRows): boolean {
  * (no row, a failed call, or a vendor that never ran for it). A kind every
  * source was asked for, or that is still pending, is not.
  */
-function unanswered(rows: PersonRows, kind: ContactKind): boolean {
+function unanswered(
+  rows: PersonRows,
+  kind: ContactKind,
+  now = Date.now(),
+): boolean {
   if (holdsUsable(rows, kind) || exhaustedFor(rows, kind)) return false
-  if (!rows.shared || failedLast(rows)) return true
+  if (!rows.shared || failedLast(rows) || pendingExpired(rows, kind, now))
+    return true
   const salesqlAsked = !!rows.salesql && rows.salesql.status !== 'error'
   return (
     kindsToResume(rows, [kind], {
@@ -436,10 +531,34 @@ function unanswered(rows: PersonRows, kind: ContactKind): boolean {
 }
 
 /** "Get contact" on a person looked up before: the kinds to ask the service for again. */
-export function kindsToAskAgain(rows: PersonRows): ContactKind[] {
+export function kindsToAskAgain(
+  rows: PersonRows,
+  now = Date.now(),
+): ContactKind[] {
   return KINDS.filter(
-    (kind) => pendingFor(rows, kind) || unanswered(rows, kind),
+    (kind) => pendingAt(rows, kind) || unanswered(rows, kind, now),
   )
+}
+
+/**
+ * The panel's automatic re-check: only the kinds still pending within their
+ * window, plus a kind whose vendors were unavailable on the last call (while
+ * a pending kind is being re-checked anyway). Never a full lookup.
+ */
+export function kindsToRecheck(
+  rows: PersonRows,
+  now = Date.now(),
+): ContactKind[] {
+  const pending = KINDS.filter((k) => pendingFor(rows, k, now))
+  if (!pending.length) return []
+  const unavailable = KINDS.filter(
+    (k) =>
+      !pending.includes(k) &&
+      !!rows.shared?.error &&
+      !holdsUsable(rows, k) &&
+      !exhaustedFor(rows, k),
+  )
+  return [...pending, ...unavailable]
 }
 
 /** One kind's state for the panel (see the header). */
@@ -447,15 +566,18 @@ export function serviceKindState(
   kind: ContactKind,
   items: Array<Pick<ContactItem, 'verdict' | 'invalid'>>,
   rows: PersonRows,
+  now = Date.now(),
 ): ServiceKindState {
-  const searching = pendingFor(rows, kind)
+  const searching = pendingFor(rows, kind, now)
   const usable = items.filter((x) => x.verdict !== 'bad' && !x.invalid)
   const exhausted = exhaustedFor(rows, kind)
   const unavailable =
     !searching &&
     !exhausted &&
     !usable.length &&
-    (kindUnavailable(rows, kind) || failedLast(rows))
+    (kindUnavailable(rows, kind) ||
+      failedLast(rows) ||
+      pendingExpired(rows, kind, now))
   const thumbsDown = items.some((x) => x.verdict === 'bad')
   return {
     searching,
@@ -464,7 +586,7 @@ export function serviceKindState(
       !searching &&
       !exhausted &&
       (thumbsDown ||
-        (!usable.length && (unavailable || unanswered(rows, kind)))),
+        (!usable.length && (unavailable || unanswered(rows, kind, now)))),
     exhausted: exhausted && !usable.length,
     unavailable,
   }
@@ -498,7 +620,11 @@ export interface ViaServiceDeps {
   enforceLimit(): Promise<void>
   /** How to wait for `retry_after_ms` (tests pass a fake). */
   sleep?: (ms: number) => Promise<void>
+  /** The clock (tests pass a fake). */
+  now?: () => number
 }
+
+const clock = (deps: ViaServiceDeps) => (deps.now ? deps.now() : Date.now())
 
 /** The values of one kind as the panel lists them, with the workspace's verdicts. */
 export function itemsOf(
@@ -555,7 +681,9 @@ async function lookupAndSave(
     outcome = { outage: true }
   }
   const { rows } = await deps.load()
-  await deps.saveServiceRow(nextServiceRow(rows.shared, kinds, outcome))
+  await deps.saveServiceRow(
+    nextServiceRow(rows.shared, kinds, outcome, clock(deps)),
+  )
 }
 
 /**
@@ -581,13 +709,16 @@ export async function runViaService(
   const { rows, verdicts } = await deps.load()
 
   if (mode === 'refresh') {
-    const pending = KINDS.filter((k) => pendingFor(rows, k))
-    if (pending.length) await lookupAndSave(deps, person, pending)
+    // The panel's automatic re-check: pending kinds only, within their window.
+    const recheck = kindsToRecheck(rows, clock(deps))
+    if (recheck.length) await lookupAndSave(deps, person, recheck)
     return
   }
 
   if (mode === 'lookup') {
-    const ask = serviceLookedUp(rows) ? kindsToAskAgain(rows) : KINDS
+    const ask = serviceLookedUp(rows)
+      ? kindsToAskAgain(rows, clock(deps))
+      : KINDS
     if (!ask.length) return
     await deps.enforceLimit()
     await lookupAndSave(deps, person, ask)
@@ -596,7 +727,9 @@ export async function runViaService(
 
   // 'backup': only where the panel offers it.
   const allowed = kinds.filter(
-    (k) => serviceKindState(k, itemsOf(k, rows, verdicts), rows).canFind,
+    (k) =>
+      serviceKindState(k, itemsOf(k, rows, verdicts), rows, clock(deps))
+        .canFind,
   )
   if (!allowed.length) return
   await deps.enforceLimit()
@@ -622,7 +755,12 @@ export async function runViaService(
     }
     const fresh = (await deps.load()).rows
     await deps.saveServiceRow(
-      nextServiceRow(fresh.shared, [kind], { answer, findAnother: true }),
+      nextServiceRow(
+        fresh.shared,
+        [kind],
+        { answer, findAnother: true },
+        clock(deps),
+      ),
     )
   }
 }

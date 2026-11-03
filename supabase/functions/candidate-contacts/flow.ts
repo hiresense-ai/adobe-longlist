@@ -145,6 +145,10 @@ export interface StoredRow {
   pending_kinds?: ContactKind[] | null
   /** Why the last call failed (a vendor's, or the contact service's). */
   error?: string | null
+  /** BetterContact: its request id. The contact_store row, with
+   * CONTACT_VENDORS_VIA_SERVICE on: "pending_since=<ISO time>", when the
+   * service's `pending` began (via-service.ts). */
+  vendor_request_id?: string | null
 }
 
 /** The person's rows in Lyca's SQL, by where they came from. */

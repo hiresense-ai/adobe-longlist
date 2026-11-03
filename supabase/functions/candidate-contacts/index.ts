@@ -732,7 +732,6 @@ async function runLookupViaService(
               linkedin_url: candidate.linkedinUrl,
               vendor: 'contact_store',
               ...fields,
-              vendor_request_id: null,
               credits_used: null,
               dashboard_id: dashboardId,
               candidate_name: candidate.name,

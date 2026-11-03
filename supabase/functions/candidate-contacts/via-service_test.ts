@@ -14,6 +14,10 @@ import {
   SERVICE_UNREACHABLE,
   serviceKindState,
   serviceLookedUp,
+  SOURCE_UNAVAILABLE,
+  PENDING_RECHECK_MAX_MS,
+  pendingSince,
+  kindsToRecheck,
   ServiceUnavailableError,
   VIA_SERVICE_MIN_TIMEOUT_MS,
   viaServiceTimeoutMs,
@@ -133,8 +137,12 @@ function memory(rows: PersonRows = {}, verdicts: Verdict[] = []) {
   return { state, deps, sleeps }
 }
 
-const view = (rows: PersonRows, verdicts: Verdict[], kind: ContactKind) =>
-  serviceKindState(kind, itemsOf(kind, rows, verdicts), rows)
+const view = (
+  rows: PersonRows,
+  verdicts: Verdict[],
+  kind: ContactKind,
+  now?: number,
+) => serviceKindState(kind, itemsOf(kind, rows, verdicts), rows, now)
 
 // --- the setting -------------------------------------------------------------
 
@@ -226,6 +234,7 @@ onTest(
       email_searched: false,
       phone_searched: false,
       pending_kinds: null,
+      vendor_request_id: null,
       error: null,
     })
     assertEquals(serviceLookedUp(state.rows), true)
@@ -390,6 +399,7 @@ onTest(
         email_searched: false,
         phone_searched: false,
         pending_kinds: null,
+        vendor_request_id: null,
         error: SERVICE_UNREACHABLE,
       })
       assertEquals(serviceLookedUp(state.rows), false)
@@ -979,6 +989,266 @@ onTest(
         ['jd@example.com', 'valid'],
         ['john.doe@example.com', 'unknown'],
       ],
+    )
+  },
+)
+
+// --- BUG-3: a kind whose vendors were unavailable is not "not found" ----------
+
+onTest(
+  'BUG-3: `unavailable: ["phone"]` is never marked searched; "temporarily unavailable", asked again',
+  async () => {
+    const calls = stubFetch([
+      json({
+        has: { email: true, phone: false },
+        unavailable: ['phone'],
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+      json({
+        has: { phone: true },
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.status, 'found')
+    assertEquals(
+      [state.rows.shared?.email_searched, state.rows.shared?.phone_searched],
+      [false, false],
+    )
+    assertEquals(state.rows.shared?.error, SOURCE_UNAVAILABLE)
+    assertEquals(view(state.rows, [], 'phone'), {
+      searching: false,
+      canFind: true, // "Try again"
+      exhausted: false,
+      unavailable: true,
+    })
+    assertEquals(view(state.rows, [], 'email').unavailable, false)
+    // The next "Get contact" asks for the phone only.
+    assertEquals(kindsToAskAgain(state.rows), ['phone'])
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(calls[1]!.body, { linkedin_url: URL_, kinds: ['phone'] })
+    assertEquals(state.rows.shared?.error, null)
+    assertEquals(
+      state.rows.shared?.phones.map((p) => p.value),
+      ['+919876543210'],
+    )
+    noVendorCalls(calls)
+  },
+)
+
+onTest(
+  'BUG-3: both kinds unavailable and nothing found: not looked up, "temporarily unavailable"',
+  async () => {
+    stubFetch([
+      json({
+        has: { email: false, phone: false },
+        unavailable: ['email', 'phone'],
+        emails: [],
+        phones: [],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.status, 'error')
+    assertEquals(serviceLookedUp(state.rows), false)
+    for (const kind of ['email', 'phone'] as const) {
+      const s = view(state.rows, [], kind)
+      assertEquals([kind, s.unavailable, s.exhausted], [kind, true, false])
+    }
+  },
+)
+
+onTest(
+  'BUG-3: an absent or empty `unavailable` means none: has false is "no more sources"',
+  async () => {
+    for (const extra of [{}, { unavailable: [] }]) {
+      stubFetch([
+        json({
+          has: { email: false, phone: false },
+          emails: [],
+          phones: [],
+          ...extra,
+        }),
+      ])
+      const { state, deps } = memory()
+      await runViaService(deps, URL_, 'lookup', [])
+      assertEquals(
+        [
+          state.rows.shared?.status,
+          state.rows.shared?.email_searched,
+          state.rows.shared?.phone_searched,
+          state.rows.shared?.error,
+        ],
+        ['not_found', true, true, null],
+      )
+    }
+  },
+)
+
+onTest(
+  'BUG-3: find-another with the kind unavailable is not "exhausted"',
+  async () => {
+    stubFetch([
+      json({
+        has: { email: false },
+        exhausted: false,
+        unavailable: ['email'],
+        emails: [],
+      }),
+    ])
+    const { state, deps } = memory(foundEmail, thumbsDown)
+    await runViaService(deps, URL_, 'backup', ['email'])
+    assertEquals(state.rows.shared?.email_searched, false)
+    assertEquals(state.rows.shared?.error, SOURCE_UNAVAILABLE)
+    const s = view(state.rows, thumbsDown, 'email')
+    assertEquals([s.canFind, s.exhausted, s.unavailable], [true, false, true])
+  },
+)
+
+onTest(
+  'BUG-2: every vendor refused, the service answers 503: "temporarily unavailable", never final',
+  async () => {
+    const calls = stubFetch([
+      json(
+        {
+          error: {
+            code: 'vendors_unavailable',
+            message: 'every vendor refused',
+          },
+        },
+        503,
+      ),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(
+      [
+        state.rows.shared?.status,
+        state.rows.shared?.email_searched,
+        state.rows.shared?.phone_searched,
+      ],
+      ['error', false, false],
+    )
+    assertEquals(kindsToAskAgain(state.rows), ['email', 'phone'])
+    for (const kind of ['email', 'phone'] as const) {
+      assertEquals(view(state.rows, [], kind).unavailable, true)
+    }
+    noVendorCalls(calls)
+  },
+)
+
+// --- The panel's re-check: pending kinds only, for at most 60 s ---------------
+
+onTest(
+  're-check: only the pending kind, never a full lookup, and none after 60 s',
+  async () => {
+    const pendingPhone = json({
+      has: { email: true, phone: false },
+      pending: ['phone'],
+      retry_after_ms: 500,
+      emails: [
+        { value: 'john.doe@example.com', status: 'unknown', verified: null },
+      ],
+      phones: [],
+    })
+    const stillPending = json({
+      has: { phone: false },
+      pending: ['phone'],
+      retry_after_ms: 500,
+      phones: [],
+    })
+    const calls = stubFetch([
+      pendingPhone,
+      pendingPhone,
+      stillPending,
+      stillPending,
+      stillPending,
+      stillPending,
+    ])
+    let now = Date.parse('2026-11-03T10:00:00.000Z')
+    const { state, deps } = memory()
+    deps.now = () => now
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.pending_kinds, ['phone'])
+    assertEquals(pendingSince(state.rows.shared), now)
+    const started = now
+
+    // 8 s later: the re-check asks for the phone only; the window does not restart.
+    now += 8_000
+    assertEquals(kindsToRecheck(state.rows, now), ['phone'])
+    await runViaService(deps, URL_, 'refresh', [])
+    assertEquals(calls.at(-2)!.body, { linkedin_url: URL_, kinds: ['phone'] })
+    assertEquals(pendingSince(state.rows.shared), started)
+    assertEquals(view(state.rows, [], 'phone', now).searching, true)
+
+    // Past 60 s: no more re-checks; "temporarily unavailable" with "Try again".
+    now = started + PENDING_RECHECK_MAX_MS + 1
+    const before = calls.length
+    assertEquals(kindsToRecheck(state.rows, now), [])
+    await runViaService(deps, URL_, 'refresh', [])
+    assertEquals(calls.length, before)
+    assertEquals(view(state.rows, [], 'phone', now), {
+      searching: false,
+      canFind: true,
+      exhausted: false,
+      unavailable: true,
+    })
+    // "Try again" asks for the phone and starts a new window.
+    await runViaService(deps, URL_, 'backup', ['phone'])
+    assertEquals(calls[before]!.body, { linkedin_url: URL_, kinds: ['phone'] })
+    assertEquals(pendingSince(state.rows.shared), now)
+    noVendorCalls(calls)
+  },
+)
+
+onTest(
+  're-check: nothing pending means no call, even with a kind unavailable',
+  async () => {
+    const calls = stubFetch([])
+    const { deps } = memory({
+      shared: {
+        status: 'found',
+        emails: [{ value: 'john.doe@example.com', type: null, status: null }],
+        phones: [],
+        email_searched: false,
+        phone_searched: false,
+        pending_kinds: null,
+        error: SOURCE_UNAVAILABLE,
+      },
+    })
+    await runViaService(deps, URL_, 'refresh', [])
+    assertEquals(calls.length, 0)
+  },
+)
+
+onTest(
+  're-check: a pending email and an unavailable phone are re-checked together',
+  async () => {
+    const rows: PersonRows = {
+      shared: {
+        status: 'pending',
+        emails: [],
+        phones: [],
+        email_searched: false,
+        phone_searched: false,
+        pending_kinds: ['email'],
+        vendor_request_id: 'pending_since=2026-11-03T10:00:00.000Z',
+        error: SOURCE_UNAVAILABLE,
+      },
+    }
+    const now = Date.parse('2026-11-03T10:00:10.000Z')
+    assertEquals(kindsToRecheck(rows, now), ['email', 'phone'])
+    // A row with no start time is past its window.
+    assertEquals(
+      kindsToRecheck(
+        { shared: { ...rows.shared!, vendor_request_id: null } },
+        now,
+      ),
+      [],
     )
   },
 )
