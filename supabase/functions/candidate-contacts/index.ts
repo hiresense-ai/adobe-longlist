@@ -46,6 +46,12 @@
 //                                vendor at most once per person.
 //   'refresh'                 -> re-check a backup search still running
 //                                (a status check — never charges).
+//
+// CONTACT_VENDORS_VIA_SERVICE=true (HIR-537, decision HIR-461): Lyca calls no
+// vendor itself. "Get contact" is one lookup at the shared contact service,
+// which runs Lyca's order (the store, SalesQL, BetterContact, ZipLabs last);
+// "Find another" is its find-another; 👍/👎 reach the store as before. See
+// via-service.ts. Unset or anything but "true": exactly the flow above.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import {
@@ -88,6 +94,15 @@ import { upsertUnsynced, type RowVersion } from './store-sync.ts'
 import { onceAtATime } from './claims.ts'
 import { supabaseClaims } from './claims-db.ts'
 import { markSynced } from './store-sync-db.ts'
+import {
+  contactVendorsViaService,
+  runViaService,
+  serviceKindState,
+  serviceLookedUp,
+  ServiceUnavailableError,
+  withFeedback,
+  type ServiceRowFields,
+} from './via-service.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -350,6 +365,8 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
         sameContact(kind, f.contact_value, value),
     ) ?? null
   const storeReady = contactStoreConfigured()
+  // CONTACT_VENDORS_VIA_SERVICE: the service makes every vendor call (via-service.ts).
+  const viaService = contactVendorsViaService()
 
   const backupReady = vendorConfigured('bettercontact')
   const salesqlReady = vendorConfigured('salesql')
@@ -381,6 +398,24 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
       )
     const emails = merge('email')
     const phones = merge('phone')
+
+    if (viaService) {
+      const email = serviceKindState('email', emails, rows)
+      const phone = serviceKindState('phone', phones, rows)
+      out.push({
+        candidateName: c.name,
+        linkedinUrl: c.linkedinUrl,
+        lookedUp: serviceLookedUp(rows),
+        // An outage is "temporarily unavailable, try again", never "not found".
+        error: email.unavailable && phone.unavailable ? UNAVAILABLE : null,
+        // Every value takes 👍/👎: after a 👎 the service can look further.
+        emails: withFeedback(emails),
+        phones: withFeedback(phones),
+        email,
+        phone,
+      })
+      continue
+    }
 
     const kindState = (kind: ContactKind, items: typeof emails) => {
       const searched =
@@ -511,6 +546,17 @@ async function runLookup(
   callerId: string,
   dashboardId: string,
 ) {
+  if (contactVendorsViaService()) {
+    await runLookupViaService(
+      admin,
+      candidate,
+      mode,
+      kinds,
+      callerId,
+      dashboardId,
+    )
+    return
+  }
   const { lookups } = await rowsFor(admin, [candidate.linkedinKey])
   const sales = lookups.find((l) => l.vendor === 'salesql')
   const backup = lookups.find((l) => l.vendor === 'bettercontact') ?? null
@@ -644,6 +690,68 @@ async function runLookup(
       callerId,
       dashboardId,
     )
+  }
+}
+
+/**
+ * The reveal with CONTACT_VENDORS_VIA_SERVICE on (via-service.ts): the shared
+ * contact service makes every vendor call; Lyca keeps its answer as the
+ * person's contact_store row, as before. A failed "Find another" answers 503
+ * "temporarily unavailable" and records nothing.
+ */
+async function runLookupViaService(
+  admin: Admin,
+  candidate: DashboardCandidate,
+  mode: 'lookup' | 'backup' | 'refresh',
+  kinds: ContactKind[],
+  callerId: string,
+  dashboardId: string,
+) {
+  try {
+    await runViaService(
+      {
+        load: async () => {
+          const { lookups, feedback } = await rowsFor(admin, [
+            candidate.linkedinKey,
+          ])
+          return {
+            rows: {
+              shared: lookups.find((l) => l.vendor === 'contact_store'),
+              salesql: lookups.find((l) => l.vendor === 'salesql'),
+              bettercontact: lookups.find((l) => l.vendor === 'bettercontact'),
+            },
+            verdicts: feedback,
+          }
+        },
+        saveServiceRow: async (fields: ServiceRowFields) => {
+          await upsertUnsynced(
+            admin,
+            'candidate_contact_lookups',
+            {
+              linkedin_key: candidate.linkedinKey,
+              linkedin_url: candidate.linkedinUrl,
+              vendor: 'contact_store',
+              ...fields,
+              vendor_request_id: null,
+              credits_used: null,
+              dashboard_id: dashboardId,
+              candidate_name: candidate.name,
+              requested_by: callerId,
+            },
+            'linkedin_key,vendor',
+          )
+        },
+        enforceLimit: () => enforceLimit(admin, callerId),
+      },
+      candidate.linkedinUrl,
+      mode,
+      kinds,
+    )
+  } catch (err) {
+    if (err instanceof ServiceUnavailableError) {
+      throw new HttpError(503, UNAVAILABLE)
+    }
+    throw err
   }
 }
 
@@ -1029,7 +1137,12 @@ async function saveFeedback(
     salesql: lookups.find((l) => l.vendor === 'salesql'),
     bettercontact: lookups.find((l) => l.vendor === 'bettercontact'),
   }
-  if (verdict && !takesFeedback(kind, value, personRows)) {
+  // With CONTACT_VENDORS_VIA_SERVICE on, every value takes 👍/👎 (via-service.ts).
+  if (
+    verdict &&
+    !contactVendorsViaService() &&
+    !takesFeedback(kind, value, personRows)
+  ) {
     throw new HttpError(400, 'Feedback is not taken on this contact.')
   }
 

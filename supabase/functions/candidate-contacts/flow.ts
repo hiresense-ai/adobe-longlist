@@ -128,11 +128,17 @@ export interface StoredRow {
   phones: StoredContact[]
   /** Row status ('found' | 'not_found' | 'pending' | 'error'). */
   status?: string | null
-  /** BetterContact only: which kinds it has answered for. */
+  /** BetterContact: which kinds it has answered for. The contact_store row,
+   * with CONTACT_VENDORS_VIA_SERVICE on: which kinds every source of the
+   * service's order was asked for (via-service.ts). */
   email_searched?: boolean | null
   phone_searched?: boolean | null
-  /** BetterContact only: the kinds a search still running asked for. */
+  /** BetterContact: the kinds a search still running asked for. The
+   * contact_store row, with CONTACT_VENDORS_VIA_SERVICE on: the kinds the
+   * service was still fetching (its `pending`). */
   pending_kinds?: ContactKind[] | null
+  /** Why the last call failed (a vendor's, or the contact service's). */
+  error?: string | null
 }
 
 /** The person's rows in Lyca's SQL, by where they came from. */
