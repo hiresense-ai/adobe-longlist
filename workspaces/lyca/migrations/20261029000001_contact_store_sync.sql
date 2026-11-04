@@ -30,6 +30,12 @@ comment on column public.candidate_contact_feedback.store_synced_at is
   'When the shared contact store took this 👍/👎 (null: not yet, the contact-store-sync job sends it). Reset to null on every write.';
 
 -- The job reads only unsynced rows, oldest first.
+--
+-- Built without `concurrently` (a migration runs in a transaction, where concurrently is not
+-- allowed), so each build blocks writes to its table while it runs. Fine while these tables are
+-- small (one row per person and source revealed, one per 👍/👎 given). At first the indexes cover every
+-- row, because existing rows start unsynced; they shrink to the unsynced few once the job has
+-- caught up. On a large table, build the index by hand with `create index concurrently` first.
 create index if not exists candidate_contact_lookups_store_unsynced_idx
   on public.candidate_contact_lookups (updated_at)
   where store_synced_at is null;

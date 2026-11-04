@@ -9,7 +9,7 @@
 //   CONTACT_ENRICHMENT_API_KEY   Lyca's key in that service's PLATFORM_API_KEYS
 //   CONTACT_ENRICHMENT_TIMEOUT_MS  optional; how long a reveal waits for the store's lookup
 //                                (default 8000: a first ZipLabs answer through the store takes
-//                                several seconds, SHARED_CONTRACT.md §3). A lookup that times
+//                                several seconds, contact-enrichment docs/SHARED_CONTRACT.md §3). A lookup that times
 //                                out is treated like the store being down: the vendors run.
 //                                Background saves and 👍/👎 have their own short timeout
 //                                (BACKGROUND_TIMEOUT_MS), so they never hold a worker long.
@@ -27,6 +27,7 @@ import type {
   ContactPhone,
   VendorResult,
 } from './vendors.ts'
+import { isInvalid } from './validity.ts'
 
 export const DEFAULT_TIMEOUT_MS = 8_000
 /** Background saves and 👍/👎 (not waited for by anyone) give up after this long. */
@@ -162,6 +163,7 @@ export async function contactStoreReady(
 export async function contactStoreLookup(
   linkedinUrl: string,
   kinds: ContactKind[] = ['email', 'phone'],
+  timeoutMs = contactStoreTimeoutMs(),
 ): Promise<
   VendorResult & { pending?: ContactKind[]; retryAfterMs?: number | null }
 > {
@@ -170,10 +172,14 @@ export async function contactStoreLookup(
     phones?: StoreContact[]
     pending?: unknown
     retry_after_ms?: unknown
-  }>('/v1/contacts/lookup', {
-    linkedin_url: linkedinUrl,
-    kinds,
-  })
+  }>(
+    '/v1/contacts/lookup',
+    {
+      linkedin_url: linkedinUrl,
+      kinds,
+    },
+    timeoutMs,
+  )
   // A value another platform marked bad is left out, and so is a malformed
   // entry (no string value): it would otherwise be saved and break the panel.
   const usable = (items?: StoreContact[]) =>
@@ -194,7 +200,7 @@ export async function contactStoreLookup(
     type: null,
     valid: c.verified,
   }))
-  // ZipLabs still fetching these kinds (SHARED_CONTRACT.md §2). An older store
+  // ZipLabs still fetching these kinds (contact-enrichment docs/SHARED_CONTRACT.md §2). An older store
   // never sends it: nothing pending.
   const pending = (Array.isArray(body.pending) ? body.pending : []).filter(
     (k): k is ContactKind =>
@@ -255,6 +261,10 @@ function withValue<T>(items: T[] | null | undefined): T[] {
  * What a vendor found, as the store takes it: emails then phones, a value
  * only when it is a non-empty string, `verified` only when the vendor said
  * so. `vendor` null leaves it out (a value that is not one of Lyca's vendors').
+ * A value the vendor itself called bad (a SalesQL "Invalid" email, an
+ * is_valid:false phone, an "undeliverable" email: validity.ts) is left out:
+ * other products would read it as an ordinary contact (HIR-528 review). It
+ * stays in Lyca's own row, where the panel shows it as invalid.
  */
 export function storeContactsFrom(
   vendor: string | null,
@@ -265,20 +275,24 @@ export function storeContactsFrom(
 ): StoreContactInput[] {
   const from = vendor ? { vendor } : {}
   return [
-    ...withValue(found.emails).map((e) => ({
-      kind: 'email' as const,
-      value: e.value as string,
-      ...from,
-      ...(e.status === 'Valid' || e.status === 'deliverable'
-        ? { verified: true as const }
-        : {}),
-    })),
-    ...withValue(found.phones).map((p) => ({
-      kind: 'phone' as const,
-      value: p.value as string,
-      ...from,
-      ...(p.valid ? { verified: true as const } : {}),
-    })),
+    ...withValue(found.emails)
+      .filter((e) => !isInvalid('email', e))
+      .map((e) => ({
+        kind: 'email' as const,
+        value: e.value as string,
+        ...from,
+        ...(e.status === 'Valid' || e.status === 'deliverable'
+          ? { verified: true as const }
+          : {}),
+      })),
+    ...withValue(found.phones)
+      .filter((p) => !isInvalid('phone', p))
+      .map((p) => ({
+        kind: 'phone' as const,
+        value: p.value as string,
+        ...from,
+        ...(p.valid ? { verified: true as const } : {}),
+      })),
   ]
 }
 

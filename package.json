@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -b --noEmit",
+    "test:deploy-scripts": "node --test scripts/lib/lyca-deploy-checks.test.mjs",
     "preview": "vite preview",
     "prepare": "husky",
     "local:start": "supabase start",

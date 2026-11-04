@@ -31,6 +31,7 @@
 
 import { logStoreFailure } from './contact-store.ts'
 import { normalizePhone } from './phone.ts'
+import { isInvalid } from './validity.ts'
 import type { ContactKind, VendorResult } from './vendors.ts'
 
 export interface Found {
@@ -60,20 +61,7 @@ function valuesOf<T extends { value?: unknown }>(
     .filter((v) => kind !== 'phone' || normalizePhone(v.value) !== null)
 }
 
-/**
- * A value its own vendor said is bad (HIR-528): a SalesQL email with status
- * "Invalid" (or a BetterContact "undeliverable"), a phone with is_valid false.
- * It does not count as found: the next vendor is asked for that kind.
- */
-export function isInvalid(
-  kind: ContactKind,
-  v: { status?: unknown; valid?: unknown } | null | undefined,
-): boolean {
-  if (!v) return false
-  if (kind === 'phone') return v.valid === false
-  const status = typeof v.status === 'string' ? v.status.toLowerCase() : ''
-  return status === 'invalid' || status === 'undeliverable'
-}
+export { isInvalid }
 
 /** The row's values of one kind that count as found: malformed and invalid ones dropped. */
 type AnyValue = { value?: unknown; status?: unknown; valid?: unknown }
@@ -290,7 +278,7 @@ export function valuesByOrigin(
 
 /** The store's lookup answer: the values, plus the kinds ZipLabs is still fetching. */
 export interface StoreAnswer extends VendorResult {
-  /** Kinds a paid ZipLabs fetch is still running for (SHARED_CONTRACT.md §2). */
+  /** Kinds a paid ZipLabs fetch is still running for (contact-enrichment docs/SHARED_CONTRACT.md §2). */
   pending?: ContactKind[]
   /** When to ask again, with `pending`. */
   retryAfterMs?: number | null
@@ -305,6 +293,8 @@ export interface StoreFirstOptions {
   sleep?: (ms: number) => Promise<void>
   /** Called when the store could not answer (down, slow, an error answer). */
   onUnavailable?: (err: unknown) => void
+  /** The request's deadline: the `pending` wait is cut to what is left. */
+  deadline?: { cap(ms: number): number }
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -338,7 +328,8 @@ export async function storeFirst(
     const after = Number(answer.retryAfterMs)
     const ms =
       Number.isFinite(after) && after >= 0 ? after : PENDING_WAIT_DEFAULT_MS
-    await (options.sleep ?? wait)(Math.min(ms, PENDING_WAIT_MAX_MS))
+    const capped = Math.min(ms, PENDING_WAIT_MAX_MS)
+    await (options.sleep ?? wait)(options.deadline?.cap(capped) ?? capped)
     try {
       const again = await lookup()
       // The second answer is the newer one; the first stands if it says less.
