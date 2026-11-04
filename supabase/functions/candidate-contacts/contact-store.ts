@@ -176,12 +176,45 @@ export async function contactStoreReady(
   }
 }
 
+/** After the service refused `backups`, it is left out this long before being tried again. */
+export const BACKUPS_FIELD_RETRY_MS = 10 * 60_000
+let backupsFieldRefusedAt: number | null = null
+
+/** Tests: forget that the service refused `backups`. */
+export function resetBackupsFieldSupport(): void {
+  backupsFieldRefusedAt = null
+}
+
+/** The service's 422 for `backups`, a field it does not know (before contact-enrichment HIR-142). */
+function refusesBackupsField(err: unknown): boolean {
+  return (
+    err instanceof ContactStoreUnavailable &&
+    err.status === 422 &&
+    /property backups should not exist/.test(err.detail)
+  )
+}
+
+type StoreLookupBody = {
+  emails?: StoreContact[]
+  phones?: StoreContact[]
+  pending?: unknown
+  retry_after_ms?: unknown
+}
+
 /**
  * The store's contacts (then ZipLabs', through the store) in this function's own shape. A value
  * another platform marked bad is left out. "not_found" when there is nothing usable. Throws
  * ContactStoreUnavailable when the store can't answer, ZipLabs being down included: the caller then
  * goes on to SalesQL exactly as before. A 429 (rate limited) is thrown the same way, but the
  * caller then calls no vendor (flow.ts storeFirst).
+ *
+ * This is the lookup with CONTACT_VENDORS_VIA_SERVICE off, where Lyca's own SalesQL and
+ * BetterContact run after it. So it sends `backups: false` (HIR-537 review): a service that lists
+ * `lyca` in its WATERFALLS (switching on, or a switch-back that has not removed it yet) then asks
+ * no backup vendor of its own, only the store and ZipLabs as today, and nothing is paid twice. A
+ * service from before `backups` (contact-enrichment HIR-142) has no WATERFALLS, so asks no backup
+ * vendor anyway, and refuses the unknown field (422 "property backups should not exist"): the
+ * lookup is then sent once more without it, and it is left out for BACKUPS_FIELD_RETRY_MS.
  */
 export async function contactStoreLookup(
   linkedinUrl: string,
@@ -190,19 +223,30 @@ export async function contactStoreLookup(
 ): Promise<
   VendorResult & { pending?: ContactKind[]; retryAfterMs?: number | null }
 > {
-  const body = await post<{
-    emails?: StoreContact[]
-    phones?: StoreContact[]
-    pending?: unknown
-    retry_after_ms?: unknown
-  }>(
-    '/v1/contacts/lookup',
-    {
-      linkedin_url: linkedinUrl,
-      kinds,
-    },
-    timeoutMs,
-  )
+  const bare = { linkedin_url: linkedinUrl, kinds }
+  const refusedLately =
+    backupsFieldRefusedAt !== null &&
+    Date.now() - backupsFieldRefusedAt < BACKUPS_FIELD_RETRY_MS
+  let body: StoreLookupBody
+  if (refusedLately) {
+    body = await post<StoreLookupBody>('/v1/contacts/lookup', bare, timeoutMs)
+  } else {
+    try {
+      body = await post<StoreLookupBody>(
+        '/v1/contacts/lookup',
+        { ...bare, backups: false },
+        timeoutMs,
+      )
+      backupsFieldRefusedAt = null
+    } catch (err) {
+      if (!refusesBackupsField(err)) throw err
+      backupsFieldRefusedAt = Date.now()
+      console.warn(
+        'contact store does not take `backups` yet (contact-enrichment HIR-142 not deployed): asking without it',
+      )
+      body = await post<StoreLookupBody>('/v1/contacts/lookup', bare, timeoutMs)
+    }
+  }
   // A value another platform marked bad is left out, and so is a malformed
   // entry (no string value): usableWire.
   const usable = (items?: StoreContact[]) => usableWire(items) as StoreContact[]

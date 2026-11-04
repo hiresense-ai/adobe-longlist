@@ -99,7 +99,12 @@ import {
   valuesByOrigin,
   type PersonRows,
 } from './flow.ts'
-import { upsertUnsynced, type RowVersion } from './store-sync.ts'
+import {
+  selectWithOptionalColumns,
+  upsertUnsynced,
+  type RowVersion,
+  type SelectResult,
+} from './store-sync.ts'
 import { CLAIM_STALE_MS, CLAIM_WAIT_MS } from './claims.ts'
 import { supabaseClaims } from './claims-db.ts'
 import { betterContactOnce, salesqlOnce } from './paid.ts'
@@ -187,6 +192,9 @@ interface LookupRow {
   pending_since: string | null
   /** contact_store rows with the setting on: the source per kind (server-side only). */
   found_in_by_kind: Partial<Record<ContactKind, string>> | null
+  /** contact_store rows with the setting on: when email_searched / phone_searched was set. */
+  email_searched_at: string | null
+  phone_searched_at: string | null
   updated_at: string
 }
 
@@ -346,18 +354,51 @@ function findCandidate(
   return match
 }
 
+/** The lookup row's columns every Lyca database has. */
+const LOOKUP_COLUMNS = [
+  'linkedin_key',
+  'linkedin_url',
+  'vendor',
+  'status',
+  'emails',
+  'phones',
+  'vendor_request_id',
+  'error',
+  'email_searched',
+  'phone_searched',
+  'pending_kinds',
+  'updated_at',
+]
+/** Columns of later migrations (20261104000001..3), only for CONTACT_VENDORS_VIA_SERVICE rows. */
+const LOOKUP_COLUMNS_LATER = [
+  'pending_since',
+  'found_in_by_kind',
+  'email_searched_at',
+  'phone_searched_at',
+]
+
 async function rowsFor(
   admin: Admin,
   keys: string[],
 ): Promise<{ lookups: LookupRow[]; feedback: FeedbackRow[] }> {
   if (!keys.length) return { lookups: [], feedback: [] }
   const [lookups, feedback] = await Promise.all([
-    admin
-      .from('candidate_contact_lookups')
-      .select(
-        'linkedin_key, linkedin_url, vendor, status, emails, phones, vendor_request_id, error, email_searched, phone_searched, pending_kinds, pending_since, found_in_by_kind, updated_at',
-      )
-      .in('linkedin_key', keys),
+    // The columns of migrations 20261104000001..3 are read only when they
+    // exist: a deploy outside scripts/lyca-deploy.mjs (or a skipped
+    // migration) must not make every list, lookup and 👍/👎 fail with 500,
+    // setting off included (HIR-537 review).
+    selectWithOptionalColumns<LookupRow>(
+      (columns) =>
+        admin
+          .from('candidate_contact_lookups')
+          .select(columns)
+          .in('linkedin_key', keys) as unknown as PromiseLike<
+          SelectResult<LookupRow>
+        >,
+      LOOKUP_COLUMNS,
+      LOOKUP_COLUMNS_LATER,
+      'read candidate_contact_lookups',
+    ),
     admin
       .from('candidate_contact_feedback')
       .select('linkedin_key, contact_kind, contact_value, verdict, reason')

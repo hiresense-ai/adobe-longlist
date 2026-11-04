@@ -8,6 +8,7 @@ import {
 } from './contact-store.ts'
 import {
   runSync,
+  selectWithOptionalColumns,
   upsertUnsynced,
   type FeedbackSyncRow,
   type LookupSyncRow,
@@ -949,5 +950,85 @@ Deno.test(
     await runSync(db2)
     assertEquals(store.calls.length, 1)
     assertEquals(store.calls[0]!.body.reason, 'wrong_person')
+  },
+)
+
+// --- Reads before a migration (HIR-537 re-review) ---------------------------
+
+Deno.test(
+  'select: a missing later column (PGRST204 / 42703) is read again without the later columns; anything else is returned as is',
+  async () => {
+    const saved = console.warn
+    const logs: string[] = []
+    console.warn = (...a: unknown[]) => logs.push(a.join(' '))
+    try {
+      for (const code of ['42703', 'PGRST204']) {
+        const asked: string[] = []
+        const r = await selectWithOptionalColumns<{ id: string }>(
+          (columns) => {
+            asked.push(columns)
+            return Promise.resolve(
+              asked.length === 1
+                ? {
+                    data: null,
+                    error: {
+                      code,
+                      message:
+                        'column candidate_contact_lookups.pending_since does not exist',
+                    },
+                  }
+                : { data: [{ id: 'l-1' }], error: null },
+            )
+          },
+          ['id', 'status'],
+          ['pending_since', 'found_in_by_kind'],
+          'read lookups',
+        )
+        assertEquals(asked, [
+          'id, status, pending_since, found_in_by_kind',
+          'id, status',
+        ])
+        assertEquals(r, { data: [{ id: 'l-1' }], error: null })
+      }
+      assertEquals(logs.length, 2)
+
+      // Every column there: one read.
+      const once: string[] = []
+      await selectWithOptionalColumns(
+        (columns) => {
+          once.push(columns)
+          return Promise.resolve({ data: [], error: null })
+        },
+        ['id'],
+        ['pending_since'],
+        'read lookups',
+      )
+      assertEquals(once, ['id, pending_since'])
+
+      // Another error (another column, or not a missing column): returned, not retried.
+      for (const error of [
+        { code: '42703', message: 'column x.status does not exist' },
+        {
+          code: '57014',
+          message: 'canceling statement due to statement timeout',
+        },
+      ]) {
+        const asked: string[] = []
+        const r = await selectWithOptionalColumns(
+          (columns) => {
+            asked.push(columns)
+            return Promise.resolve({ data: null, error })
+          },
+          ['id', 'status'],
+          ['pending_since'],
+          'read lookups',
+        )
+        assertEquals(asked.length, 1)
+        assertEquals(r.error, error)
+      }
+      assertEquals(logs.length, 2)
+    } finally {
+      console.warn = saved
+    }
   },
 )

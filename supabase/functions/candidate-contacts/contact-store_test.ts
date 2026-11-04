@@ -1,5 +1,6 @@
 // deno test --allow-env supabase/functions/candidate-contacts/contact-store_test.ts
 import {
+  BACKUPS_FIELD_RETRY_MS,
   contactStoreConfigured,
   contactStoreFeedback,
   contactStoreFeedbackLater,
@@ -10,6 +11,7 @@ import {
   ContactStoreUnavailable,
   DEFAULT_TIMEOUT_MS,
   inBackground,
+  resetBackupsFieldSupport,
 } from './contact-store.ts'
 import { storeFirst } from './flow.ts'
 
@@ -68,9 +70,11 @@ Deno.test(
     )
     assertEquals(calls[0]!.url, 'http://contact-store.test/v1/contacts/lookup')
     assertEquals(calls[0]!.auth, 'Bearer lyca-test-key')
+    // backups: false: Lyca's own vendors run after this lookup (HIR-537 review).
     assertEquals(calls[0]!.body, {
       linkedin_url: 'https://www.linkedin.com/in/john-doe/',
       kinds: ['email', 'phone'],
+      backups: false,
     })
     assertEquals(result, {
       status: 'found',
@@ -349,3 +353,89 @@ Deno.test('background calls do nothing while unconfigured', () => {
   contactStoreFeedbackLater('u', 'email', 'a@example.com', 'good', null)
   assertEquals(calls.length, 0)
 })
+
+// --- backups: false on the lookup with the setting off (HIR-537 re-review) --
+
+const quiet = async <T>(fn: () => Promise<T>): Promise<[T, string[]]> => {
+  const saved = console.warn
+  const logs: string[] = []
+  console.warn = (...a: unknown[]) => logs.push(a.join(' '))
+  try {
+    return [await fn(), logs]
+  } finally {
+    console.warn = saved
+  }
+}
+
+Deno.test(
+  'lookup: a service from before `backups` (422) is asked once more without it, and it is left out for a while',
+  async () => {
+    configure(true)
+    resetBackupsFieldSupport()
+    let n = 0
+    const calls = stubFetch(() =>
+      n++ === 0
+        ? json(
+            {
+              error: {
+                code: 'invalid_request',
+                message: 'property backups should not exist',
+              },
+            },
+            422,
+          )
+        : json({
+            emails: [
+              { value: 'john@example.com', status: 'good', verified: null },
+            ],
+            phones: [],
+          }),
+    )
+    const [first, logs] = await quiet(() =>
+      contactStoreLookup('https://www.linkedin.com/in/john-doe/'),
+    )
+    assertEquals(first.status, 'found')
+    assertEquals(
+      calls.map((c) => c.body.backups ?? 'absent'),
+      [false, 'absent'],
+    )
+    assertEquals(logs.length, 1)
+    // Within BACKUPS_FIELD_RETRY_MS: no second refusal, the field stays out.
+    await contactStoreLookup('https://www.linkedin.com/in/john-doe/')
+    assertEquals(calls.length, 3)
+    assertEquals('backups' in calls[2]!.body, false)
+    assertEquals(BACKUPS_FIELD_RETRY_MS, 10 * 60_000)
+    resetBackupsFieldSupport()
+    configure(false)
+  },
+)
+
+Deno.test(
+  'lookup: any other 422 is not retried without `backups`',
+  async () => {
+    configure(true)
+    resetBackupsFieldSupport()
+    const calls = stubFetch(() =>
+      json(
+        {
+          error: {
+            code: 'invalid_request',
+            message:
+              'linkedin_url must be shorter than or equal to 2048 characters',
+          },
+        },
+        422,
+      ),
+    )
+    let status: number | null = null
+    try {
+      await contactStoreLookup('https://www.linkedin.com/in/john-doe/')
+    } catch (err) {
+      status = err instanceof ContactStoreUnavailable ? err.status : -1
+    }
+    assertEquals(status, 422)
+    assertEquals(calls.length, 1)
+    assertEquals(calls[0]!.body.backups, false)
+    configure(false)
+  },
+)

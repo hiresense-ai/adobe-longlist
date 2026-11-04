@@ -270,10 +270,49 @@ export async function upsertUnsynced(
 export function isMissingSyncColumn(
   error: { code?: string; message?: string } | null,
 ): boolean {
+  return isMissingColumn(error, ['store_synced_at'])
+}
+
+/**
+ * PostgREST (PGRST204) or Postgres (42703) saying the table has no column
+ * named in `columns` (a migration not applied yet).
+ */
+export function isMissingColumn(
+  error: { code?: string; message?: string } | null,
+  columns: string[],
+): boolean {
   if (!error || (error.code !== 'PGRST204' && error.code !== '42703')) {
     return false
   }
-  return (error.message ?? '').includes('store_synced_at')
+  const message = error.message ?? ''
+  return columns.some((c) => message.includes(c))
+}
+
+/** One select's result, as a Supabase query gives it. */
+export interface SelectResult<T> {
+  data: T[] | null
+  error: { code?: string; message?: string } | null
+}
+
+/**
+ * A select of `base` plus `optional` columns. When the database lacks one of
+ * the optional ones (its migration not applied: a deploy outside
+ * scripts/lyca-deploy.mjs, or a skipped migration), the select is made once
+ * more without any of them, with a warning, so reads keep working; the rows
+ * then simply lack those fields. Any other error is returned as is.
+ */
+export async function selectWithOptionalColumns<T>(
+  run: (columns: string) => PromiseLike<SelectResult<T>>,
+  base: string[],
+  optional: string[],
+  label: string,
+): Promise<SelectResult<T>> {
+  const full = await run([...base, ...optional].join(', '))
+  if (!isMissingColumn(full.error, optional)) return full
+  console.warn(
+    `${label}: a column is missing (${optional.join(', ')}: a migration not applied), read without them`,
+  )
+  return await run(base.join(', '))
 }
 
 /** The profile URL for a key ("linkedin.com/in/jane-doe"), when no row has one. */

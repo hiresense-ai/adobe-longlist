@@ -151,19 +151,53 @@ export interface StoredRow {
    * the source the service named (via-service.ts; migration 20261104000002).
    * Server-side only. */
   found_in_by_kind?: Partial<Record<ContactKind, string>> | null
+  /** The contact_store row, with CONTACT_VENDORS_VIA_SERVICE on: when
+   * email_searched / phone_searched was set (via-service.ts; migration
+   * 20261104000003). The flag counts for SERVICE_SEARCHED_MAX_AGE_MS. */
+  email_searched_at?: string | null
+  phone_searched_at?: string | null
+}
+
+/**
+ * How long the contact service's "every source was asked, nothing found" for
+ * a kind stands: 30 days, the service's own recheck period for a vendor's
+ * answer (contact-enrichment VENDOR_RECHECK_DAYS). After that the kind is
+ * unanswered again, so a wrong "not found" (a vendor the service skipped
+ * without saying so: contact-enrichment #20) does not last for ever.
+ */
+export const SERVICE_SEARCHED_MAX_AGE_MS = 30 * 24 * 60 * 60_000
+
+/** When the contact_store row's flag for this kind was set (ms), or null when it holds no time. */
+export function serviceSearchedAt(
+  row: StoredRow | null | undefined,
+  kind: ContactKind,
+): number | null {
+  const raw = kind === 'email' ? row?.email_searched_at : row?.phone_searched_at
+  if (typeof raw !== 'string' || !raw) return null
+  const ms = Date.parse(raw)
+  return Number.isFinite(ms) ? ms : null
 }
 
 /**
  * The contact service already asked every source of Lyca's order for this
  * kind and found nothing (the contact_store row's email_searched /
- * phone_searched, written only while CONTACT_VENDORS_VIA_SERVICE was on).
- * With the setting off again, such a kind is not bought from SalesQL or
- * BetterContact a second time (HIR-537 review).
+ * phone_searched, written only while CONTACT_VENDORS_VIA_SERVICE was on),
+ * within the last SERVICE_SEARCHED_MAX_AGE_MS. With the setting off again,
+ * such a kind is not bought from SalesQL or BetterContact a second time
+ * (HIR-537 review). A flag with no time (a row written before migration
+ * 20261104000003, or read without that column) still counts: nothing says it
+ * is old, and counting it never pays a vendor.
  */
-export function serviceSearched(rows: PersonRows, kind: ContactKind): boolean {
-  return !!(kind === 'email'
-    ? rows.shared?.email_searched
-    : rows.shared?.phone_searched)
+export function serviceSearched(
+  rows: PersonRows,
+  kind: ContactKind,
+  now: number = Date.now(),
+): boolean {
+  const flag =
+    kind === 'email' ? rows.shared?.email_searched : rows.shared?.phone_searched
+  if (!flag) return false
+  const at = serviceSearchedAt(rows.shared, kind)
+  return at === null || now - at <= SERVICE_SEARCHED_MAX_AGE_MS
 }
 
 /** The person's rows in Lyca's SQL, by where they came from. */

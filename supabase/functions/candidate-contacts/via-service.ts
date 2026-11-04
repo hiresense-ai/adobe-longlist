@@ -61,12 +61,15 @@
 // own and hides nothing because of it. Some of the row's columns get a
 // meaning for this row while on: email_searched / phone_searched = every
 // source was asked for that kind (nothing more to find; honoured with the
-// setting off too, so switching back never re-buys it: index.ts),
-// pending_kinds = the kinds the service was still fetching, and pending_since
-// (migration 20261104000001) = when that began. `error` says a call failed or
-// a kind's vendors were unavailable. found_in_by_kind (migration
-// 20261104000002) = per kind, the source the service's latest answer for it
-// named (its `found_in_by_kind`: store, a vendor, or none), for Lyca's own
+// setting off too, so switching back never re-buys it: index.ts), for 30 days
+// from email_searched_at / phone_searched_at (migration 20261104000003,
+// SERVICE_SEARCHED_MAX_AGE_MS in flow.ts, the service's own recheck period),
+// so a wrong "not found" does not last for ever; pending_kinds = the kinds the
+// service was still fetching, and pending_since (migration 20261104000001) =
+// when that began. `error` says a call failed or a kind's vendors were
+// unavailable. found_in_by_kind (migration 20261104000002) = per kind, the
+// source the service named (its `found_in_by_kind`: store or a vendor) in the
+// latest answer that brought a usable value of that kind, for Lyca's own
 // records and spend reconciliation; it never goes to the browser (index.ts
 // viewsFor builds the panel's payload field by field).
 //
@@ -88,6 +91,8 @@ import {
   kindUnavailable,
   mergeContacts,
   sameContact,
+  serviceSearched,
+  serviceSearchedAt,
   usableValuesOf,
   type ContactItem,
   type PersonRows,
@@ -163,6 +168,11 @@ export interface ServiceAnswer {
    * the browser. Empty when the answer has none.
    */
   foundInByKind: FoundInByKind
+  /**
+   * askWithPending only, on the answer of its second ask: the kinds the first
+   * answer had as `pending`. Never on the wire.
+   */
+  pendingBefore?: ContactKind[]
 }
 
 /** Per kind, the source the contact service named for it (`store`, a vendor, or `none`). */
@@ -397,7 +407,18 @@ export async function askWithPending(
     }),
     { sleep, deadline, label: 'contact service' },
   )
-  return again ?? first
+  if (!again) return first
+  // The second answer says which kinds the first had pending (nextServiceRow:
+  // a kind found after `pending` is not recorded as `store`). A kind the first
+  // answer settled keeps the first answer's source: the second sees it in the
+  // store the first call just filled.
+  const foundInByKind: FoundInByKind = { ...again.foundInByKind }
+  for (const kind of Object.keys(first.foundInByKind) as ContactKind[]) {
+    if (!first.pending.includes(kind)) {
+      foundInByKind[kind] = first.foundInByKind[kind]
+    }
+  }
+  return { ...again, foundInByKind, pendingBefore: first.pending }
 }
 
 /** The contact_store row's fields Lyca writes while the setting is on. */
@@ -407,14 +428,27 @@ export interface ServiceRowFields {
   phones: StoredContact[]
   email_searched: boolean
   phone_searched: boolean
+  /**
+   * When email_searched / phone_searched was set (ISO time; migration
+   * 20261104000003), null while it is not. The flag stands for
+   * SERVICE_SEARCHED_MAX_AGE_MS (30 days, flow.ts); after that the kind is
+   * unanswered again and the flag is cleared on the row's next write.
+   */
+  email_searched_at: string | null
+  phone_searched_at: string | null
   pending_kinds: ContactKind[] | null
   /** When the pending began (ISO time) while a kind is pending, else null. */
   pending_since: string | null
   error: string | null
   /**
-   * Per kind, the source the service's latest answer for that kind named
-   * (migration 20261104000002). A kind not asked keeps what it held; an
-   * outage changes nothing. Server-side only: never in the panel's payload.
+   * Per kind, the source the service named in the latest answer that brought
+   * a usable value of that kind (migration 20261104000002). An answer with no
+   * usable value for a kind (not found, pending, unavailable, Find another
+   * with nothing new) keeps what the kind held, and so does an outage or a
+   * kind not asked. A kind found on a re-check after `pending` is not given
+   * the answer's `store` (the service saved it moments earlier, from a vendor
+   * Lyca's request paid but the service does not name yet: contact-enrichment
+   * #20). Server-side only: never in the panel's payload.
    */
   found_in_by_kind: FoundInByKind | null
 }
@@ -482,9 +516,17 @@ export function nextServiceRow(
   const heldPending = list(existing?.pending_kinds).filter(
     (k) => !kinds.includes(k),
   )
+  // A flag older than SERVICE_SEARCHED_MAX_AGE_MS no longer counts, and is
+  // cleared here (flow.ts serviceSearched).
   const searched = {
-    email: !!existing?.email_searched,
-    phone: !!existing?.phone_searched,
+    email: serviceSearched({ shared: existing }, 'email', now),
+    phone: serviceSearched({ shared: existing }, 'phone', now),
+  }
+  const isoOf = (ms: number | null) =>
+    ms === null ? null : new Date(ms).toISOString()
+  const searchedAt: Record<ContactKind, string | null> = {
+    email: searched.email ? isoOf(serviceSearchedAt(existing, 'email')) : null,
+    phone: searched.phone ? isoOf(serviceSearchedAt(existing, 'phone')) : null,
   }
   const heldFoundIn = foundInByKindOf(existing?.found_in_by_kind, KINDS)
   const foundInOrNull = (x: FoundInByKind) => (Object.keys(x).length ? x : null)
@@ -496,6 +538,8 @@ export function nextServiceRow(
       phones: heldPhones,
       email_searched: searched.email,
       phone_searched: searched.phone,
+      email_searched_at: searchedAt.email,
+      phone_searched_at: searchedAt.phone,
       pending_kinds: heldPending.length ? heldPending : null,
       pending_since:
         heldPending.length && heldSince !== null
@@ -539,7 +583,10 @@ export function nextServiceRow(
     const nothingLeft = findAnother
       ? answer.exhausted === true
       : answer.has[kind] === false
-    if (nothingLeft) searched[kind] = true
+    if (nothingLeft) {
+      searched[kind] = true
+      searchedAt[kind] = new Date(now).toISOString()
+    }
   }
   const allPending = [...new Set([...heldPending, ...pending])]
   // A kind not asked now that was unavailable before stays so.
@@ -581,15 +628,45 @@ export function nextServiceRow(
     phones,
     email_searched: searched.email,
     phone_searched: searched.phone,
+    email_searched_at: searchedAt.email,
+    phone_searched_at: searchedAt.phone,
     pending_kinds: allPending.length ? allPending : null,
     pending_since: since === null ? null : new Date(since).toISOString(),
     error: unavailable.length ? SOURCE_UNAVAILABLE : null,
-    // The kinds asked now take the answer's source; the others keep theirs.
+    // A kind takes the answer's source only when the answer brought a usable
+    // value for it; every other kind keeps what it held (HIR-537 review).
     found_in_by_kind: foundInOrNull({
       ...heldFoundIn,
-      ...foundInByKindOf(answer.foundInByKind, kinds),
+      ...sourcesWithValues(answer, kinds, [
+        ...list(existing?.pending_kinds),
+        ...(answer.pendingBefore ?? []),
+      ]),
     }),
   }
+}
+
+/**
+ * The answer's source per kind, only for a kind it brought a usable value of
+ * (find-another: a new one, `has`). Not `store` for a kind that was pending
+ * (`wasPending`): that value is one the service saved moments earlier from a
+ * vendor Lyca's request paid, which the service does not name yet
+ * (contact-enrichment #20), so the kind keeps what it held.
+ */
+function sourcesWithValues(
+  answer: ServiceAnswer,
+  kinds: ContactKind[],
+  wasPending: ContactKind[],
+): FoundInByKind {
+  const named = foundInByKindOf(answer.foundInByKind, kinds)
+  const out: FoundInByKind = {}
+  for (const kind of kinds) {
+    const source = named[kind]
+    if (!source || answer.has[kind] !== true) continue
+    if (!usableValuesOf(answer, kind).length) continue
+    if (source === 'store' && wasPending.includes(kind)) continue
+    out[kind] = source
+  }
+  return out
 }
 
 // ------------------------------------------------------------ the panel
@@ -619,11 +696,12 @@ const pendingExpired = (rows: PersonRows, kind: ContactKind, now: number) => {
 const pendingFor = (rows: PersonRows, kind: ContactKind, now = Date.now()) =>
   pendingAt(rows, kind) && !pendingExpired(rows, kind, now)
 
-/** Every source of the service's order was asked for this kind. */
-export const exhaustedFor = (rows: PersonRows, kind: ContactKind) =>
-  !!(kind === 'email'
-    ? rows.shared?.email_searched
-    : rows.shared?.phone_searched)
+/** Every source of the service's order was asked for this kind, within SERVICE_SEARCHED_MAX_AGE_MS (flow.ts). */
+export const exhaustedFor = (
+  rows: PersonRows,
+  kind: ContactKind,
+  now = Date.now(),
+) => serviceSearched(rows, kind, now)
 
 /** The last call to the service failed (or the store was never reached). */
 const failedLast = (rows: PersonRows) =>
@@ -657,7 +735,7 @@ function unanswered(
   kind: ContactKind,
   now = Date.now(),
 ): boolean {
-  if (holdsUsable(rows, kind) || exhaustedFor(rows, kind)) return false
+  if (holdsUsable(rows, kind) || exhaustedFor(rows, kind, now)) return false
   if (!rows.shared || failedLast(rows) || pendingExpired(rows, kind, now))
     return true
   const salesqlAsked = !!rows.salesql && rows.salesql.status !== 'error'
@@ -702,7 +780,7 @@ export function serviceKindState(
 ): ServiceKindState {
   const searching = pendingFor(rows, kind, now)
   const usable = items.filter((x) => x.verdict !== 'bad' && !x.invalid)
-  const exhausted = exhaustedFor(rows, kind)
+  const exhausted = exhaustedFor(rows, kind, now)
   const unavailable =
     !searching &&
     !exhausted &&

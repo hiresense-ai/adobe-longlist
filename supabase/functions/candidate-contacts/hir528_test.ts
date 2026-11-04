@@ -373,6 +373,7 @@ Deno.test(
     assertEquals(bodies[0], {
       linkedin_url: 'https://www.linkedin.com/in/john-doe/',
       kinds: ['phone'],
+      backups: false,
     })
     assertEquals(
       [r.status, r.pending, r.retryAfterMs],

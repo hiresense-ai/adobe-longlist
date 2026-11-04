@@ -36,7 +36,7 @@ sequenceDiagram
     end
     F->>DB: the contact_store row (values, check, pending_kinds, *_searched)
   else setting off
-    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds} (8 s, store only plus ZipLabs)
+    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds, backups: false} (8 s, store only plus ZipLabs)
     F->>DB: the contact_store row (status error when the store failed)
     F->>DB: claim the person and vendor (candidate_contact_claims)
     F->>V: SalesQL, then BetterContact, for the kinds still missing
@@ -125,7 +125,7 @@ The comparisons that use it: de-duplication, "is this marked 👎", "is this new
 
 Decision [HIR-461](https://linear.app/hiresenseai/issue/HIR-461): the shared contact service makes every contact vendor call. Lyca moves onto it behind one setting, `CONTACT_VENDORS_VIA_SERVICE` (a function secret on the Lyca project).
 
-- **Off** (unset, the default, or anything but `true`): exactly the reveal above. Lyca asks the store, then calls SalesQL and BetterContact itself.
+- **Off** (unset, the default, or anything but `true`): exactly the reveal above. Lyca asks the store, then calls SalesQL and BetterContact itself. That store lookup sends `backups: false`: a service that lists `lyca` in its `WATERFALLS` (while switching on or back) then asks only the store and ZipLabs, never its own backup vendors, so a reveal never pays SalesQL or BetterContact twice. A service from before `backups` (contact-enrichment HIR-142, no `WATERFALLS` either) refuses the field with 422 `property backups should not exist`; Lyca then asks once more without it and leaves it out for 10 minutes.
 - **On** (`true`): Lyca calls no vendor itself. The code is `supabase/functions/candidate-contacts/via-service.ts`.
 
 Lyca's vendor code stays, because switching back needs it. Turning the setting on or off is a secret change, not a code deploy.
@@ -156,17 +156,18 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - On "Get contact", the `contact_store` row records that the call failed (status `error` when it holds nothing).
    - On "Find another", nothing is written, and the request answers 503 with that message.
 6. **Lyca's tables are as before.** The service's answer is the person's `contact_store` row in `candidate_contact_lookups`. While on, these columns of that row have a meaning:
-   - `email_searched` / `phone_searched`: every source was asked for that kind (also honoured with the setting off: see switching back);
+   - `email_searched` / `phone_searched`: every source was asked for that kind (also honoured with the setting off: see switching back), for **30 days** from `email_searched_at` / `phone_searched_at` (new columns, migration `20261104000003`; `SERVICE_SEARCHED_MAX_AGE_MS` in `flow.ts`, the service's own recheck period). After that the kind is unanswered again: the panel offers "Find email / number", "Get contact" asks for it, and with the setting off it can be bought again. So a wrong "not found" (see contact-enrichment #20 below) does not last for ever. A flag with no time still counts;
    - `pending_kinds`: the kinds the service was still fetching;
    - `pending_since` (new column, migration `20261104000001`): when that began. `vendor_request_id` keeps its one meaning, a vendor's request id.
-   - `found_in_by_kind` (new column, migration `20261104000002`): per kind, the source the service's latest answer for that kind named (its `found_in_by_kind`: `store`, `contactout`, `salesql`, `bettercontact`, `ziplabs` or `none`), e.g. `{"email": "salesql", "phone": "none"}`. Written on every lookup and Find another answer; a kind not asked keeps what it held, and an outage changes nothing. It is for Lyca's own records and spend reconciliation only: the panel's payload never carries it, so the browser never learns which vendor a value came from. One source per kind: after a Find another, the earlier answer's source for that kind is replaced (the service's own log records each call).
+   - `found_in_by_kind` (new column, migration `20261104000002`): per kind, the source the service named (its `found_in_by_kind`: `store`, `contactout`, `salesql`, `bettercontact` or `ziplabs`) in the latest answer that brought a usable value of that kind, e.g. `{"email": "salesql"}`. An answer with no usable value for a kind (not found, `pending`, `unavailable`, a Find another with nothing new) leaves that kind's source as it was, so a Find another that comes back empty never replaces `salesql` with `none`; a kind not asked and an outage change nothing either. A kind found on the re-check after `pending` is not recorded as `store` (the service saved that value moments earlier, from a vendor Lyca's request paid but the service does not name yet: raised on contact-enrichment #20); it keeps what it held. Within one reveal, a kind the first answer already settled keeps the first answer's source. It is for Lyca's own records and spend reconciliation only: the panel's payload never carries it, so the browser never learns which vendor a value came from. One source per kind: after a Find another that finds a new value, the earlier source for that kind is replaced (the service's own log records each call).
 
    Rows from Lyca's own vendors before the switch are kept and shown. Their values take 👍/👎, and "Find another" for them goes to the service.
 
 **Before switching on:**
 
-- Migrations `20261104000001_contact_store_pending_since.sql` and `20261104000002_contact_store_found_in_by_kind.sql` applied, then the functions deployed (`lyca-deploy.mjs` refuses the other order).
+- Migrations `20261104000001_contact_store_pending_since.sql`, `20261104000002_contact_store_found_in_by_kind.sql` and `20261104000003_contact_store_searched_at.sql` applied, then the functions deployed (`lyca-deploy.mjs` refuses the other order).
 - contact-enrichment #19 (BetterContact, `name` / `company`) deployed to the service Lyca uses, and #20 for `check`. Lyca also works without #19 (it retries without `name` / `company`), but BetterContact inside the service then searches without them.
+- **Do not switch on before contact-enrichment #20's fix for skipped vendors is deployed.** Until then the service answers `has: false` with `found_in_by_kind` (Lyca's "every source was asked") also when it skipped a vendor because it reached its cap, is switched off or has no key, without listing the kind in `unavailable`. Example: BetterContact reaches its daily cap, and every person revealed for the rest of the day whose email SalesQL and ContactOut miss shows "No email found" with no button. The 30-day expiry above only bounds how long that lasts.
 
 **Switching on (in this order, or both pay):**
 
@@ -179,9 +180,9 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 1. Remove `lyca` from the service's `WATERFALLS` and redeploy the service.
 2. Set `CONTACT_VENDORS_VIA_SERVICE=false`, or unset it. Keep the gap between the two short: in between, reveals come from the store and ZipLabs only.
 
-While the setting is off and `lyca` is still in `WATERFALLS`, the service's vendors and Lyca's own both run, and both pay.
+While the setting is off and `lyca` is still in `WATERFALLS` (or that service redeploy failed), Lyca's store lookup sends `backups: false`, so the service asks only the store and ZipLabs and Lyca's own SalesQL and BetterContact run as before: nothing is paid twice. (A service from before `backups` has no `WATERFALLS`, so the question does not arise there.)
 
-After switching back, a kind the service asked every source for (the `contact_store` row's `email_searched` / `phone_searched`) is not bought from SalesQL or BetterContact again: "Get contact" skips it and the panel shows "No email / number found". Values the service found are in the `contact_store` row and are shown as store values, so they are not bought again either.
+After switching back, a kind the service asked every source for (the `contact_store` row's `email_searched` / `phone_searched`, within its 30 days) is not bought from SalesQL or BetterContact again: "Get contact" skips it and the panel shows "No email / number found". Values the service found are in the `contact_store` row and are shown as store values, so they are not bought again either.
 
 **Known gaps.**
 - The service does not know which people Lyca's own vendors were asked about before the switch. A "Find another" for such a person can ask SalesQL again through the service.
@@ -236,6 +237,8 @@ Migrations and functions reach the Lyca project only through `scripts/lyca-deplo
 - `db-query` for any file that is not committed, unchanged, and directly in `workspaces/lyca/ops/`, or whose sha256 is not confirmed with `LYCA_DB_QUERY_SHA256` (`node scripts/lyca-deploy.mjs ops-sha256` lists them, without touching any project).
 
 **Always migrations before functions.** For example, `20261029000002_contact_lookup_claims.sql` must be applied before the `candidate-contacts` that uses the claims. Without the table, every paid lookup fails instead of paying. `functions-deploy` refuses until every migration is applied.
+
+**HIR-537's columns** (`20261104000001` `pending_since`, `20261104000002` `found_in_by_kind`, `20261104000003` `email_searched_at` / `phone_searched_at`) are also applied before `candidate-contacts`. If the functions ever run without them (deployed with the Supabase CLI directly, or a migration skipped), reading the lookup rows does not fail: the read is made once more without those columns and a warning is logged (`read candidate_contact_lookups: a column is missing`), so list, lookup and 👍/👎 keep working with the setting off. With the setting on, saving the service's answer still needs them: apply the migrations, then deploy again with `lyca-deploy.mjs`.
 
 ### The catch-up job (once)
 

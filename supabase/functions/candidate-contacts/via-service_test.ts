@@ -29,7 +29,12 @@ import {
   type ServiceRowFields,
   type ViaServiceDeps,
 } from './via-service.ts'
-import { serviceSearched, type PersonRows, type StoredRow } from './flow.ts'
+import {
+  SERVICE_SEARCHED_MAX_AGE_MS,
+  serviceSearched,
+  type PersonRows,
+  type StoredRow,
+} from './flow.ts'
 import { Deadline } from './deadline.ts'
 import type { ContactKind } from './vendors.ts'
 
@@ -241,6 +246,8 @@ onTest(
       phones: [{ value: '+919876543210', type: null, valid: null }],
       email_searched: false,
       phone_searched: false,
+      email_searched_at: null,
+      phone_searched_at: null,
       pending_kinds: null,
       pending_since: null,
       error: null,
@@ -408,6 +415,8 @@ onTest(
         phones: [],
         email_searched: false,
         phone_searched: false,
+        email_searched_at: null,
+        phone_searched_at: null,
         pending_kinds: null,
         pending_since: null,
         error: SERVICE_UNREACHABLE,
@@ -470,6 +479,8 @@ onTest(
       phones: [],
       email_searched: false,
       phone_searched: false,
+      email_searched_at: null,
+      phone_searched_at: null,
       pending_kinds: null,
       pending_since: null,
       error: SERVICE_UNREACHABLE,
@@ -1613,7 +1624,7 @@ function noVendorIn(payload: unknown) {
 }
 
 onTest(
-  'found_in_by_kind: the lookup keeps the vendor per kind on the row; Find another replaces only its kind',
+  'found_in_by_kind: the lookup keeps the vendor per kind it found a value for; Find another replaces only its kind',
   async () => {
     const calls = stubFetch([
       json({
@@ -1637,10 +1648,8 @@ onTest(
     ])
     const { state, deps } = memory()
     await runViaService(deps, URL_, 'lookup', [])
-    assertEquals(state.rows.shared?.found_in_by_kind, {
-      email: 'salesql',
-      phone: 'none',
-    })
+    // The phone had no value: no source is recorded for it.
+    assertEquals(state.rows.shared?.found_in_by_kind, { email: 'salesql' })
     noVendorIn(panelPayload(state.rows, []))
 
     // A 👎 on the email, then Find another: the email's source is the new answer's.
@@ -1657,10 +1666,7 @@ onTest(
     assertEquals(calls.length, 2)
     assertEquals(calls[1]!.url, `${SERVICE}/v1/contacts/find-another`)
     noVendorCalls(calls)
-    assertEquals(state.rows.shared?.found_in_by_kind, {
-      email: 'contactout',
-      phone: 'none',
-    })
+    assertEquals(state.rows.shared?.found_in_by_kind, { email: 'contactout' })
     // Find another sends what was shown, never which vendor found it.
     noVendorIn(calls.map((c) => c.body))
     const payload = panelPayload(state.rows, verdicts)
@@ -1676,7 +1682,7 @@ onTest(
 )
 
 onTest(
-  'found_in_by_kind: Find another with nothing new records "none" for its kind',
+  'found_in_by_kind: Find another with nothing new keeps the source of the value shown (HIR-537 review)',
   async () => {
     stubFetch([
       json({
@@ -1696,7 +1702,7 @@ onTest(
     const { state, deps } = memory(rows, thumbsDown)
     await runViaService(deps, URL_, 'backup', ['email'])
     assertEquals(state.rows.shared?.found_in_by_kind, {
-      email: 'none',
+      email: 'salesql',
       phone: 'ziplabs',
     })
     assertEquals(state.rows.shared?.email_searched, true)
@@ -1782,3 +1788,231 @@ Deno.test(
     assertEquals(row.found_in_by_kind, null)
   },
 )
+
+// --- HIR-537 re-review (4 Nov): "not found" expires; a source only with a value
+
+const DAY = 24 * 60 * 60_000
+const T0 = Date.parse('2026-11-04T10:00:00.000Z')
+
+onTest(
+  'searched expiry: "not found" stands for 30 days, then the kind is unanswered again (panel, "Get contact", switch-back)',
+  async () => {
+    assertEquals(SERVICE_SEARCHED_MAX_AGE_MS, 30 * DAY)
+    const calls = stubFetch([
+      json({
+        found_in: 'none',
+        found_in_by_kind: { email: 'none', phone: 'none' },
+        has: { email: false, phone: false },
+        emails: [],
+        phones: [],
+      }),
+      json({
+        found_in: 'salesql',
+        found_in_by_kind: { email: 'salesql', phone: 'none' },
+        has: { email: true, phone: false },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+    ])
+    const { state, deps } = memory()
+    let now = T0
+    deps.now = () => now
+    await runViaService(deps, URL_, 'lookup', [])
+    const row = state.rows.shared!
+    assertEquals([row.email_searched, row.phone_searched], [true, true])
+    assertEquals(
+      [row.email_searched_at, row.phone_searched_at],
+      [new Date(T0).toISOString(), new Date(T0).toISOString()],
+    )
+
+    // Day 29: still final everywhere.
+    const day29 = T0 + 29 * DAY
+    assertEquals(view(state.rows, [], 'email', day29), {
+      searching: false,
+      canFind: false,
+      exhausted: true,
+      unavailable: false,
+    })
+    assertEquals(kindsToAskAgain(state.rows, day29), [])
+    assertEquals(serviceSearched(state.rows, 'email', day29), true)
+
+    // Day 31: unanswered again, so "Find email" is offered, "Get contact"
+    // asks again, and with the setting off it is no longer skipped.
+    const day31 = T0 + 31 * DAY
+    assertEquals(view(state.rows, [], 'email', day31), {
+      searching: false,
+      canFind: true,
+      exhausted: false,
+      unavailable: false,
+    })
+    assertEquals(kindsToAskAgain(state.rows, day31), ['email', 'phone'])
+    assertEquals(serviceSearched(state.rows, 'email', day31), false)
+
+    // "Get contact" on day 31 asks the service again; the email is found now,
+    // the phone is "not found" again, with a new time.
+    now = day31
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(calls.length, 2)
+    noVendorCalls(calls)
+    const after = state.rows.shared!
+    assertEquals([after.email_searched, after.email_searched_at], [false, null])
+    assertEquals(
+      [after.phone_searched, after.phone_searched_at],
+      [true, new Date(day31).toISOString()],
+    )
+    assertEquals(after.found_in_by_kind, { email: 'salesql' })
+  },
+)
+
+Deno.test(
+  'searched expiry: a flag with no time still counts; an expired flag is cleared on the next write, an outage included',
+  () => {
+    const noTime: PersonRows = {
+      shared: {
+        status: 'not_found',
+        emails: [],
+        phones: [],
+        email_searched: true,
+        phone_searched: false,
+      },
+    }
+    assertEquals(serviceSearched(noTime, 'email', T0 + 365 * DAY), true)
+
+    const old: StoredRow = {
+      status: 'not_found',
+      emails: [],
+      phones: [],
+      email_searched: true,
+      phone_searched: true,
+      email_searched_at: new Date(T0).toISOString(),
+      phone_searched_at: new Date(T0 + 10 * DAY).toISOString(),
+    }
+    const later = T0 + 35 * DAY
+    const down = nextServiceRow(old, ['email'], { outage: true }, later)
+    // The email's flag is past 30 days: cleared. The phone's is not: kept, with its time.
+    assertEquals(
+      [
+        down.email_searched,
+        down.email_searched_at,
+        down.phone_searched,
+        down.phone_searched_at,
+      ],
+      [false, null, true, new Date(T0 + 10 * DAY).toISOString()],
+    )
+  },
+)
+
+onTest(
+  'found_in_by_kind: pending then found in one reveal keeps the first source and never records "store" for the pending kind',
+  async () => {
+    stubFetch([
+      json({
+        found_in: 'salesql',
+        found_in_by_kind: { email: 'salesql', phone: 'none' },
+        has: { email: true, phone: false },
+        pending: ['phone'],
+        retry_after_ms: 1000,
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+      // The second ask finds both in the store the first call filled.
+      json({
+        found_in: 'store',
+        found_in_by_kind: { email: 'store', phone: 'store' },
+        has: { email: true, phone: true },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.phones.length, 1)
+    assertEquals(state.rows.shared?.found_in_by_kind, { email: 'salesql' })
+  },
+)
+
+onTest(
+  'found_in_by_kind: a re-check that finds a pending kind in the store does not record "store" for it',
+  async () => {
+    stubFetch([
+      json({
+        found_in: 'store',
+        found_in_by_kind: { phone: 'store' },
+        has: { phone: true },
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      }),
+    ])
+    const rows: PersonRows = {
+      shared: {
+        status: 'found',
+        emails: [{ value: 'john.doe@example.com', type: null, status: null }],
+        phones: [],
+        email_searched: false,
+        phone_searched: false,
+        pending_kinds: ['phone'],
+        pending_since: new Date(T0).toISOString(),
+        error: null,
+        found_in_by_kind: { email: 'salesql' },
+      },
+    }
+    const { state, deps } = memory(rows)
+    deps.now = () => T0 + 10_000
+    await runViaService(deps, URL_, 'refresh', [])
+    assertEquals(state.rows.shared?.phones.length, 1)
+    assertEquals(state.rows.shared?.pending_kinds, null)
+    assertEquals(state.rows.shared?.found_in_by_kind, { email: 'salesql' })
+  },
+)
+
+const findAnotherWithoutValue: Array<[string, Record<string, unknown>]> = [
+  [
+    'pending',
+    {
+      found_in: 'none',
+      found_in_by_kind: { email: 'none' },
+      has: { email: false },
+      pending: ['email'],
+      retry_after_ms: 1000,
+      exhausted: false,
+      emails: [],
+    },
+  ],
+  [
+    'unavailable',
+    {
+      found_in: 'none',
+      found_in_by_kind: { email: 'none' },
+      has: { email: false },
+      unavailable: ['email'],
+      exhausted: false,
+      emails: [],
+    },
+  ],
+]
+for (const [label, answer] of findAnotherWithoutValue) {
+  onTest(
+    `found_in_by_kind: a Find another that comes back ${label} keeps the shown value's source`,
+    async () => {
+      stubFetch([json(answer), json(answer)])
+      const rows: PersonRows = {
+        shared: {
+          ...foundEmail.shared!,
+          found_in_by_kind: { email: 'salesql', phone: 'ziplabs' },
+        },
+      }
+      const { state, deps } = memory(rows, thumbsDown)
+      await runViaService(deps, URL_, 'backup', ['email'])
+      assertEquals(state.rows.shared?.found_in_by_kind, {
+        email: 'salesql',
+        phone: 'ziplabs',
+      })
+      assertEquals(state.rows.shared?.email_searched, false)
+    },
+  )
+}
