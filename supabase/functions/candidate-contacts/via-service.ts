@@ -64,7 +64,11 @@
 // setting off too, so switching back never re-buys it: index.ts),
 // pending_kinds = the kinds the service was still fetching, and pending_since
 // (migration 20261104000001) = when that began. `error` says a call failed or
-// a kind's vendors were unavailable.
+// a kind's vendors were unavailable. found_in_by_kind (migration
+// 20261104000002) = per kind, the source the service's latest answer for it
+// named (its `found_in_by_kind`: store, a vendor, or none), for Lyca's own
+// records and spend reconciliation; it never goes to the browser (index.ts
+// viewsFor builds the panel's payload field by field).
 //
 // Kept free of Supabase so it can be tested on its own (via-service_test.ts):
 // index.ts gives it the person's rows and a way to write the row.
@@ -152,6 +156,36 @@ export interface ServiceAnswer {
    * asked.
    */
   waterfall: boolean
+  /**
+   * The service's `found_in_by_kind`, per kind asked for: the source that
+   * answered it (`store`, a vendor such as `salesql`, or `none`). Kept on
+   * Lyca's row for its own records and spend reconciliation; never sent to
+   * the browser. Empty when the answer has none.
+   */
+  foundInByKind: FoundInByKind
+}
+
+/** Per kind, the source the contact service named for it (`store`, a vendor, or `none`). */
+export type FoundInByKind = Partial<Record<ContactKind, string>>
+
+/** A source name as the service sends it (store | contactout | salesql | bettercontact | ziplabs | none, or a vendor added later). */
+const SOURCE_NAME = /^[a-z][a-z0-9_-]{0,39}$/
+
+/** `found_in_by_kind` for `kinds` only, each a plain source name; anything else is left out. */
+export function foundInByKindOf(
+  raw: unknown,
+  kinds: ContactKind[],
+): FoundInByKind {
+  const out: FoundInByKind = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  const wire = raw as Record<string, unknown>
+  for (const kind of kinds) {
+    const source = wire[kind]
+    if (typeof source === 'string' && SOURCE_NAME.test(source)) {
+      out[kind] = source
+    }
+  }
+  return out
 }
 
 function checkOf(c: WireContact): EmailCheck | null {
@@ -199,6 +233,7 @@ export function parseServiceAnswer(
     retryAfterMs: pending.length && Number.isFinite(retry) ? retry : null,
     waterfall:
       typeof b.found_in_by_kind === 'object' && b.found_in_by_kind !== null,
+    foundInByKind: foundInByKindOf(b.found_in_by_kind, kinds),
     ...(unavailable.length ? { unavailable } : {}),
     ...(typeof b.exhausted === 'boolean' ? { exhausted: b.exhausted } : {}),
   }
@@ -376,6 +411,12 @@ export interface ServiceRowFields {
   /** When the pending began (ISO time) while a kind is pending, else null. */
   pending_since: string | null
   error: string | null
+  /**
+   * Per kind, the source the service's latest answer for that kind named
+   * (migration 20261104000002). A kind not asked keeps what it held; an
+   * outage changes nothing. Server-side only: never in the panel's payload.
+   */
+  found_in_by_kind: FoundInByKind | null
 }
 
 export const SERVICE_UNREACHABLE = 'The contact service could not be reached.'
@@ -445,6 +486,8 @@ export function nextServiceRow(
     email: !!existing?.email_searched,
     phone: !!existing?.phone_searched,
   }
+  const heldFoundIn = foundInByKindOf(existing?.found_in_by_kind, KINDS)
+  const foundInOrNull = (x: FoundInByKind) => (Object.keys(x).length ? x : null)
   if ('outage' in outcome) {
     const any = heldEmails.length > 0 || heldPhones.length > 0
     return {
@@ -459,6 +502,7 @@ export function nextServiceRow(
           ? new Date(heldSince).toISOString()
           : null,
       error: SERVICE_UNREACHABLE,
+      found_in_by_kind: foundInOrNull(heldFoundIn),
     }
   }
   const { answer, findAnother } = outcome
@@ -540,6 +584,11 @@ export function nextServiceRow(
     pending_kinds: allPending.length ? allPending : null,
     pending_since: since === null ? null : new Date(since).toISOString(),
     error: unavailable.length ? SOURCE_UNAVAILABLE : null,
+    // The kinds asked now take the answer's source; the others keep theirs.
+    found_in_by_kind: foundInOrNull({
+      ...heldFoundIn,
+      ...foundInByKindOf(answer.foundInByKind, kinds),
+    }),
   }
 }
 
@@ -678,6 +727,33 @@ export function serviceKindState(
 /** Every value takes 👍/👎 while on: after any 👎 the service can look further (find-another). */
 export function withFeedback<T extends { feedback: boolean }>(items: T[]): T[] {
   return items.map((x) => ({ ...x, feedback: true }))
+}
+
+/**
+ * What the panel gets for one person while on (index.ts viewsFor adds the
+ * name and profile URL). Built field by field: the row's found_in_by_kind,
+ * error text and other columns never reach the browser, so it never learns
+ * which vendor a value came from.
+ */
+export function servicePanelView(
+  rows: PersonRows,
+  emails: ContactItem[],
+  phones: ContactItem[],
+  unavailableMessage: string,
+  now = Date.now(),
+) {
+  const email = serviceKindState('email', emails, rows, now)
+  const phone = serviceKindState('phone', phones, rows, now)
+  return {
+    lookedUp: serviceLookedUp(rows),
+    // An outage is "temporarily unavailable, try again", never "not found".
+    error: email.unavailable && phone.unavailable ? unavailableMessage : null,
+    // Every value takes 👍/👎: after a 👎 the service can look further.
+    emails: withFeedback(emails),
+    phones: withFeedback(phones),
+    email,
+    phone,
+  }
 }
 
 // ------------------------------------------------------------ the reveal

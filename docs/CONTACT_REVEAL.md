@@ -157,12 +157,13 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - `email_searched` / `phone_searched`: every source was asked for that kind (also honoured with the setting off: see switching back);
    - `pending_kinds`: the kinds the service was still fetching;
    - `pending_since` (new column, migration `20261104000001`): when that began. `vendor_request_id` keeps its one meaning, a vendor's request id.
+   - `found_in_by_kind` (new column, migration `20261104000002`): per kind, the source the service's latest answer for that kind named (its `found_in_by_kind`: `store`, `contactout`, `salesql`, `bettercontact`, `ziplabs` or `none`), e.g. `{"email": "salesql", "phone": "none"}`. Written on every lookup and Find another answer; a kind not asked keeps what it held, and an outage changes nothing. It is for Lyca's own records and spend reconciliation only: the panel's payload never carries it, so the browser never learns which vendor a value came from. One source per kind: after a Find another, the earlier answer's source for that kind is replaced (the service's own log records each call).
 
    Rows from Lyca's own vendors before the switch are kept and shown. Their values take 👍/👎, and "Find another" for them goes to the service.
 
 **Before switching on:**
 
-- Migration `20261104000001_contact_store_pending_since.sql` applied, then the functions deployed (`lyca-deploy.mjs` refuses the other order).
+- Migrations `20261104000001_contact_store_pending_since.sql` and `20261104000002_contact_store_found_in_by_kind.sql` applied, then the functions deployed (`lyca-deploy.mjs` refuses the other order).
 - contact-enrichment #19 (BetterContact, `name` / `company`) deployed to the service Lyca uses, and #20 for `check`. Lyca also works without #19 (it retries without `name` / `company`), but BetterContact inside the service then searches without them.
 
 **Switching on (in this order, or both pay):**
@@ -182,13 +183,13 @@ After switching back, a kind the service asked every source for (the `contact_st
 
 **Known gaps.**
 - The service does not know which people Lyca's own vendors were asked about before the switch. A "Find another" for such a person can ask SalesQL again through the service.
-- After switching back, a kind the service answered with a value that was then 👎'd can be bought again from SalesQL / BetterContact through "Find another": Lyca does not know which of the service's vendors the value came from.
+- After switching back, a kind the service answered with a value that was then 👎'd can be bought again from SalesQL / BetterContact through "Find another": Lyca keeps only which source the service used per kind (`found_in_by_kind`), not per value, and the reveal with the setting off does not read it.
 
 ## What is saved where
 
 | Where | What |
 | --- | --- |
-| `candidate_contact_lookups` (Lyca's Supabase) | One row per person and source (`contact_store`, `salesql`, `bettercontact`): the emails and phones found, status, which kinds were searched. Service role only, no browser access. |
+| `candidate_contact_lookups` (Lyca's Supabase) | One row per person and source (`contact_store`, `salesql`, `bettercontact`): the emails and phones found, status, which kinds were searched. Through the contact service, the `contact_store` row also keeps which source the service used per kind (`found_in_by_kind`). Service role only, no browser access. |
 | `candidate_contact_feedback` (Lyca's Supabase) | One current 👍/👎 (with reason) per value. Service role only. |
 | `candidate_contact_claims` (Lyca's Supabase) | A paid vendor call in progress: at most one per person and vendor, normally empty. Service role only. |
 | The shared contact store | Every value SalesQL or BetterContact found, and every 👍/👎, so no HireSense platform pays for the same contact twice. Stored encrypted by the contact-enrichment service. |

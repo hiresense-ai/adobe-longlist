@@ -138,6 +138,10 @@ export interface StoredRow {
   /** The contact_store row, with CONTACT_VENDORS_VIA_SERVICE on: when the
    * service's `pending` began (via-service.ts; migration 20261104000001). */
   pending_since?: string | null
+  /** The contact_store row, with CONTACT_VENDORS_VIA_SERVICE on: per kind,
+   * the source the service named (via-service.ts; migration 20261104000002).
+   * Server-side only. */
+  found_in_by_kind?: Partial<Record<ContactKind, string>> | null
 }
 
 /**

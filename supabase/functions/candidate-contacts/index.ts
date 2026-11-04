@@ -105,10 +105,8 @@ import { markSynced } from './store-sync-db.ts'
 import {
   contactVendorsViaService,
   runViaService,
-  serviceKindState,
-  serviceLookedUp,
+  servicePanelView,
   ServiceUnavailableError,
-  withFeedback,
   type ServiceRowFields,
 } from './via-service.ts'
 
@@ -184,6 +182,8 @@ interface LookupRow {
   phone_searched: boolean
   pending_kinds: ContactKind[] | null
   pending_since: string | null
+  /** contact_store rows with the setting on: the source per kind (server-side only). */
+  found_in_by_kind: Partial<Record<ContactKind, string>> | null
   updated_at: string
 }
 
@@ -352,7 +352,7 @@ async function rowsFor(
     admin
       .from('candidate_contact_lookups')
       .select(
-        'linkedin_key, linkedin_url, vendor, status, emails, phones, vendor_request_id, error, email_searched, phone_searched, pending_kinds, pending_since, updated_at',
+        'linkedin_key, linkedin_url, vendor, status, emails, phones, vendor_request_id, error, email_searched, phone_searched, pending_kinds, pending_since, found_in_by_kind, updated_at',
       )
       .in('linkedin_key', keys),
     admin
@@ -419,19 +419,11 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     const phones = merge('phone')
 
     if (viaService) {
-      const email = serviceKindState('email', emails, rows)
-      const phone = serviceKindState('phone', phones, rows)
+      // Field by field: the row's found_in_by_kind (which vendor) stays here.
       out.push({
         candidateName: c.name,
         linkedinUrl: c.linkedinUrl,
-        lookedUp: serviceLookedUp(rows),
-        // An outage is "temporarily unavailable, try again", never "not found".
-        error: email.unavailable && phone.unavailable ? UNAVAILABLE : null,
-        // Every value takes 👍/👎: after a 👎 the service can look further.
-        emails: withFeedback(emails),
-        phones: withFeedback(phones),
-        email,
-        phone,
+        ...servicePanelView(rows, emails, phones, UNAVAILABLE),
       })
       continue
     }

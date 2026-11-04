@@ -14,6 +14,7 @@ import {
   SERVICE_UNREACHABLE,
   serviceKindState,
   serviceLookedUp,
+  servicePanelView,
   SOURCE_UNAVAILABLE,
   PENDING_RECHECK_MAX_MS,
   pendingSince,
@@ -243,6 +244,7 @@ onTest(
       pending_kinds: null,
       pending_since: null,
       error: null,
+      found_in_by_kind: { email: 'salesql', phone: 'ziplabs' },
     })
     assertEquals(serviceLookedUp(state.rows), true)
     assertEquals(view(state.rows, [], 'email'), {
@@ -409,6 +411,7 @@ onTest(
         pending_kinds: null,
         pending_since: null,
         error: SERVICE_UNREACHABLE,
+        found_in_by_kind: null,
       })
       assertEquals(serviceLookedUp(state.rows), false)
       for (const kind of ['email', 'phone'] as const) {
@@ -779,6 +782,7 @@ Deno.test(
       pending: [],
       retryAfterMs: null,
       waterfall: false,
+      foundInByKind: {},
     })
   },
 )
@@ -794,6 +798,7 @@ Deno.test(
       pending: ['email'],
       retryAfterMs: 500,
       waterfall: true,
+      foundInByKind: { email: 'none' },
     }
     const answer = await askWithPending(
       () => {
@@ -833,6 +838,7 @@ Deno.test(
           pending: [],
           retryAfterMs: null,
           waterfall: true,
+          foundInByKind: { email: 'store', phone: 'store' },
         },
       },
     )
@@ -1520,5 +1526,207 @@ Deno.test(
       [true, false],
     )
     assertEquals(serviceSearched({}, 'email'), false)
+  },
+)
+
+// --- which vendor, per kind: kept server-side, never sent to the panel ------
+
+/** Every vendor / source name the service can put in found_in_by_kind. */
+const VENDOR_NAMES = [
+  'salesql',
+  'bettercontact',
+  'contactout',
+  'ziplabs',
+  'found_in',
+]
+
+/** The panel's payload for this person, as index.ts viewsFor builds it while on. */
+const panelPayload = (rows: PersonRows, verdicts: Verdict[]) => ({
+  candidateName: 'John Doe',
+  linkedinUrl: URL_,
+  ...servicePanelView(
+    rows,
+    itemsOf('email', rows, verdicts),
+    itemsOf('phone', rows, verdicts),
+    'temporarily unavailable',
+  ),
+})
+
+function noVendorIn(payload: unknown) {
+  const text = JSON.stringify(payload).toLowerCase()
+  assertEquals(
+    VENDOR_NAMES.filter((name) => text.includes(name)),
+    [],
+  )
+}
+
+onTest(
+  'found_in_by_kind: the lookup keeps the vendor per kind on the row; Find another replaces only its kind',
+  async () => {
+    const calls = stubFetch([
+      json({
+        found_in: 'salesql',
+        found_in_by_kind: { email: 'salesql', phone: 'none' },
+        has: { email: true, phone: false },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+      json({
+        found_in: 'contactout',
+        found_in_by_kind: { email: 'contactout' },
+        has: { email: true },
+        exhausted: false,
+        emails: [
+          { value: 'j.doe@example.com', status: 'unknown', verified: null },
+        ],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'salesql',
+      phone: 'none',
+    })
+    noVendorIn(panelPayload(state.rows, []))
+
+    // A 👎 on the email, then Find another: the email's source is the new answer's.
+    const verdicts: Verdict[] = [
+      {
+        contact_kind: 'email',
+        contact_value: 'john.doe@example.com',
+        verdict: 'bad',
+        reason: 'bounced',
+      },
+    ]
+    state.verdicts = verdicts
+    await runViaService(deps, URL_, 'backup', ['email'])
+    assertEquals(calls.length, 2)
+    assertEquals(calls[1]!.url, `${SERVICE}/v1/contacts/find-another`)
+    noVendorCalls(calls)
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'contactout',
+      phone: 'none',
+    })
+    // Find another sends what was shown, never which vendor found it.
+    noVendorIn(calls.map((c) => c.body))
+    const payload = panelPayload(state.rows, verdicts)
+    noVendorIn(payload)
+    assertEquals(
+      payload.emails.map((x) => [x.value, x.source]),
+      [
+        ['john.doe@example.com', 'store'],
+        ['j.doe@example.com', 'store'],
+      ],
+    )
+  },
+)
+
+onTest(
+  'found_in_by_kind: Find another with nothing new records "none" for its kind',
+  async () => {
+    stubFetch([
+      json({
+        found_in: 'none',
+        found_in_by_kind: { email: 'none' },
+        has: { email: false },
+        exhausted: true,
+        emails: [],
+      }),
+    ])
+    const rows: PersonRows = {
+      shared: {
+        ...foundEmail.shared!,
+        found_in_by_kind: { email: 'salesql', phone: 'ziplabs' },
+      },
+    }
+    const { state, deps } = memory(rows, thumbsDown)
+    await runViaService(deps, URL_, 'backup', ['email'])
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'none',
+      phone: 'ziplabs',
+    })
+    assertEquals(state.rows.shared?.email_searched, true)
+    noVendorIn(panelPayload(state.rows, thumbsDown))
+  },
+)
+
+onTest(
+  'found_in_by_kind: an outage or an answer without it keeps what the row held',
+  async () => {
+    const held: PersonRows = {
+      shared: {
+        status: 'error',
+        emails: [],
+        phones: [],
+        email_searched: false,
+        phone_searched: false,
+        pending_kinds: null,
+        error: SOURCE_UNAVAILABLE,
+        found_in_by_kind: { email: 'none', phone: 'ziplabs' },
+      },
+    }
+    // The service down: nothing about the vendors changes.
+    stubFetch([json({ error: 'vendors_unavailable' }, 503)])
+    const down = memory(structuredClone(held))
+    await logsOf(() => runViaService(down.deps, URL_, 'lookup', []))
+    assertEquals(down.state.rows.shared?.error, SERVICE_UNREACHABLE)
+    assertEquals(down.state.rows.shared?.found_in_by_kind, {
+      email: 'none',
+      phone: 'ziplabs',
+    })
+
+    // No found_in_by_kind (Lyca not in WATERFALLS): nothing new to record.
+    stubFetch([
+      json({
+        found_in: 'store',
+        has: { email: true, phone: false },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+    ])
+    const plain = memory(structuredClone(held))
+    await logsOf(() => runViaService(plain.deps, URL_, 'lookup', []))
+    assertEquals(plain.state.rows.shared?.found_in_by_kind, {
+      email: 'none',
+      phone: 'ziplabs',
+    })
+  },
+)
+
+Deno.test(
+  'found_in_by_kind: only the kinds asked for, and only plain source names, are kept',
+  () => {
+    const answer = parseServiceAnswer(
+      {
+        found_in_by_kind: {
+          email: 'bettercontact',
+          phone: 'ziplabs',
+          fax: 'salesql',
+        },
+        has: { email: true },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+      },
+      ['email'],
+    )
+    assertEquals(answer.foundInByKind, { email: 'bettercontact' })
+    assertEquals(
+      parseServiceAnswer(
+        { found_in_by_kind: { email: '<b>x</b>', phone: 42 } },
+        ['email', 'phone'],
+      ).foundInByKind,
+      {},
+    )
+    assertEquals(parseServiceAnswer({}, ['email']).foundInByKind, {})
+    // A row written from an answer without it holds null, not {}.
+    const row = nextServiceRow(undefined, ['email'], {
+      answer: parseServiceAnswer({}, ['email']),
+    })
+    assertEquals(row.found_in_by_kind, null)
   },
 )
