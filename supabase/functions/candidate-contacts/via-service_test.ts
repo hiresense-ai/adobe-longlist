@@ -2016,3 +2016,189 @@ for (const [label, answer] of findAnotherWithoutValue) {
     },
   )
 }
+
+// --- supplied_by_kind (contact-enrichment #20): the vendor paid for a pending kind
+
+/** The person's row while the phone is pending at the service (email found by SalesQL). */
+const phonePending = (): PersonRows => ({
+  shared: {
+    status: 'found',
+    emails: [{ value: 'john.doe@example.com', type: null, status: null }],
+    phones: [],
+    email_searched: false,
+    phone_searched: false,
+    pending_kinds: ['phone'],
+    pending_since: new Date(T0).toISOString(),
+    error: null,
+    found_in_by_kind: { email: 'salesql' },
+  },
+})
+
+const phoneFromStore = (supplied: unknown) =>
+  json({
+    found_in: 'store',
+    found_in_by_kind: { phone: 'store' },
+    ...(supplied === undefined ? {} : { supplied_by_kind: supplied }),
+    has: { phone: true },
+    phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+  })
+
+onTest(
+  'supplied_by_kind: pending then found in the store in one reveal records the vendor that was paid',
+  async () => {
+    stubFetch([
+      json({
+        found_in: 'salesql',
+        found_in_by_kind: { email: 'salesql', phone: 'none' },
+        supplied_by_kind: { email: 'salesql' },
+        has: { email: true, phone: false },
+        pending: ['phone'],
+        retry_after_ms: 1000,
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [],
+      }),
+      json({
+        found_in: 'store',
+        found_in_by_kind: { email: 'store', phone: 'store' },
+        supplied_by_kind: { email: 'salesql', phone: 'bettercontact' },
+        has: { email: true, phone: true },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'salesql',
+      phone: 'bettercontact',
+    })
+    // Never in the panel's payload.
+    noVendorIn(panelPayload(state.rows, []))
+  },
+)
+
+onTest(
+  'supplied_by_kind: a re-check that finds a pending kind in the store records the vendor that was paid',
+  async () => {
+    stubFetch([phoneFromStore({ phone: 'ziplabs' })])
+    const { state, deps } = memory(phonePending())
+    deps.now = () => T0 + 10_000
+    await runViaService(deps, URL_, 'refresh', [])
+    assertEquals(state.rows.shared?.pending_kinds, null)
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'salesql',
+      phone: 'ziplabs',
+    })
+    noVendorIn(panelPayload(state.rows, []))
+  },
+)
+
+onTest(
+  'supplied_by_kind: a kind that was not pending and is found in the store stays "store"',
+  async () => {
+    stubFetch([
+      json({
+        found_in: 'store',
+        found_in_by_kind: { email: 'store', phone: 'store' },
+        supplied_by_kind: { email: 'salesql', phone: 'bettercontact' },
+        has: { email: true, phone: true },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      }),
+    ])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(state.rows.shared?.found_in_by_kind, {
+      email: 'store',
+      phone: 'store',
+    })
+  },
+)
+
+Deno.test(
+  'supplied_by_kind: a pending kind found by a vendor on this call keeps that vendor; only the pending kind takes it',
+  () => {
+    const answer = parseServiceAnswer(
+      {
+        found_in_by_kind: { email: 'store', phone: 'bettercontact' },
+        supplied_by_kind: { email: 'contactout', phone: 'salesql' },
+        has: { email: true, phone: true },
+        emails: [
+          { value: 'john.doe@example.com', status: 'unknown', verified: null },
+        ],
+        phones: [{ value: '+919876543210', status: 'unknown', verified: null }],
+      },
+      ['email', 'phone'],
+    )
+    const row = nextServiceRow(
+      phonePending().shared,
+      ['email', 'phone'],
+      { answer },
+      T0 + 10_000,
+    )
+    // phone was pending but a vendor answered on this call: that vendor.
+    // email was not pending: the store, nobody paid now.
+    assertEquals(row.found_in_by_kind, {
+      email: 'store',
+      phone: 'bettercontact',
+    })
+  },
+)
+
+const unusableSupplied: Array<[string, unknown]> = [
+  ['absent (a service before #20)', undefined],
+  ['an unknown vendor', { phone: 'acme' }],
+  ['"store"', { phone: 'store' }],
+  ['"none"', { phone: 'none' }],
+  ['not a string', { phone: 42 }],
+  ['only another kind', { email: 'salesql' }],
+  ['not an object', 'salesql'],
+  ['an array', ['salesql']],
+  ['null', null],
+]
+for (const [label, supplied] of unusableSupplied) {
+  onTest(
+    `supplied_by_kind: ${label} leaves a pending kind found in the store as before (keeps what it held)`,
+    async () => {
+      stubFetch([phoneFromStore(supplied)])
+      const { state, deps } = memory(phonePending())
+      deps.now = () => T0 + 10_000
+      await runViaService(deps, URL_, 'refresh', [])
+      assertEquals(state.rows.shared?.phones.length, 1)
+      assertEquals(state.rows.shared?.found_in_by_kind, { email: 'salesql' })
+    },
+  )
+}
+
+const KINDS_BOTH: ContactKind[] = ['email', 'phone']
+
+Deno.test(
+  'supplied_by_kind: parsed for the kinds asked only, known vendors only',
+  () => {
+    const parsed = (supplied: unknown, kinds: ContactKind[]) =>
+      parseServiceAnswer({ supplied_by_kind: supplied }, kinds).suppliedByKind
+    assertEquals(
+      parsed({ email: 'bettercontact', phone: 'ziplabs', fax: 'salesql' }, [
+        'email',
+      ]),
+      { email: 'bettercontact' },
+    )
+    assertEquals(
+      parsed({ email: 'contactout', phone: 'salesql' }, ['email', 'phone']),
+      { email: 'contactout', phone: 'salesql' },
+    )
+    // Nothing usable: no field at all, as with an older service.
+    assertEquals(
+      parsed({ email: 'SalesQL', phone: '<b>x</b>' }, KINDS_BOTH),
+      undefined,
+    )
+    assertEquals(parsed(undefined, KINDS_BOTH), undefined)
+    assertEquals('suppliedByKind' in parseServiceAnswer({}, KINDS_BOTH), false)
+  },
+)

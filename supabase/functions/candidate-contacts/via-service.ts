@@ -70,8 +70,10 @@
 // unavailable. found_in_by_kind (migration 20261104000002) = per kind, the
 // source the service named (its `found_in_by_kind`: store or a vendor) in the
 // latest answer that brought a usable value of that kind, for Lyca's own
-// records and spend reconciliation; it never goes to the browser (index.ts
-// viewsFor builds the panel's payload field by field).
+// records and spend reconciliation; for a kind that was `pending` and is then
+// found in the store, the vendor the service names in `supplied_by_kind`
+// (contact-enrichment #20), the one paid for it. It never goes to the browser
+// (index.ts viewsFor builds the panel's payload field by field).
 //
 // Kept free of Supabase so it can be tested on its own (via-service_test.ts):
 // index.ts gives it the person's rows and a way to write the row.
@@ -169,6 +171,15 @@ export interface ServiceAnswer {
    */
   foundInByKind: FoundInByKind
   /**
+   * The service's `supplied_by_kind` (contact-enrichment #20), per kind asked
+   * for with a usable value: the vendor behind the first usable value listed,
+   * whoever's request paid for it. Only a known vendor name is kept; absent
+   * when the answer has none (a service before #20, or a value saved without
+   * a vendor). Used only for a kind that was `pending` and is now found in the
+   * store (nextServiceRow): that is the vendor Lyca's request paid.
+   */
+  suppliedByKind?: FoundInByKind
+  /**
    * askWithPending only, on the answer of its second ask: the kinds the first
    * answer had as `pending`. Never on the wire.
    */
@@ -193,6 +204,26 @@ export function foundInByKindOf(
     const source = wire[kind]
     if (typeof source === 'string' && SOURCE_NAME.test(source)) {
       out[kind] = source
+    }
+  }
+  return out
+}
+
+/** The vendors `supplied_by_kind` may name; anything else is ignored. */
+const SUPPLIERS = ['contactout', 'salesql', 'bettercontact', 'ziplabs']
+
+/** `supplied_by_kind` for `kinds` only, each one of SUPPLIERS; anything else is left out. */
+export function suppliedByKindOf(
+  raw: unknown,
+  kinds: ContactKind[],
+): FoundInByKind {
+  const out: FoundInByKind = {}
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out
+  const wire = raw as Record<string, unknown>
+  for (const kind of kinds) {
+    const vendor = wire[kind]
+    if (typeof vendor === 'string' && SUPPLIERS.includes(vendor)) {
+      out[kind] = vendor
     }
   }
   return out
@@ -235,6 +266,7 @@ export function parseServiceAnswer(
         : usableValuesOf({ emails, phones }, kind).length > 0
   }
   const retry = Number(b.retry_after_ms)
+  const supplied = suppliedByKindOf(b.supplied_by_kind, kinds)
   return {
     emails,
     phones,
@@ -244,6 +276,7 @@ export function parseServiceAnswer(
     waterfall:
       typeof b.found_in_by_kind === 'object' && b.found_in_by_kind !== null,
     foundInByKind: foundInByKindOf(b.found_in_by_kind, kinds),
+    ...(Object.keys(supplied).length ? { suppliedByKind: supplied } : {}),
     ...(unavailable.length ? { unavailable } : {}),
     ...(typeof b.exhausted === 'boolean' ? { exhausted: b.exhausted } : {}),
   }
@@ -409,7 +442,9 @@ export async function askWithPending(
   )
   if (!again) return first
   // The second answer says which kinds the first had pending (nextServiceRow:
-  // a kind found after `pending` is not recorded as `store`). A kind the first
+  // a kind found after `pending` is recorded as its `supplied_by_kind`
+  // vendor, never as `store`). Its suppliedByKind is the second answer's. A
+  // kind the first
   // answer settled keeps the first answer's source: the second sees it in the
   // store the first call just filled.
   const foundInByKind: FoundInByKind = { ...again.foundInByKind }
@@ -445,10 +480,11 @@ export interface ServiceRowFields {
    * a usable value of that kind (migration 20261104000002). An answer with no
    * usable value for a kind (not found, pending, unavailable, Find another
    * with nothing new) keeps what the kind held, and so does an outage or a
-   * kind not asked. A kind found on a re-check after `pending` is not given
-   * the answer's `store` (the service saved it moments earlier, from a vendor
-   * Lyca's request paid but the service does not name yet: contact-enrichment
-   * #20). Server-side only: never in the panel's payload.
+   * kind not asked. A kind found in the store after `pending` (the same
+   * reveal's second ask, or a later re-check or reveal while the row lists it
+   * as pending) takes the answer's `supplied_by_kind` vendor, the one Lyca's
+   * request paid (contact-enrichment #20); without it the kind keeps what it
+   * held, never `store`. Server-side only: never in the panel's payload.
    */
   found_in_by_kind: FoundInByKind | null
 }
@@ -647,10 +683,12 @@ export function nextServiceRow(
 
 /**
  * The answer's source per kind, only for a kind it brought a usable value of
- * (find-another: a new one, `has`). Not `store` for a kind that was pending
- * (`wasPending`): that value is one the service saved moments earlier from a
- * vendor Lyca's request paid, which the service does not name yet
- * (contact-enrichment #20), so the kind keeps what it held.
+ * (find-another: a new one, `has`). For a kind that was pending
+ * (`wasPending`) and is now found in the `store`, the value is one the service
+ * saved from a vendor Lyca's request paid: the source is the answer's
+ * `supplied_by_kind` vendor (contact-enrichment #20), and without one the kind
+ * keeps what it held (never `store`). A kind that was not pending keeps
+ * `store` as the answer says: nobody was paid on this call.
  */
 function sourcesWithValues(
   answer: ServiceAnswer,
@@ -663,7 +701,11 @@ function sourcesWithValues(
     const source = named[kind]
     if (!source || answer.has[kind] !== true) continue
     if (!usableValuesOf(answer, kind).length) continue
-    if (source === 'store' && wasPending.includes(kind)) continue
+    if (source === 'store' && wasPending.includes(kind)) {
+      const paid = answer.suppliedByKind?.[kind]
+      if (paid && SUPPLIERS.includes(paid)) out[kind] = paid
+      continue
+    }
     out[kind] = source
   }
   return out
