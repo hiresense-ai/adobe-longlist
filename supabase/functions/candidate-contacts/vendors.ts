@@ -54,6 +54,13 @@ export interface VendorResult {
 
 const TIMEOUT_MS = 20_000
 
+/**
+ * A SalesQL call that got no answer within TIMEOUT_MS. SalesQL may have
+ * charged for it, so it is not repeated for a while (index.ts,
+ * salesqlTimedOutRecently), unlike a call that never reached SalesQL.
+ */
+export const SALESQL_TIMED_OUT = 'Contact lookup timed out.'
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -113,7 +120,10 @@ export async function salesqlLookup(
         accept: 'application/json',
       },
     })
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return errorResult(SALESQL_TIMED_OUT)
+    }
     return errorResult(
       'Contact lookup failed: the source could not be reached.',
     )
@@ -223,11 +233,13 @@ async function bcStart(
 }
 
 /** Starts a BetterContact enrichment for the given kinds and waits briefly
- * for it (~20s); if it is still running, the dashboard keeps re-checking
- * (free) until it finishes. */
+ * for it (~20s, and never past `pollUntil`, a time in ms: the request's
+ * deadline); if it is still running, the dashboard keeps re-checking (free)
+ * until it finishes. */
 export async function betterContactLookup(
   candidate: DashboardCandidate,
   kinds: ContactKind[],
+  pollUntil = Number.POSITIVE_INFINITY,
 ): Promise<VendorResult> {
   const apiKey = key('BETTERCONTACT_API_KEY')
   if (!apiKey)
@@ -265,8 +277,8 @@ export async function betterContactLookup(
   if (!started.id)
     return errorResult('The backup contact search could not be started.')
 
-  const deadline = Date.now() + BC_POLL_FOR_MS
-  while (Date.now() < deadline) {
+  const deadline = Math.min(Date.now() + BC_POLL_FOR_MS, pollUntil)
+  while (Date.now() + BC_POLL_EVERY_MS < deadline) {
     await new Promise((r) => setTimeout(r, BC_POLL_EVERY_MS))
     const result = await betterContactPoll(started.id)
     if (result.status !== 'pending') return result

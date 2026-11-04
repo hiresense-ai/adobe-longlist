@@ -9,16 +9,24 @@
 // saved answer.
 //
 // A claim left by a request that crashed (the worker died between claiming
-// and releasing) counts as gone once it is older than CLAIM_STALE_MS, longer
-// than any vendor call takes (SalesQL ≤ 20 s, BetterContact ≤ ~1 min), and
-// the next request takes it over.
+// and releasing) counts as gone once it is older than CLAIM_STALE_MS, and the
+// next request takes it over. A live winner never looks crashed, however slow
+// its vendor or database calls are: while `pay` runs it refreshes claimed_at
+// every CLAIM_REFRESH_MS (HIR-528 review), so only a claim nobody refreshes
+// for 3 minutes is ever taken over.
+//
+// A winner that paid but could not save the answer (paid.ts, saved twice)
+// keeps its claim instead of releasing it: for CLAIM_STALE_MS nobody pays
+// again for that person and vendor (they wait, then get "try again").
 
 /** A claim older than this was left by a request that died: it may be taken over. */
 export const CLAIM_STALE_MS = 3 * 60_000
-/** How long a request that lost the claim waits for the winner's answer. */
+/** How long a request that lost the claim waits for the winner's answer (capped by the request's deadline). */
 export const CLAIM_WAIT_MS = 30_000
 /** How often it looks. */
 export const CLAIM_POLL_MS = 1_000
+/** How often the winner refreshes its claim while it runs (well inside CLAIM_STALE_MS). */
+export const CLAIM_REFRESH_MS = 30_000
 
 export type ClaimVendor = 'salesql' | 'bettercontact'
 
@@ -38,6 +46,8 @@ export interface ClaimStore {
   held(key: string, vendor: ClaimVendor, staleBefore: string): Promise<boolean>
   /** Removes the claim, only if it is still this caller's. */
   release(key: string, vendor: ClaimVendor, claimId: string): Promise<void>
+  /** Sets claimed_at to now, only if the claim is still this caller's. False when it is not. */
+  refresh(key: string, vendor: ClaimVendor, claimId: string): Promise<boolean>
 }
 
 export type ClaimOutcome<T> =
@@ -52,7 +62,10 @@ export interface ClaimOptions {
   staleMs?: number
   waitMs?: number
   pollMs?: number
+  refreshMs?: number
   claimId?: string
+  /** An error from `pay` after which the claim is kept (left to go stale), not released. */
+  keepClaimOn?: (err: unknown) => boolean
 }
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -76,14 +89,45 @@ export async function onceAtATime<T>(
   const claimId = options.claimId ?? crypto.randomUUID()
 
   if (await claims.tryClaim(key, vendor, claimId, staleBefore())) {
+    // While `pay` runs, claimed_at is refreshed: a slow call is never taken over.
+    let running = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const beat = () => {
+      timer = setTimeout(async () => {
+        try {
+          const mine = await claims.refresh(key, vendor, claimId)
+          if (!mine && running) {
+            console.error(
+              `contact claim for ${vendor} was taken over while its call ran`,
+            )
+          }
+        } catch {
+          console.warn(`contact claim for ${vendor} not refreshed`)
+        }
+        if (running) beat()
+      }, options.refreshMs ?? CLAIM_REFRESH_MS)
+    }
+    beat()
+    let keep = false
     try {
       return { ran: true, value: await pay() }
+    } catch (err) {
+      keep = options.keepClaimOn?.(err) ?? false
+      throw err
     } finally {
-      try {
-        await claims.release(key, vendor, claimId)
-      } catch {
-        // Left behind, it goes stale after CLAIM_STALE_MS and is taken over.
-        console.warn(`contact claim for ${vendor} not released; it expires`)
+      running = false
+      clearTimeout(timer)
+      if (keep) {
+        console.warn(
+          `contact claim for ${vendor} kept after an unsaved answer; it expires`,
+        )
+      } else {
+        try {
+          await claims.release(key, vendor, claimId)
+        } catch {
+          // Left behind, it goes stale after CLAIM_STALE_MS and is taken over.
+          console.warn(`contact claim for ${vendor} not released; it expires`)
+        }
       }
     }
   }

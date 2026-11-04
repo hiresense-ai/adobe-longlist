@@ -25,9 +25,24 @@ import {
   contactStoreSave,
   ContactStoreUnavailable,
   logStoreFailure,
+  storeContactsFrom,
 } from './contact-store.ts'
 import { onceAtATime, type ClaimStore } from './claims.ts'
-import { salesqlBase, salesqlLookup, SALESQL_DEFAULT_BASE } from './vendors.ts'
+import {
+  betterContactOnce,
+  PaidAnswerNotSaved,
+  salesqlOnce,
+  type BackupState,
+} from './paid.ts'
+import { Deadline, VENDOR_CALL_NEEDS_MS } from './deadline.ts'
+import {
+  salesqlBase,
+  salesqlLookup,
+  SALESQL_DEFAULT_BASE,
+  SALESQL_TIMED_OUT,
+  type ContactKind,
+  type VendorResult,
+} from './vendors.ts'
 
 function assertEquals(actual: unknown, expected: unknown) {
   const a = JSON.stringify(actual)
@@ -473,6 +488,12 @@ function memoryClaims(): ClaimStore & {
       if (rows.get(k(key, vendor))?.id === claimId) rows.delete(k(key, vendor))
       return Promise.resolve()
     },
+    refresh(key, vendor, claimId) {
+      const row = rows.get(k(key, vendor))
+      if (row?.id !== claimId) return Promise.resolve(false)
+      row.at = new Date().toISOString()
+      return Promise.resolve(true)
+    },
   }
 }
 
@@ -565,6 +586,277 @@ Deno.test(
       },
     )
     assertEquals([r, paid], [{ ran: false, settled: false }, 0])
+  },
+)
+
+// --- HIR-528 review: a paid answer is never lost, claims stay fresh ----------
+
+const ANSWER: VendorResult = {
+  status: 'found',
+  emails: [{ value: 'john.doe@example.com', type: 'Work', status: 'Valid' }],
+  phones: [{ value: '+15550100001', type: 'Mobile', valid: true }],
+}
+const noSleep = () => Promise.resolve()
+
+/** Runs `fn` with console.warn / console.error captured. */
+async function captureLogs<T>(
+  fn: () => Promise<T>,
+): Promise<{ value: T | null; thrown: unknown; logs: string[] }> {
+  const saved = { warn: console.warn, error: console.error }
+  const logs: string[] = []
+  console.warn = (...a: unknown[]) => logs.push(a.join(' '))
+  console.error = (...a: unknown[]) => logs.push(a.join(' '))
+  try {
+    return { value: await fn(), thrown: null, logs }
+  } catch (err) {
+    return { value: null, thrown: err, logs }
+  } finally {
+    Object.assign(console, saved)
+  }
+}
+
+function assertNoContactData(lines: string[]) {
+  for (const line of lines) {
+    if (/@|\+1555|john|linkedin/i.test(line)) {
+      throw new Error(`contact data in a log line: ${line}`)
+    }
+  }
+}
+
+Deno.test(
+  'paid answer: a failed save is retried once with the same answer; the vendor is paid once',
+  async () => {
+    const claims = memoryClaims()
+    let paid = 0
+    let failures = 1
+    let saved: VendorResult | null = null
+    const { value, logs } = await captureLogs(() =>
+      salesqlOnce({
+        claims,
+        key: KEY,
+        readSaved: () => Promise.resolve(saved),
+        lookup: () => {
+          paid++
+          return Promise.resolve(ANSWER)
+        },
+        save: (result) => {
+          if (failures-- > 0) return Promise.reject({ code: '57014' })
+          saved = result
+          return Promise.resolve()
+        },
+        options: fast,
+        sleep: noSleep,
+      }),
+    )
+    assertEquals(paid, 1)
+    assertEquals(saved, ANSWER)
+    assertEquals(value, { ran: true, value: ANSWER })
+    assertEquals(claims.rows.size, 0) // released after the saved retry
+    assertNoContactData(logs)
+  },
+)
+
+Deno.test(
+  'paid answer: two failed saves keep the claim, log the counts only, and the next reveal pays nothing',
+  async () => {
+    const claims = memoryClaims()
+    let paid = 0
+    const deps = {
+      claims,
+      key: KEY,
+      readSaved: () => Promise.resolve(null),
+      lookup: () => {
+        paid++
+        return Promise.resolve(ANSWER)
+      },
+      save: () => Promise.reject({ code: '08006' }),
+      sleep: noSleep,
+    }
+    const first = await captureLogs(() =>
+      salesqlOnce({ ...deps, options: fast }),
+    )
+    if (!(first.thrown instanceof PaidAnswerNotSaved)) {
+      throw new Error(`expected PaidAnswerNotSaved, got ${first.thrown}`)
+    }
+    assertEquals(paid, 1)
+    assertEquals(claims.rows.size, 1) // kept: nobody pays again until it goes stale
+    const lost = first.logs.find((l) => l.includes('NOT saved'))
+    if (!lost?.includes('status found, 1 email(s), 1 phone(s)')) {
+      throw new Error(`no counts in: ${first.logs.join(' | ')}`)
+    }
+    if (!lost.includes('08006')) throw new Error(lost)
+    assertNoContactData(first.logs)
+
+    // A second click a moment later waits for the kept claim and pays nothing.
+    const second = await salesqlOnce({
+      ...deps,
+      options: { pollMs: 5, waitMs: 30 },
+    })
+    assertEquals([second, paid], [{ ran: false, settled: false }, 1])
+  },
+)
+
+Deno.test(
+  'claims: a winner slower than the stale time refreshes its claim and is never taken over',
+  async () => {
+    const claims = memoryClaims()
+    let paid = 0
+    const slow = async () => {
+      paid++
+      await new Promise((r) => setTimeout(r, 300))
+      return 'answer'
+    }
+    const options = { staleMs: 100, refreshMs: 20, pollMs: 5, waitMs: 1_000 }
+    const winner = onceAtATime(claims, KEY, 'bettercontact', slow, options)
+    await new Promise((r) => setTimeout(r, 150)) // past staleMs: only the refresh keeps it
+    const other = await onceAtATime(claims, KEY, 'bettercontact', slow, options)
+    assertEquals((await winner).ran, true)
+    assertEquals([other, paid], [{ ran: false, settled: true }, 1])
+    assertEquals(claims.rows.size, 0)
+  },
+)
+
+Deno.test(
+  'BetterContact once: kinds searched meanwhile, or a search still running, are not bought again',
+  async () => {
+    const claims = memoryClaims()
+    const asked: ContactKind[][] = []
+    const saves: ContactKind[][] = []
+    const run = (saved: BackupState | null) =>
+      betterContactOnce({
+        claims,
+        key: KEY,
+        wanted: ['email', 'phone'],
+        readSaved: () => Promise.resolve(saved),
+        lookup: (kinds) => {
+          asked.push(kinds)
+          return Promise.resolve(ANSWER)
+        },
+        save: (_row, kinds) => {
+          saves.push(kinds)
+          return Promise.resolve()
+        },
+        options: fast,
+        sleep: noSleep,
+      })
+    const searchedEmail = {
+      status: 'found',
+      email_searched: true,
+      phone_searched: false,
+    }
+    assertEquals(await run(searchedEmail), { ran: true, value: true })
+    assertEquals(asked, [['phone']])
+    assertEquals(saves, [['phone']])
+    const pending = {
+      status: 'pending',
+      email_searched: false,
+      phone_searched: false,
+    }
+    assertEquals(await run(pending), { ran: true, value: false })
+    const both = { status: 'found', email_searched: true, phone_searched: true }
+    assertEquals(await run(both), { ran: true, value: false })
+    assertEquals(asked.length, 1)
+  },
+)
+
+Deno.test(
+  'store: values the vendor itself called invalid are never sent to the shared store',
+  () => {
+    const sent = storeContactsFrom('salesql', {
+      emails: [
+        { value: 'old.john@example.com', type: null, status: 'Invalid' },
+        { value: 'gone.john@example.com', type: null, status: 'undeliverable' },
+        { value: 'john.doe@example.com', type: null, status: 'Valid' },
+        { value: 'j.doe@example.com', type: null, status: null },
+      ],
+      phones: [
+        { value: '+15550100009', type: null, valid: false },
+        { value: '+15550100001', type: null, valid: true },
+        { value: '+15550100002', type: null, valid: null },
+      ],
+    })
+    assertEquals(
+      sent.map((c) => [c.value, c.verified ?? null]),
+      [
+        ['john.doe@example.com', true],
+        ['j.doe@example.com', null],
+        ['+15550100001', true],
+        ['+15550100002', null],
+      ],
+    )
+  },
+)
+
+Deno.test(
+  'deadline: the pending wait and each store ask get only what is left; a vendor call needs its full time',
+  async () => {
+    let clock = 0
+    const deadline = new Deadline(30_000, () => clock)
+    assertEquals(deadline.left(), 30_000)
+    clock = 27_000
+    assertEquals(
+      [deadline.cap(8_000), deadline.allows(VENDOR_CALL_NEEDS_MS)],
+      [3_000, false],
+    )
+    clock = 40_000
+    assertEquals([deadline.left(), deadline.cap(5_000)], [0, 0])
+
+    // storeFirst: a `pending` answer waits at most what is left.
+    clock = 0
+    const short = new Deadline(2_000, () => clock)
+    const waits: number[] = []
+    let asks = 0
+    await storeFirst(
+      () => {
+        asks++
+        return Promise.resolve({
+          status: 'not_found',
+          emails: [],
+          phones: [],
+          pending: ['email'],
+          retryAfterMs: 4_000,
+        } as StoreAnswer)
+      },
+      ['email'],
+      {
+        sleep: (ms) => {
+          waits.push(ms)
+          return Promise.resolve()
+        },
+        deadline: short,
+      },
+    )
+    assertEquals([waits, asks], [[2_000], 2])
+  },
+)
+
+Deno.test(
+  'SalesQL: a call that timed out is recorded as such (it may have been charged)',
+  async () => {
+    Deno.env.set('SALESQL_API_URL', 'http://fake-salesql.test/v1')
+    Deno.env.set('SALESQL_API_KEY', 'fake-key')
+    const realFetch = globalThis.fetch
+    try {
+      globalThis.fetch = (() =>
+        Promise.reject(
+          new DOMException('The signal has been aborted', 'AbortError'),
+        )) as typeof fetch
+      const timedOut = await salesqlLookup({
+        name: 'John Doe',
+        linkedinUrl: 'https://www.linkedin.com/in/john-doe/',
+        linkedinKey: KEY,
+        company: null,
+        title: null,
+      })
+      assertEquals(
+        [timedOut.status, timedOut.error],
+        ['error', SALESQL_TIMED_OUT],
+      )
+    } finally {
+      globalThis.fetch = realFetch
+      Deno.env.delete('SALESQL_API_URL')
+      Deno.env.delete('SALESQL_API_KEY')
+    }
   },
 )
 

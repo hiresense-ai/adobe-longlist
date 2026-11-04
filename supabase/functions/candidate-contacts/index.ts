@@ -57,6 +57,7 @@ import {
   betterContactLookup,
   betterContactPoll,
   salesqlLookup,
+  SALESQL_TIMED_OUT,
   vendorConfigured,
   type ContactKind,
   type Source,
@@ -67,6 +68,8 @@ import {
   contactStoreFeedbackLater,
   contactStoreLookup,
   contactStoreSaveLater,
+  contactStoreTimeoutMs,
+  ContactStoreUnavailable,
 } from './contact-store.ts'
 import {
   canFindAnother,
@@ -85,8 +88,10 @@ import {
   type PersonRows,
 } from './flow.ts'
 import { upsertUnsynced, type RowVersion } from './store-sync.ts'
-import { onceAtATime } from './claims.ts'
+import { CLAIM_STALE_MS, CLAIM_WAIT_MS } from './claims.ts'
 import { supabaseClaims } from './claims-db.ts'
+import { betterContactOnce, salesqlOnce } from './paid.ts'
+import { Deadline, VENDOR_CALL_NEEDS_MS } from './deadline.ts'
 import { markSynced } from './store-sync-db.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -247,7 +252,17 @@ Deno.serve(async (req: Request) => {
         if (mode === 'backup' && !kinds.length) {
           throw new HttpError(400, 'Say what to search for: email or phone.')
         }
-        await runLookup(admin, candidate, mode, kinds, caller.id, dashboardId)
+        // One deadline for the whole request: store, waits and vendor calls.
+        const deadline = new Deadline()
+        await runLookup(
+          admin,
+          candidate,
+          mode,
+          kinds,
+          caller.id,
+          dashboardId,
+          deadline,
+        )
         return json(
           { contact: (await viewsFor(admin, [candidate]))[0] },
           200,
@@ -272,11 +287,9 @@ Deno.serve(async (req: Request) => {
     if (err instanceof HttpError)
       return json({ error: err.message }, err.status, cors)
     console.error('candidate-contacts error:', err)
-    return json(
-      { error: err instanceof Error ? err.message : 'Internal error' },
-      500,
-      cors,
-    )
+    // Never the database's or a vendor's own text (HIR-528 review): the
+    // details stay in the log above.
+    return json({ error: UNAVAILABLE }, 500, cors)
   }
 })
 
@@ -389,7 +402,7 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
         backup?.status === 'pending' && !!backup.pending_kinds?.includes(kind)
       const usable = items.filter((x) => x.verdict !== 'bad' && !x.invalid)
       const { storeValues, salesqlValues } = valuesByOrigin(kind, items, rows)
-      const salesqlAsked = !!sales && sales.status !== 'error'
+      const salesqlAsked = salesqlAnswered(sales)
       return {
         searching,
         // Nothing usable while a source failed (the store down, a vendor
@@ -510,6 +523,7 @@ async function runLookup(
   kinds: ContactKind[],
   callerId: string,
   dashboardId: string,
+  deadline: Deadline,
 ) {
   const { lookups } = await rowsFor(admin, [candidate.linkedinKey])
   const sales = lookups.find((l) => l.vendor === 'salesql')
@@ -556,6 +570,7 @@ async function runLookup(
       lookups,
       callerId,
       dashboardId,
+      deadline,
     )
     const left = allowed.filter((k) => !fromStore.newKinds.includes(k))
     if (!left.length) return
@@ -567,6 +582,7 @@ async function runLookup(
       backup,
       callerId,
       dashboardId,
+      deadline,
       true,
     )
     return
@@ -579,7 +595,7 @@ async function runLookup(
   // (a lookup from before BetterContact ran on its own, or a vendor error).
   // Nothing already answered is re-bought.
   const shared = lookups.find((l) => l.vendor === 'contact_store')
-  const salesqlAsked = !!sales && sales.status !== 'error'
+  const salesqlAsked = salesqlAnswered(sales)
   if (
     salesqlAsked ||
     shared?.status === 'found' ||
@@ -594,7 +610,15 @@ async function runLookup(
     let current = lookups
     if (forStore.length) {
       await enforceLimit(admin, callerId)
-      await askStore(admin, candidate, forStore, lookups, callerId, dashboardId)
+      await askStore(
+        admin,
+        candidate,
+        forStore,
+        lookups,
+        callerId,
+        dashboardId,
+        deadline,
+      )
       current = (await rowsFor(admin, [candidate.linkedinKey])).lookups
     }
     const now = {
@@ -616,6 +640,7 @@ async function runLookup(
         now.bettercontact ?? null,
         callerId,
         dashboardId,
+        deadline,
       )
     }
     return
@@ -630,7 +655,15 @@ async function runLookup(
   if (contactStoreConfigured()) {
     await enforceLimit(admin, callerId)
     missing = (
-      await askStore(admin, candidate, missing, lookups, callerId, dashboardId)
+      await askStore(
+        admin,
+        candidate,
+        missing,
+        lookups,
+        callerId,
+        dashboardId,
+        deadline,
+      )
     ).missing
   }
   // For every kind the store had nothing for, the vendors run now — no click.
@@ -643,8 +676,29 @@ async function runLookup(
       backup,
       callerId,
       dashboardId,
+      deadline,
     )
   }
+}
+
+/**
+ * SalesQL has answered for this person: found / not found, or a call that
+ * timed out less than CLAIM_STALE_MS ago. A timed-out call may have been
+ * charged, so it is not repeated at once (HIR-528 review); a call that never
+ * reached SalesQL (or any other error) is asked again.
+ */
+function salesqlAnswered(row: LookupRow | null | undefined): row is LookupRow {
+  if (!row) return false
+  if (row.status !== 'error') return true
+  return salesqlTimedOutRecently(row)
+}
+
+function salesqlTimedOutRecently(row: LookupRow): boolean {
+  return (
+    row.status === 'error' &&
+    row.error === SALESQL_TIMED_OUT &&
+    Date.now() - Date.parse(row.updated_at) < CLAIM_STALE_MS
+  )
 }
 
 /**
@@ -662,14 +716,22 @@ async function askStore(
   lookups: LookupRow[],
   callerId: string,
   dashboardId: string,
+  deadline: Deadline,
 ): Promise<{ missing: ContactKind[]; newKinds: ContactKind[] }> {
   if (!contactStoreConfigured()) return { missing: kinds, newKinds: [] }
   const existing = lookups.find((l) => l.vendor === 'contact_store') ?? null
   let unavailable = false
   const answer = await storeFirst(
-    () => contactStoreLookup(candidate.linkedinUrl, kinds),
+    () => {
+      // Each ask (and the one after `pending`) gets what is left of the request.
+      const ms = deadline.cap(contactStoreTimeoutMs())
+      if (ms <= 0) {
+        return Promise.reject(new ContactStoreUnavailable('out of time'))
+      }
+      return contactStoreLookup(candidate.linkedinUrl, kinds, ms)
+    },
     kinds,
-    { onUnavailable: () => (unavailable = true) },
+    { onUnavailable: () => (unavailable = true), deadline },
   )
   const { feedback } = await rowsFor(admin, [candidate.linkedinKey])
   const shownBefore = (kind: ContactKind, value: string) =>
@@ -751,6 +813,7 @@ async function runVendors(
   backup: LookupRow | null,
   callerId: string,
   dashboardId: string,
+  deadline: Deadline,
   findAnother = false,
 ) {
   const salesqlReady = vendorConfigured('salesql')
@@ -802,23 +865,28 @@ async function runVendors(
   }
 
   let stillMissing = kinds
-  if (sales && sales.status !== 'error') {
+  if (salesqlAnswered(sales)) {
     // SalesQL was already asked: "Find another" goes to BetterContact.
     stillMissing = findAnother ? kinds : kindsMissing(usableFrom(sales), kinds)
   } else if (salesqlReady) {
+    // A paid call starts only with time to finish and save it (deadline.ts);
+    // otherwise nothing is bought now and the panel offers "Try again".
+    if (!deadline.allows(VENDOR_CALL_NEEDS_MS)) return
     await enforceLimit(admin, callerId)
     // One SalesQL call per person at a time (claims.ts): a second request for
-    // the same person waits for this answer instead of paying again.
-    const claim = await onceAtATime(
-      supabaseClaims(admin),
-      candidate.linkedinKey,
-      'salesql',
-      async () => {
-        // Under the claim, the saved answer first: a request that held it a
-        // moment ago may have just paid.
+    // the same person waits for this answer instead of paying again. The
+    // answer is saved (retried once) or the claim is kept (paid.ts).
+    const claim = await salesqlOnce({
+      claims: supabaseClaims(admin),
+      key: candidate.linkedinKey,
+      // Under the claim, the saved answer first: a request that held it a
+      // moment ago may have just paid.
+      readSaved: async () => {
         const fresh = await vendorRow(admin, candidate.linkedinKey, 'salesql')
-        if (fresh && fresh.status !== 'error') return asResult(fresh)
-        const result = await salesqlLookup(candidate)
+        return salesqlAnswered(fresh) ? asResult(fresh) : null
+      },
+      lookup: () => salesqlLookup(candidate),
+      save: async (result) => {
         const saved = await store(
           admin,
           candidate,
@@ -838,9 +906,9 @@ async function runVendors(
             markLookupSynced(admin, saved),
           )
         }
-        return result
       },
-    )
+      options: { waitMs: deadline.cap(CLAIM_WAIT_MS) },
+    })
     // Another request paid: use its saved answer (never pay again here). An
     // error answer, or none within the wait, ends this request; the panel
     // offers "Try again".
@@ -864,27 +932,28 @@ async function runVendors(
   )
   if (!wanted.length || !backupReady) return
   if (backup?.status === 'pending') return // already searching; 'refresh' polls it
+  // Not started without time to finish and save it: "Find email / number" stays offered.
+  if (!deadline.allows(VENDOR_CALL_NEEDS_MS)) return
   await enforceLimit(admin, callerId)
   // One BetterContact search per person at a time (claims.ts). A request that
   // loses the claim waits for the winner's saved answer and pays nothing.
-  await onceAtATime(
-    supabaseClaims(admin),
-    candidate.linkedinKey,
-    'bettercontact',
-    async () => {
-      // Under the claim, the saved row again: what was searched meanwhile is not bought twice.
-      const fresh = await vendorRow(
-        admin,
-        candidate.linkedinKey,
-        'bettercontact',
-      )
-      if (fresh?.status === 'pending') return
-      const still = wanted.filter((k) =>
-        k === 'email' ? !fresh?.email_searched : !fresh?.phone_searched,
-      )
-      if (!still.length) return
-      const result = await betterContactLookup(candidate, still)
-      await storeBackup(
+  await betterContactOnce<LookupRow>({
+    claims: supabaseClaims(admin),
+    key: candidate.linkedinKey,
+    wanted,
+    // Under the claim, the saved row again: what was searched meanwhile is not bought twice.
+    readSaved: () => vendorRow(admin, candidate.linkedinKey, 'bettercontact'),
+    // It waits for the answer only as long as the request allows (keeping
+    // time to save); a search still running is saved as pending and checked
+    // later for free.
+    lookup: (still) =>
+      betterContactLookup(
+        candidate,
+        still,
+        Date.now() + deadline.left() - 5_000,
+      ),
+    save: (fresh, still, result) =>
+      storeBackup(
         admin,
         candidate,
         fresh,
@@ -892,9 +961,9 @@ async function runVendors(
         result,
         callerId,
         dashboardId,
-      )
-    },
-  )
+      ),
+    options: { waitMs: deadline.cap(CLAIM_WAIT_MS) },
+  })
 }
 
 /** The person's saved row of one source (fresh from the database). */

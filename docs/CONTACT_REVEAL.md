@@ -23,15 +23,23 @@ The code is in `supabase/functions/candidate-contacts/`, with the flow decisions
 4. **BetterContact**, automatically, for each kind SalesQL did not find.
    - BetterContact answers later. The panel checks back (a free status check, never a new charge).
 
-**A vendor value its own vendor calls bad does not count as found.** That means a SalesQL email with status "Invalid", or a phone with `is_valid: false`. BetterContact is asked for that kind. Such a value is shown, marked "invalid by the source", only while nothing better exists.
+**A vendor value its own vendor calls bad does not count as found.** That means a SalesQL email with status "Invalid", or a phone with `is_valid: false`. BetterContact is asked for that kind. Such a value is shown, marked "invalid by the source", only while nothing better exists. It is never sent to the shared store (other products would read it as an ordinary contact).
 
 **One paid call per person and vendor at a time.** Two recruiters, two tabs or a double click on the same person pay SalesQL once and BetterContact once:
 - Before paying, the request claims the person and vendor in `candidate_contact_claims`, with an insert that does nothing if the row exists.
-- The request that gets the row pays and saves the answer, then deletes the row.
-- The others wait (up to 30 s) and show the saved answer.
-- A claim older than 3 minutes was left by a request that died, and is taken over.
+- The request that gets the row reads the saved answer again (someone may have just paid), pays, saves the answer, then deletes the row. While it runs it refreshes the row's `claimed_at` every 30 s, so a slow call is never mistaken for a dead one.
+- The others wait (up to 30 s, less if the request's time is nearly up) and show the saved answer.
+- A claim not refreshed for 3 minutes was left by a request that died, and is taken over. Each claim query gives up after 5 s.
 
-**Outage is not "no contact".** If the store or a vendor failed and nothing usable came back, the panel says the lookup is temporarily unavailable and offers "Try again". It never shows a final "No email found" in that case.
+**A paid answer is never silently lost.** If saving it fails, the save is retried once with the same answer. If that fails too, the answer is lost: the log says so as an error, with counts only (status, number of emails and phones). The claim is then kept, not deleted, so nobody pays that vendor again for that person for 3 minutes; the request answers "temporarily unavailable".
+
+**A SalesQL call that timed out (20 s) may have been charged,** so it is not repeated for 3 minutes. A call that never reached SalesQL is retried on the next click.
+
+**One deadline per request (about 55 s).** The store's answer, its `pending` wait and the waits for another request's claim each get only what is left. A paid call (SalesQL, or starting a BetterContact search) starts only with at least 25 s left, enough to finish and save it; otherwise it is left for the next click ("Try again" / "Find email"), never paid and then cut off. BetterContact's own wait for its answer is cut to what is left; a search still running is saved as pending and checked later for free.
+
+**Outage is not "no contact".** If the store or a vendor failed and nothing usable came back, the panel says the lookup is temporarily unavailable and offers "Try again". It never shows a final "No email found" in that case. An unexpected failure answers the same generic "temporarily unavailable" text; the database's or vendor's own message stays in the function log.
+
+Known gaps: a store outage, once recorded, keeps showing "temporarily unavailable" until someone clicks "Try again" (the list never calls the store). A BetterContact error that needs an admin (no credits, key rejected, phone search not in the plan) also shows "Try again" until that is fixed.
 
 The dashboard only ever sees "Email" and "Phone", plus whether a value came from the store or from Lyca's own vendors. It is never told which vendor.
 
