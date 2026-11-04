@@ -131,7 +131,7 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 **With the setting on:**
 
 1. **"Get contact" is one `POST /v1/contacts/lookup`.**
-   - It is sent without `ziplabs: false`, so the service runs Lyca's order from its `WATERFALLS`: the store, then SalesQL, BetterContact, and ZipLabs last.
+   - It is sent without `ziplabs: false`, so the service runs Lyca's order from its `WATERFALLS`: the store, then SalesQL, BetterContact, ContactOut, and ZipLabs last (order set 4 Nov 2026). ContactOut is asked only through the service; with the setting off, Lyca calls SalesQL and BetterContact itself and never ContactOut.
    - It carries the candidate's `name` and `company` (what Lyca sends BetterContact today; left out when empty, cut to the service's 200 characters). The service gives them to BetterContact only and never stores them. Find another sends them too.
    - **Before and after contact-enrichment #19.** Only #19 adds `name` / `company` to the service, and the service refuses unknown fields (422 `property name should not exist`). On exactly that 422, Lyca asks once more without them, and leaves them out for the next 10 minutes before trying again (logged as a warning). So Lyca works against the service before #19 (BetterContact inside the service then searches without name and company) and after it. Any other 4xx except 409 / 429 is logged as an error: a retry never fixes it.
    - Lyca waits `CONTACT_ENRICHMENT_TIMEOUT_MS`, but never less than 25 s: each vendor in the order can take its own timeout, and the service's own worst case is about 22 s. Every call, and the `pending` wait, is also cut to what is left of the request's deadline (about 55 s, `deadline.ts`): a call with no time left is not made and counts as an outage.
@@ -168,7 +168,7 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 **Switching on (in this order, or both pay):**
 
 1. Set `CONTACT_VENDORS_VIA_SERVICE=true` on the Lyca project. Until step 2, reveals come from the store and ZipLabs only; kinds they don't have show "temporarily unavailable" (not "not found").
-2. Add `lyca` to the service's `WATERFALLS` and redeploy the service: `lyca:salesql,bettercontact,ziplabs` once the service has BetterContact (`lyca:salesql,ziplabs` until then). Lyca's vendor keys then live in the service.
+2. Add `lyca` to the service's `WATERFALLS` and redeploy the service: `lyca:salesql,bettercontact,contactout,ziplabs` once the service has BetterContact and ContactOut (contact-enrichment #19); `lyca:salesql,ziplabs` until then. Lyca's vendor keys then live in the service.
 3. Check one reveal: the service's answer has `found_in_by_kind` (its log line shows `by_kind=`).
 
 **Switching back:**
