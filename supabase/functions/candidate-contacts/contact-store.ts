@@ -76,12 +76,16 @@ interface StoreContact {
  * The store could not take a call. `status` is the HTTP status (null when it
  * was never reached: down, slow, refused) and `code` the store's error code,
  * e.g. "contact_not_found". The message never holds a contact value.
+ * `detail` is the store's own error message (e.g. a validation failure:
+ * "property name should not exist"), cut to 300 characters; it is not part of
+ * the message, so it is only logged where a caller chooses to.
  */
 export class ContactStoreUnavailable extends Error {
   constructor(
     message: string,
     public status: number | null = null,
     public code = '',
+    public detail = '',
   ) {
     super(message)
   }
@@ -122,9 +126,13 @@ export async function post<T>(
   }
   if (!res.ok) {
     let code = ''
+    let detail = ''
     try {
-      code =
-        ((await res.json()) as { error?: { code?: string } })?.error?.code ?? ''
+      const error = (
+        (await res.json()) as { error?: { code?: string; message?: string } }
+      )?.error
+      code = error?.code ?? ''
+      detail = String(error?.message ?? '').slice(0, 300)
     } catch {
       // only for the message
     }
@@ -132,6 +140,7 @@ export async function post<T>(
       `HTTP ${res.status}${code ? ` ${code}` : ''}`,
       res.status,
       code,
+      detail,
     )
   }
   return (await res.json()) as T
@@ -181,15 +190,8 @@ export async function contactStoreLookup(
     timeoutMs,
   )
   // A value another platform marked bad is left out, and so is a malformed
-  // entry (no string value): it would otherwise be saved and break the panel.
-  const usable = (items?: StoreContact[]) =>
-    (Array.isArray(items) ? items : []).filter(
-      (c) =>
-        !!c &&
-        typeof c.value === 'string' &&
-        c.value.trim() !== '' &&
-        c.status !== 'bad',
-    )
+  // entry (no string value): usableWire.
+  const usable = (items?: StoreContact[]) => usableWire(items) as StoreContact[]
   const emails: ContactEmail[] = usable(body.emails).map((c) => ({
     value: c.value,
     type: null,
@@ -202,10 +204,7 @@ export async function contactStoreLookup(
   }))
   // ZipLabs still fetching these kinds (contact-enrichment docs/SHARED_CONTRACT.md §2). An older store
   // never sends it: nothing pending.
-  const pending = (Array.isArray(body.pending) ? body.pending : []).filter(
-    (k): k is ContactKind =>
-      (k === 'email' || k === 'phone') && kinds.includes(k),
-  )
+  const pending = kindsIn(body.pending, kinds)
   const retryAfter = Number(body.retry_after_ms)
   return {
     status: emails.length || phones.length ? 'found' : 'not_found',
@@ -236,7 +235,57 @@ export function logStoreFailure(label: string, err: unknown): void {
     )
     return
   }
+  // Any other 4xx but 409 (busy) and 429 (rate limit) is the service refusing
+  // the request itself, which no retry fixes (HIR-537 review): an error. Its
+  // own message is a validation text, never a contact value.
+  if (
+    err instanceof ContactStoreUnavailable &&
+    err.status !== null &&
+    err.status >= 400 &&
+    err.status < 500 &&
+    err.status !== 409 &&
+    err.status !== 429
+  ) {
+    console.error(
+      `${label}: ${message}${err.detail ? ` (${err.detail})` : ''} — the service refused the request; a retry will not fix it`,
+    )
+    return
+  }
   console.warn(`${label}: ${message}`)
+}
+
+/** A contact as the store / service sends it (lookup, find-another). */
+export interface WireContact {
+  value?: unknown
+  status?: unknown
+  verified?: unknown
+  check?: { result?: unknown } | null
+}
+
+/**
+ * The contacts of an answer Lyca keeps: a string value that is not empty, and
+ * not marked bad by another platform. A malformed entry would otherwise be
+ * saved and break the panel. One rule for the store's lookup here and the
+ * service's answers (via-service.ts).
+ */
+export function usableWire(
+  items: unknown,
+): Array<WireContact & { value: string }> {
+  return (Array.isArray(items) ? (items as WireContact[]) : []).filter(
+    (c): c is WireContact & { value: string } =>
+      !!c &&
+      typeof c.value === 'string' &&
+      c.value.trim() !== '' &&
+      c.status !== 'bad',
+  )
+}
+
+/** The kinds of a list in an answer (`pending`, `unavailable`) that were asked for. */
+export function kindsIn(list: unknown, kinds: ContactKind[]): ContactKind[] {
+  return (Array.isArray(list) ? list : []).filter(
+    (k): k is ContactKind =>
+      (k === 'email' || k === 'phone') && kinds.includes(k),
+  )
 }
 
 /** One value as the store's POST /v1/contacts takes it. */

@@ -86,6 +86,7 @@ import {
   kindsToResume,
   kindUnavailable,
   sameContact,
+  serviceSearched,
   usableValuesOf,
   mergeContacts,
   storeFirst,
@@ -180,6 +181,7 @@ interface LookupRow {
   email_searched: boolean
   phone_searched: boolean
   pending_kinds: ContactKind[] | null
+  pending_since: string | null
   updated_at: string
 }
 
@@ -349,7 +351,7 @@ async function rowsFor(
     admin
       .from('candidate_contact_lookups')
       .select(
-        'linkedin_key, linkedin_url, vendor, status, emails, phones, vendor_request_id, error, email_searched, phone_searched, pending_kinds, updated_at',
+        'linkedin_key, linkedin_url, vendor, status, emails, phones, vendor_request_id, error, email_searched, phone_searched, pending_kinds, pending_since, updated_at',
       )
       .in('linkedin_key', keys),
     admin
@@ -394,7 +396,10 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     const lookedUp =
       (!!sales && sales.status !== 'error') ||
       shared?.status === 'found' ||
-      (!!backup && backup.status !== 'error')
+      (!!backup && backup.status !== 'error') ||
+      // The contact service asked every source (setting on at the time).
+      serviceSearched({ shared }, 'email') ||
+      serviceSearched({ shared }, 'phone')
 
     // One list per kind, store values first, duplicates dropped. Each value
     // says only whether it is a store value or one of Lyca's vendors', and
@@ -433,6 +438,9 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
     const kindState = (kind: ContactKind, items: typeof emails) => {
       const searched =
         kind === 'email' ? backup?.email_searched : backup?.phone_searched
+      // Every source was asked through the contact service while
+      // CONTACT_VENDORS_VIA_SERVICE was on: nothing to buy again here.
+      const doneByService = serviceSearched(rows, kind)
       const searching =
         backup?.status === 'pending' && !!backup.pending_kinds?.includes(kind)
       const usable = items.filter((x) => x.verdict !== 'bad' && !x.invalid)
@@ -450,6 +458,7 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
         canFind:
           lookedUp &&
           !searching &&
+          !doneByService &&
           (canFindAnother({
             kind,
             items,
@@ -468,7 +477,7 @@ async function viewsFor(admin: Admin, candidates: DashboardCandidate[]) {
             // The store was never really asked for this person (down at the
             // time, or a lookup from before it): asking it is the next step.
             kindsForStore(rows, [kind], storeReady).length > 0),
-        exhausted: !!searched && !usable.length,
+        exhausted: (!!searched || doneByService) && !usable.length,
       }
     }
 
@@ -568,6 +577,7 @@ async function runLookup(
       kinds,
       callerId,
       dashboardId,
+      deadline,
     )
     return
   }
@@ -642,16 +652,20 @@ async function runLookup(
   // Nothing already answered is re-bought.
   const shared = lookups.find((l) => l.vendor === 'contact_store')
   const salesqlAsked = salesqlAnswered(sales)
+  // Kinds the contact service already asked every source for, while
+  // CONTACT_VENDORS_VIA_SERVICE was on: switching back never buys them again
+  // from SalesQL / BetterContact (HIR-537 review).
+  const notDoneByService = (list: ContactKind[]) =>
+    list.filter((k) => !serviceSearched({ shared }, k))
   if (
     salesqlAsked ||
     shared?.status === 'found' ||
-    (backup && backup.status !== 'error')
+    (backup && backup.status !== 'error') ||
+    notDoneByService(['email', 'phone']).length < 2
   ) {
     const rows = { shared, salesql: sales, bettercontact: backup }
-    const forStore = kindsForStore(
-      rows,
-      ['email', 'phone'],
-      contactStoreConfigured(),
+    const forStore = notDoneByService(
+      kindsForStore(rows, ['email', 'phone'], contactStoreConfigured()),
     )
     let current = lookups
     if (forStore.length) {
@@ -672,11 +686,13 @@ async function runLookup(
       salesql: current.find((l) => l.vendor === 'salesql'),
       bettercontact: current.find((l) => l.vendor === 'bettercontact'),
     }
-    const resume = kindsToResume(now, ['email', 'phone'], {
-      salesqlAsked,
-      salesqlReady: vendorConfigured('salesql'),
-      backupReady: vendorConfigured('bettercontact'),
-    })
+    const resume = notDoneByService(
+      kindsToResume(now, ['email', 'phone'], {
+        salesqlAsked,
+        salesqlReady: vendorConfigured('salesql'),
+        backupReady: vendorConfigured('bettercontact'),
+      }),
+    )
     if (resume.length) {
       await runVendors(
         admin,
@@ -740,10 +756,12 @@ async function runLookupViaService(
   kinds: ContactKind[],
   callerId: string,
   dashboardId: string,
+  deadline: Deadline,
 ) {
   try {
     await runViaService(
       {
+        deadline,
         load: async () => {
           const { lookups, feedback } = await rowsFor(admin, [
             candidate.linkedinKey,

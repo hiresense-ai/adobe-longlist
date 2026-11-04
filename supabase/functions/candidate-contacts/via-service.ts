@@ -16,7 +16,16 @@
 //                     (`retry_after_ms`, at most 5 s) and asked once more.
 //   "Find another" -> POST /v1/contacts/find-another { linkedin_url, kind,
 //                     shown } after a 👎. `exhausted: true` means every source
-//                     was asked: "No other email / number found".
+//                     was asked: "No other email / number found". With both
+//                     kinds wanted, the second is asked only if the request
+//                     still has time for it (the panel keeps offering it).
+//   `has: false`   -> "every source was asked" ONLY when the answer carries
+//                     `found_in_by_kind`, which the service sends only to a
+//                     product in its WATERFALLS (HIR-537 review). Without it
+//                     (Lyca not yet, or no longer, in WATERFALLS: the cutover)
+//                     the service ran no vendor, so the kind is left
+//                     unanswered ("temporarily unavailable", "Try again"),
+//                     never a final "not found".
 //   👍/👎            -> unchanged: saved in Lyca's table and sent to the store
 //                     (POST /v1/contacts/feedback, contact-store.ts).
 //   An outage      -> any failure (503 vendors_unavailable / store_unavailable,
@@ -27,22 +36,34 @@
 //                     not marked as searched, and the next "Get contact",
 //                     "Try again" or re-check asks for it again.
 //   Re-check       -> the panel re-checks (8 s apart) only while a kind is
-//                     `pending`, and only that kind. A pending kind stops
+//                     `pending`, and only the pending kinds (never a kind
+//                     whose vendors were unavailable: that could make the
+//                     service pay without a click). A pending kind stops
 //                     being re-checked PENDING_RECHECK_MAX_MS (60 s) after
 //                     it began: it then shows "temporarily unavailable" with
 //                     "Try again", which starts a new window.
-// The wait is CONTACT_ENRICHMENT_TIMEOUT_MS, at least 20 s while on (each
-// vendor slot of the service's order can take its own timeout).
+// The wait is CONTACT_ENRICHMENT_TIMEOUT_MS, at least 25 s while on (the
+// service's own worst case is about 22 s), and never past the request's
+// deadline (deadline.ts): every call, and the `pending` wait, gets only what
+// is left.
+//
+// name / company: sent (cut to the service's 200 characters) so the service
+// can give them to BetterContact. A service without them (before
+// contact-enrichment #19) refuses unknown fields with 422 "property name
+// should not exist": the call is then made again without them, and they are
+// left out for PERSON_FIELDS_RETRY_MS before being tried again. So Lyca works
+// against the service both before and after #19.
 //
 // What is kept: the answer is Lyca's `contact_store` row in
 // candidate_contact_lookups, as before. Its values are what the service
 // returned that is not marked bad. Each email also keeps the service's email
 // check result (`check`: valid / invalid / unknown); Lyca runs no check of its
-// own and hides nothing because of it. Three of the row's columns get a
+// own and hides nothing because of it. Some of the row's columns get a
 // meaning for this row while on: email_searched / phone_searched = every
-// source was asked for that kind (nothing more to find), pending_kinds = the
-// kinds the service was still fetching, and vendor_request_id =
-// "pending_since=<ISO time>", when that began. `error` says a call failed or
+// source was asked for that kind (nothing more to find; honoured with the
+// setting off too, so switching back never re-buys it: index.ts),
+// pending_kinds = the kinds the service was still fetching, and pending_since
+// (migration 20261104000001) = when that began. `error` says a call failed or
 // a kind's vendors were unavailable.
 //
 // Kept free of Supabase so it can be tested on its own (via-service_test.ts):
@@ -51,20 +72,24 @@
 import {
   ContactStoreUnavailable,
   contactStoreConfigured,
+  kindsIn,
   logStoreFailure,
   post,
+  usableWire,
+  type WireContact,
 } from './contact-store.ts'
 import {
+  askTwiceIfPending,
   kindsToResume,
   kindUnavailable,
   mergeContacts,
-  PENDING_WAIT_MAX_MS,
   sameContact,
   usableValuesOf,
   type ContactItem,
   type PersonRows,
   type StoredContact,
 } from './flow.ts'
+import { NO_DEADLINE, type Deadline } from './deadline.ts'
 import type { ContactKind } from './vendors.ts'
 
 /** The function secret that sends every vendor call through the service. */
@@ -75,10 +100,14 @@ export function contactVendorsViaService(): boolean {
   return Deno.env.get(VIA_SERVICE_SETTING)?.trim().toLowerCase() === 'true'
 }
 
-/** The least a reveal waits for the service while on: its order takes a vendor timeout per slot. */
-export const VIA_SERVICE_MIN_TIMEOUT_MS = 20_000
+/**
+ * The least a reveal waits for the service while on: its order takes a vendor
+ * timeout per slot. Its own worst case is about 22 s (5 + 8 + 2 + 4 s, plus up
+ * to 3 s for the email check), so 25 s.
+ */
+export const VIA_SERVICE_MIN_TIMEOUT_MS = 25_000
 
-/** CONTACT_ENRICHMENT_TIMEOUT_MS, raised to at least 20 s (unset: 20 s). */
+/** CONTACT_ENRICHMENT_TIMEOUT_MS, raised to at least 25 s (unset: 25 s). */
 export function viaServiceTimeoutMs(): number {
   const raw = Number(Deno.env.get('CONTACT_ENRICHMENT_TIMEOUT_MS')?.trim())
   const set = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
@@ -86,7 +115,6 @@ export function viaServiceTimeoutMs(): number {
 }
 
 const KINDS: ContactKind[] = ['email', 'phone']
-const PENDING_WAIT_DEFAULT_MS = 1_000
 
 /** The service's email check, a fixed contract on every email it returns. */
 export type EmailCheck = 'valid' | 'invalid' | 'unknown'
@@ -118,13 +146,12 @@ export interface ServiceAnswer {
   exhausted?: boolean
   /** Kinds asked for with no usable value because a vendor for them was down, timed out or refused (absent: none). */
   unavailable?: ContactKind[]
-}
-
-interface WireContact {
-  value?: unknown
-  status?: unknown
-  verified?: unknown
-  check?: { result?: unknown } | null
+  /**
+   * The answer carries `found_in_by_kind`: the service ran Lyca's order (Lyca
+   * is in its WATERFALLS). Only then does `has: false` mean every source was
+   * asked.
+   */
+  waterfall: boolean
 }
 
 function checkOf(c: WireContact): EmailCheck | null {
@@ -140,14 +167,8 @@ export function parseServiceAnswer(
   kinds: ContactKind[],
 ): ServiceAnswer {
   const b = (body ?? {}) as Record<string, unknown>
-  const usable = (items: unknown) =>
-    (Array.isArray(items) ? (items as WireContact[]) : []).filter(
-      (c): c is WireContact & { value: string } =>
-        !!c &&
-        typeof c.value === 'string' &&
-        c.value.trim() !== '' &&
-        c.status !== 'bad',
-    )
+  // The same filter as the store's lookup (contact-store.ts, usableWire).
+  const usable = usableWire
   const emails: ServiceEmail[] = usable(b.emails).map((c) => ({
     value: c.value,
     type: null,
@@ -159,16 +180,8 @@ export function parseServiceAnswer(
     type: null,
     valid: typeof c.verified === 'boolean' ? c.verified : null,
   }))
-  const pending = (Array.isArray(b.pending) ? b.pending : []).filter(
-    (k): k is ContactKind =>
-      (k === 'email' || k === 'phone') && kinds.includes(k),
-  )
-  const unavailable = (
-    Array.isArray(b.unavailable) ? b.unavailable : []
-  ).filter(
-    (k): k is ContactKind =>
-      (k === 'email' || k === 'phone') && kinds.includes(k),
-  )
+  const pending = kindsIn(b.pending, kinds)
+  const unavailable = kindsIn(b.unavailable, kinds)
   const wireHas = (b.has ?? {}) as Record<string, unknown>
   const has: Partial<Record<ContactKind, boolean>> = {}
   for (const kind of kinds) {
@@ -184,6 +197,8 @@ export function parseServiceAnswer(
     has,
     pending,
     retryAfterMs: pending.length && Number.isFinite(retry) ? retry : null,
+    waterfall:
+      typeof b.found_in_by_kind === 'object' && b.found_in_by_kind !== null,
     ...(unavailable.length ? { unavailable } : {}),
     ...(typeof b.exhausted === 'boolean' ? { exhausted: b.exhausted } : {}),
   }
@@ -213,15 +228,26 @@ export function cleanName(full: string | null | undefined): string {
     .join(' ')
 }
 
-/** linkedin_url, plus `name` / `company` when not empty. */
+/** The service's cap on `name` and `company` (contacts.dto.ts, MaxLength(200)). */
+export const PERSON_FIELD_MAX = 200
+
+/** `text` cut to PERSON_FIELD_MAX UTF-16 units (as the service counts), never half a character. */
+function capped(text: string): string {
+  if (text.length <= PERSON_FIELD_MAX) return text
+  let out = text.slice(0, PERSON_FIELD_MAX)
+  if (/[\uD800-\uDBFF]$/.test(out)) out = out.slice(0, -1)
+  return out.trim()
+}
+
+/** linkedin_url, plus `name` / `company` when not empty, each cut to 200 characters. */
 export function personFields(person: PersonInput): {
   linkedin_url: string
   name?: string
   company?: string
 } {
   const p = typeof person === 'string' ? { linkedinUrl: person } : person
-  const name = cleanName(p.name)
-  const company = (p.company ?? '').trim()
+  const name = capped(cleanName(p.name))
+  const company = capped((p.company ?? '').trim())
   return {
     linkedin_url: p.linkedinUrl,
     ...(name ? { name } : {}),
@@ -229,15 +255,72 @@ export function personFields(person: PersonInput): {
   }
 }
 
+/** After the service refused name / company, they are left out this long before being tried again. */
+export const PERSON_FIELDS_RETRY_MS = 10 * 60_000
+let personFieldsRefusedAt: number | null = null
+
+/** Tests: forget that the service refused name / company. */
+export function resetPersonFieldsSupport(): void {
+  personFieldsRefusedAt = null
+}
+
+/** The service's 422 for a field it does not know (before contact-enrichment #19). */
+function refusesPersonFields(err: unknown): boolean {
+  return (
+    err instanceof ContactStoreUnavailable &&
+    err.status === 422 &&
+    /property (name|company) should not exist/.test(err.detail)
+  )
+}
+
+/**
+ * One POST about a person: with name / company while the service takes them;
+ * on its 422 for those fields, once more without them (and without them for
+ * PERSON_FIELDS_RETRY_MS). A call with no time left is not made (an outage).
+ */
+async function postAboutPerson(
+  path: string,
+  person: PersonInput,
+  rest: Record<string, unknown>,
+  deadline: Deadline,
+): Promise<unknown> {
+  const timeout = () => {
+    const ms = deadline.cap(viaServiceTimeoutMs())
+    if (ms <= 0) throw new ContactStoreUnavailable('out of time')
+    return ms
+  }
+  const full = personFields(person)
+  const bare = { linkedin_url: full.linkedin_url, ...rest }
+  const hasPerson = 'name' in full || 'company' in full
+  const refusedLately =
+    personFieldsRefusedAt !== null &&
+    Date.now() - personFieldsRefusedAt < PERSON_FIELDS_RETRY_MS
+  if (!hasPerson || refusedLately) return await post(path, bare, timeout())
+  try {
+    const answer = await post(path, { ...full, ...rest }, timeout())
+    personFieldsRefusedAt = null
+    return answer
+  } catch (err) {
+    if (!refusesPersonFields(err)) throw err
+    personFieldsRefusedAt = Date.now()
+    console.warn(
+      'contact service does not take name / company yet (contact-enrichment #19 not deployed): asking without them',
+    )
+    return await post(path, bare, timeout())
+  }
+}
+
 /** POST /v1/contacts/lookup through Lyca's order (no `ziplabs: false`). Throws ContactStoreUnavailable. */
 export async function serviceLookup(
   person: PersonInput,
   kinds: ContactKind[],
+  deadline: Deadline = NO_DEADLINE,
 ): Promise<ServiceAnswer> {
-  const body = await post(
+  const body = await postAboutPerson(
     '/v1/contacts/lookup',
-    { ...personFields(person), kinds },
-    viaServiceTimeoutMs(),
+    person,
+    { kinds },
+    deadline,
   )
   return parseServiceAnswer(body, kinds)
 }
@@ -247,42 +330,39 @@ export async function serviceFindAnother(
   person: PersonInput,
   kind: ContactKind,
   shown: string[],
+  deadline: Deadline = NO_DEADLINE,
 ): Promise<ServiceAnswer> {
-  const body = await post(
+  const body = await postAboutPerson(
     '/v1/contacts/find-another',
-    { ...personFields(person), kind, shown },
-    viaServiceTimeoutMs(),
+    person,
+    { kind, shown },
+    deadline,
   )
   return parseServiceAnswer(body, [kind])
 }
 
-const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-
 /**
  * One call, and when it answers a kind as `pending`, one more after
- * `retry_after_ms` (at most 5 s). If that second call fails, the first answer
- * stands (its kinds stay pending). The first call's failure is thrown.
+ * `retry_after_ms` (at most 5 s, never past the deadline): the same rule as
+ * the store's lookup (flow.ts, askTwiceIfPending). If that second call fails,
+ * the first answer stands (its kinds stay pending). The first call's failure
+ * is thrown.
  */
 export async function askWithPending(
   call: () => Promise<ServiceAnswer>,
   kinds: ContactKind[],
-  sleep: (ms: number) => Promise<void> = wait,
+  sleep?: (ms: number) => Promise<void>,
+  deadline?: Deadline,
 ): Promise<ServiceAnswer> {
-  const first = await call()
-  if (!first.pending.some((k) => kinds.includes(k))) return first
-  const after = Number(first.retryAfterMs)
-  const ms =
-    Number.isFinite(after) && after >= 0 ? after : PENDING_WAIT_DEFAULT_MS
-  await sleep(Math.min(ms, PENDING_WAIT_MAX_MS))
-  try {
-    return await call()
-  } catch (err) {
-    logStoreFailure(
-      'contact service re-ask failed, using the first answer',
-      err,
-    )
-    return first
-  }
+  const { first, again } = await askTwiceIfPending(
+    call,
+    (a) => ({
+      pending: a.pending.some((k) => kinds.includes(k)),
+      retryAfterMs: a.retryAfterMs,
+    }),
+    { sleep, deadline, label: 'contact service' },
+  )
+  return again ?? first
 }
 
 /** The contact_store row's fields Lyca writes while the setting is on. */
@@ -293,8 +373,8 @@ export interface ServiceRowFields {
   email_searched: boolean
   phone_searched: boolean
   pending_kinds: ContactKind[] | null
-  /** "pending_since=<ISO time>" while a kind is pending, else null. */
-  vendor_request_id: string | null
+  /** When the pending began (ISO time) while a kind is pending, else null. */
+  pending_since: string | null
   error: string | null
 }
 
@@ -305,13 +385,11 @@ export const SOURCE_UNAVAILABLE =
 /** A pending kind is re-checked for at most this long after it began; then "temporarily unavailable". */
 export const PENDING_RECHECK_MAX_MS = 60_000
 
-const SINCE = 'pending_since='
-
 /** When the row's pending began (ms), or null. */
 export function pendingSince(row: PersonRows['shared']): number | null {
-  const raw = row?.vendor_request_id
-  if (typeof raw !== 'string' || !raw.startsWith(SINCE)) return null
-  const ms = Date.parse(raw.slice(SINCE.length))
+  const raw = row?.pending_since
+  if (typeof raw !== 'string' || !raw) return null
+  const ms = Date.parse(raw)
   return Number.isFinite(ms) ? ms : null
 }
 
@@ -376,9 +454,9 @@ export function nextServiceRow(
       email_searched: searched.email,
       phone_searched: searched.phone,
       pending_kinds: heldPending.length ? heldPending : null,
-      vendor_request_id:
+      pending_since:
         heldPending.length && heldSince !== null
-          ? `${SINCE}${new Date(heldSince).toISOString()}`
+          ? new Date(heldSince).toISOString()
           : null,
       error: SERVICE_UNREACHABLE,
     }
@@ -395,9 +473,23 @@ export function nextServiceRow(
     kinds.includes('phone') ? answer.phones : [],
   )
   const pending = answer.pending.filter((k) => kinds.includes(k))
-  const unavailableNow = (answer.unavailable ?? []).filter(
-    (k) => kinds.includes(k) && !pending.includes(k),
-  )
+  // A lookup's `has: false` without found_in_by_kind: the service ran no
+  // vendor (Lyca not in its WATERFALLS: the cutover). Unanswered, not "not
+  // found" (HIR-537 review).
+  const notRun = findAnother
+    ? []
+    : kinds.filter(
+        (k) =>
+          !answer.waterfall && answer.has[k] === false && !pending.includes(k),
+      )
+  const unavailableNow = [
+    ...new Set([
+      ...(answer.unavailable ?? []).filter(
+        (k) => kinds.includes(k) && !pending.includes(k),
+      ),
+      ...notRun,
+    ]),
+  ]
   for (const kind of kinds) {
     if (pending.includes(kind) || unavailableNow.includes(kind)) continue
     const nothingLeft = findAnother
@@ -446,8 +538,7 @@ export function nextServiceRow(
     email_searched: searched.email,
     phone_searched: searched.phone,
     pending_kinds: allPending.length ? allPending : null,
-    vendor_request_id:
-      since === null ? null : `${SINCE}${new Date(since).toISOString()}`,
+    pending_since: since === null ? null : new Date(since).toISOString(),
     error: unavailable.length ? SOURCE_UNAVAILABLE : null,
   }
 }
@@ -542,23 +633,15 @@ export function kindsToAskAgain(
 
 /**
  * The panel's automatic re-check: only the kinds still pending within their
- * window, plus a kind whose vendors were unavailable on the last call (while
- * a pending kind is being re-checked anyway). Never a full lookup.
+ * window. Never a kind whose vendors were unavailable (HIR-537 review): asking
+ * for it can make the service pay a vendor, which only a click (under the
+ * lookup limit) may do. That kind shows "Try again".
  */
 export function kindsToRecheck(
   rows: PersonRows,
   now = Date.now(),
 ): ContactKind[] {
-  const pending = KINDS.filter((k) => pendingFor(rows, k, now))
-  if (!pending.length) return []
-  const unavailable = KINDS.filter(
-    (k) =>
-      !pending.includes(k) &&
-      !!rows.shared?.error &&
-      !holdsUsable(rows, k) &&
-      !exhaustedFor(rows, k),
-  )
-  return [...pending, ...unavailable]
+  return KINDS.filter((k) => pendingFor(rows, k, now))
 }
 
 /** One kind's state for the panel (see the header). */
@@ -622,6 +705,8 @@ export interface ViaServiceDeps {
   sleep?: (ms: number) => Promise<void>
   /** The clock (tests pass a fake). */
   now?: () => number
+  /** The request's deadline (deadline.ts); none in tests that leave it out. */
+  deadline?: Deadline
 }
 
 const clock = (deps: ViaServiceDeps) => (deps.now ? deps.now() : Date.now())
@@ -667,15 +752,21 @@ async function lookupAndSave(
   person: PersonInput,
   kinds: ContactKind[],
 ): Promise<void> {
+  const deadline = deps.deadline ?? NO_DEADLINE
   let outcome: ServiceOutcome
   try {
-    outcome = {
-      answer: await askWithPending(
-        () => serviceLookup(person, kinds),
-        kinds,
-        deps.sleep,
-      ),
+    const answer = await askWithPending(
+      () => serviceLookup(person, kinds, deadline),
+      kinds,
+      deps.sleep,
+      deadline,
+    )
+    if (!answer.waterfall && kinds.some((k) => answer.has[k] === false)) {
+      console.warn(
+        `${VIA_SERVICE_SETTING} is on but the contact service did not run Lyca's order (no found_in_by_kind: lyca is not in its WATERFALLS); kinds it had nothing for are left unanswered`,
+      )
     }
+    outcome = { answer }
   } catch (err) {
     logStoreFailure('contact service lookup failed', err)
     outcome = { outage: true }
@@ -737,13 +828,20 @@ export async function runViaService(
     itemsOf(k, rows, verdicts).some((x) => x.verdict === 'bad')
   const toLookUp = allowed.filter((k) => !thumbsDown(k))
   if (toLookUp.length) await lookupAndSave(deps, person, toLookUp)
+  const deadline = deps.deadline ?? NO_DEADLINE
+  let asked = 0
   for (const kind of allowed.filter(thumbsDown)) {
+    // A second kind only with time for a whole call; otherwise the panel
+    // keeps offering it (one request never runs about 90 s: HIR-537 review).
+    if (asked++ > 0 && !deadline.allows(VIA_SERVICE_MIN_TIMEOUT_MS)) break
     let answer: ServiceAnswer
     try {
       answer = await askWithPending(
-        () => serviceFindAnother(person, kind, shownValues(rows, kind)),
+        () =>
+          serviceFindAnother(person, kind, shownValues(rows, kind), deadline),
         [kind],
         deps.sleep,
+        deadline,
       )
     } catch (err) {
       // 409 find_another_not_available: Lyca is not in the service's

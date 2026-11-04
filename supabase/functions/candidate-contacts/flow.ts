@@ -133,10 +133,24 @@ export interface StoredRow {
   pending_kinds?: ContactKind[] | null
   /** Why the last call failed (a vendor's, or the contact service's). */
   error?: string | null
-  /** BetterContact: its request id. The contact_store row, with
-   * CONTACT_VENDORS_VIA_SERVICE on: "pending_since=<ISO time>", when the
-   * service's `pending` began (via-service.ts). */
+  /** BetterContact: its request id. */
   vendor_request_id?: string | null
+  /** The contact_store row, with CONTACT_VENDORS_VIA_SERVICE on: when the
+   * service's `pending` began (via-service.ts; migration 20261104000001). */
+  pending_since?: string | null
+}
+
+/**
+ * The contact service already asked every source of Lyca's order for this
+ * kind and found nothing (the contact_store row's email_searched /
+ * phone_searched, written only while CONTACT_VENDORS_VIA_SERVICE was on).
+ * With the setting off again, such a kind is not bought from SalesQL or
+ * BetterContact a second time (HIR-537 review).
+ */
+export function serviceSearched(rows: PersonRows, kind: ContactKind): boolean {
+  return !!(kind === 'email'
+    ? rows.shared?.email_searched
+    : rows.shared?.phone_searched)
 }
 
 /** The person's rows in Lyca's SQL, by where they came from. */
@@ -286,7 +300,47 @@ export interface StoreAnswer extends VendorResult {
 
 /** A `pending` kind is waited for at most this long before asking again (once). */
 export const PENDING_WAIT_MAX_MS = 5_000
-const PENDING_WAIT_DEFAULT_MS = 1_000
+/** The wait when a `pending` answer has no usable `retry_after_ms`. */
+export const PENDING_WAIT_DEFAULT_MS = 1_000
+
+/**
+ * The one rule for `pending`, for the store's lookup (storeFirst) and the
+ * contact service's answers (via-service.ts, askWithPending): call once; when
+ * the answer says a kind asked for is still being fetched, wait its
+ * `retry_after_ms` (1 s when absent, at most 5 s, never past the request's
+ * deadline) and call once more. Returns the first answer and the second (null
+ * when there was no second call, or it failed: that failure is logged). The
+ * first call's failure is thrown.
+ */
+export async function askTwiceIfPending<T>(
+  call: () => Promise<T>,
+  pendingOf: (answer: T) => { pending: boolean; retryAfterMs: unknown },
+  options: {
+    sleep?: (ms: number) => Promise<void>
+    deadline?: { cap(ms: number): number }
+    /** For the log line when the second call fails. */
+    label: string
+  },
+): Promise<{ first: T; again: T | null }> {
+  const first = await call()
+  const { pending, retryAfterMs } = pendingOf(first)
+  if (!pending) return { first, again: null }
+  const after = Number(retryAfterMs)
+  const ms = Math.min(
+    Number.isFinite(after) && after >= 0 ? after : PENDING_WAIT_DEFAULT_MS,
+    PENDING_WAIT_MAX_MS,
+  )
+  await (options.sleep ?? wait)(options.deadline?.cap(ms) ?? ms)
+  try {
+    return { first, again: await call() }
+  } catch (err) {
+    logStoreFailure(
+      `${options.label} re-ask failed, using the first answer`,
+      err,
+    )
+    return { first, again: null }
+  }
+}
 
 export interface StoreFirstOptions {
   /** How to wait for `retry_after_ms` (tests pass a fake). */
@@ -313,34 +367,33 @@ export async function storeFirst(
   kinds: ContactKind[],
   options: StoreFirstOptions = {},
 ): Promise<{ fromStore: VendorResult | null; missing: ContactKind[] }> {
-  let answer: StoreAnswer
+  let asked: { first: StoreAnswer; again: StoreAnswer | null }
   try {
-    answer = await lookup()
+    asked = await askTwiceIfPending(
+      lookup,
+      (a) => ({
+        pending: (Array.isArray(a.pending) ? a.pending : []).some((k) =>
+          kinds.includes(k),
+        ),
+        retryAfterMs: a.retryAfterMs,
+      }),
+      {
+        sleep: options.sleep,
+        deadline: options.deadline,
+        label: 'contact store',
+      },
+    )
   } catch (err) {
     logStoreFailure('contact store unavailable, using the vendors', err)
     options.onUnavailable?.(err)
     return { fromStore: null, missing: kinds }
   }
-  const pending = (Array.isArray(answer.pending) ? answer.pending : []).filter(
-    (k) => kinds.includes(k),
-  )
-  if (pending.length) {
-    const after = Number(answer.retryAfterMs)
-    const ms =
-      Number.isFinite(after) && after >= 0 ? after : PENDING_WAIT_DEFAULT_MS
-    const capped = Math.min(ms, PENDING_WAIT_MAX_MS)
-    await (options.sleep ?? wait)(options.deadline?.cap(capped) ?? capped)
-    try {
-      const again = await lookup()
-      // The second answer is the newer one; the first stands if it says less.
-      if (again.status === 'found' || answer.status !== 'found') answer = again
-    } catch (err) {
-      logStoreFailure(
-        'contact store re-ask failed, using the first answer',
-        err,
-      )
-    }
-  }
+  const { first, again } = asked
+  // The second answer is the newer one; the first stands if it says less.
+  const answer =
+    again && (again.status === 'found' || first.status !== 'found')
+      ? again
+      : first
   if (answer.status !== 'found') return { fromStore: null, missing: kinds }
   return { fromStore: answer, missing: kindsMissing(answer, kinds) }
 }

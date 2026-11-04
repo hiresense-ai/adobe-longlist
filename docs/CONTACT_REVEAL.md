@@ -29,7 +29,7 @@ sequenceDiagram
   F->>DB: role, dashboard access, candidate in the dashboard file, 60 lookups per 10 min
   F->>DB: rows already held for this person
   alt CONTACT_VENDORS_VIA_SERVICE=true
-    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds, name, company} (at least 20 s)
+    F->>S: POST /v1/contacts/lookup {linkedin_url, kinds, name, company} (at least 25 s, within the request's deadline)
     S-->>F: values with status and check, pending and retry_after_ms
     opt a kind pending
       F->>S: the same lookup once more (at most 5 s later)
@@ -132,10 +132,12 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
 
 1. **"Get contact" is one `POST /v1/contacts/lookup`.**
    - It is sent without `ziplabs: false`, so the service runs Lyca's order from its `WATERFALLS`: the store, then SalesQL, BetterContact, and ZipLabs last.
-   - It carries the candidate's `name` and `company` (what Lyca sends BetterContact today; left out when empty). The service gives them to BetterContact only and never stores them. Find another sends them too.
-   - Lyca waits `CONTACT_ENRICHMENT_TIMEOUT_MS`, but never less than 20 s, because each vendor in the order can take its own timeout.
-   - A kind in `pending` is waited for (`retry_after_ms`, at most 5 s) and asked once more. A kind still pending shows "Searching…". The panel's automatic re-check (every 8 s) asks the service again for the pending kinds only, never a full lookup.
-   - The re-check stops 60 s after the kind first became pending (`PENDING_RECHECK_MAX_MS`; the start time is kept in the row's `vendor_request_id` as `pending_since=<time>`). The kind then shows "temporarily unavailable" with "Try again", which starts a new 60 s window. So the re-check makes at most about 8 service calls per window, and Lyca's lookup limit is not needed for it.
+   - It carries the candidate's `name` and `company` (what Lyca sends BetterContact today; left out when empty, cut to the service's 200 characters). The service gives them to BetterContact only and never stores them. Find another sends them too.
+   - **Before and after contact-enrichment #19.** Only #19 adds `name` / `company` to the service, and the service refuses unknown fields (422 `property name should not exist`). On exactly that 422, Lyca asks once more without them, and leaves them out for the next 10 minutes before trying again (logged as a warning). So Lyca works against the service before #19 (BetterContact inside the service then searches without name and company) and after it. Any other 4xx except 409 / 429 is logged as an error: a retry never fixes it.
+   - Lyca waits `CONTACT_ENRICHMENT_TIMEOUT_MS`, but never less than 25 s: each vendor in the order can take its own timeout, and the service's own worst case is about 22 s. Every call, and the `pending` wait, is also cut to what is left of the request's deadline (about 55 s, `deadline.ts`): a call with no time left is not made and counts as an outage.
+   - A kind in `pending` is waited for (`retry_after_ms`, at most 5 s) and asked once more: the same rule, in the same code, as the store's `pending` with the setting off (`flow.ts`, `askTwiceIfPending`). A kind still pending shows "Searching…". The panel's automatic re-check (every 8 s) asks the service again for the pending kinds only, never a full lookup, and never a kind whose vendors were unavailable: asking for that one could make the service pay a vendor without a click and outside the lookup limit. That kind shows "Try again" instead.
+   - The re-check stops 60 s after the kind first became pending (`PENDING_RECHECK_MAX_MS`; the start time is kept in the row's own `pending_since` column, migration `20261104000001`). The kind then shows "temporarily unavailable" with "Try again", which starts a new 60 s window. So the re-check makes at most about 8 service calls per window, each one only for a ZipLabs fetch already paid for.
+   - **`has: false` is "no source has it" only in a waterfall answer.** The service runs Lyca's order, and sends `found_in_by_kind`, only while `lyca` is in its `WATERFALLS`. An answer without `found_in_by_kind` (switching on before the service lists `lyca`, or switching back after it stopped) means the service ran no vendor: such a kind is left unanswered, shown "temporarily unavailable" with "Try again", and a warning is logged. It is never recorded as searched, so nobody is stuck on "No email found".
    - A person looked up before is asked again only for kinds that are still pending, or that no source has answered (the last call failed, or Lyca's own vendors never ran for that kind before the switch).
 2. **What the recruiter sees.**
    - The values the service returns whose `status` isn't `bad`, shown as today.
@@ -144,32 +146,43 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - Every value takes 👍/👎, because after any 👎 the service can look further.
 3. **"Find another" is `POST /v1/contacts/find-another`** with `{ linkedin_url, kind, shown }`, after a 👎. `shown` holds every value of that kind Lyca already shows.
    - `exhausted: true` means every source was asked, and the panel says "No other email / number found".
+   - For both kinds at once, the second kind is asked only if the request still has 25 s left; otherwise it stays offered for the next click (one request never takes about 90 s).
    - "Find email / number", for an empty kind no source answered, is a lookup for that kind.
 4. **👍/👎** are saved in Lyca's table and reach the store (`POST /v1/contacts/feedback`), as before.
 5. **Outages.** Any failure is "temporarily unavailable, try again". That covers a 503 (`vendors_unavailable` or `store_unavailable`, including every vendor refusing), a timeout, a refused key, and a 409 `find_another_not_available` (Lyca missing from the service's `WATERFALLS`). Nothing final is recorded, and it is never "not found".
    - **Part of an answer unavailable.** A lookup or find-another answer lists in `unavailable` the kinds with no usable value because a vendor for them was down, timed out or refused (absent or `[]`: none). Such a kind is not marked as searched: it shows "temporarily unavailable" with "Try again", and the next "Get contact", "Try again" or re-check asks for it again. The row's `error` says a source was unavailable.
    - On "Get contact", the `contact_store` row records that the call failed (status `error` when it holds nothing).
    - On "Find another", nothing is written, and the request answers 503 with that message.
-6. **Lyca's tables are as before.** The service's answer is the person's `contact_store` row in `candidate_contact_lookups`. While on, two of that row's columns have a meaning:
-   - `email_searched` / `phone_searched`: every source was asked for that kind;
+6. **Lyca's tables are as before.** The service's answer is the person's `contact_store` row in `candidate_contact_lookups`. While on, these columns of that row have a meaning:
+   - `email_searched` / `phone_searched`: every source was asked for that kind (also honoured with the setting off: see switching back);
    - `pending_kinds`: the kinds the service was still fetching;
-   - `vendor_request_id`: `pending_since=<time>`, when that began.
+   - `pending_since` (new column, migration `20261104000001`): when that began. `vendor_request_id` keeps its one meaning, a vendor's request id.
 
    Rows from Lyca's own vendors before the switch are kept and shown. Their values take 👍/👎, and "Find another" for them goes to the service.
 
+**Before switching on:**
+
+- Migration `20261104000001_contact_store_pending_since.sql` applied, then the functions deployed (`lyca-deploy.mjs` refuses the other order).
+- contact-enrichment #19 (BetterContact, `name` / `company`) deployed to the service Lyca uses, and #20 for `check`. Lyca also works without #19 (it retries without `name` / `company`), but BetterContact inside the service then searches without them.
+
 **Switching on (in this order, or both pay):**
 
-1. Set `CONTACT_VENDORS_VIA_SERVICE=true` on the Lyca project.
+1. Set `CONTACT_VENDORS_VIA_SERVICE=true` on the Lyca project. Until step 2, reveals come from the store and ZipLabs only; kinds they don't have show "temporarily unavailable" (not "not found").
 2. Add `lyca` to the service's `WATERFALLS` and redeploy the service: `lyca:salesql,bettercontact,ziplabs` once the service has BetterContact (`lyca:salesql,ziplabs` until then). Lyca's vendor keys then live in the service.
+3. Check one reveal: the service's answer has `found_in_by_kind` (its log line shows `by_kind=`).
 
 **Switching back:**
 
 1. Remove `lyca` from the service's `WATERFALLS` and redeploy the service.
-2. Set `CONTACT_VENDORS_VIA_SERVICE=false`, or unset it.
+2. Set `CONTACT_VENDORS_VIA_SERVICE=false`, or unset it. Keep the gap between the two short: in between, reveals come from the store and ZipLabs only.
 
 While the setting is off and `lyca` is still in `WATERFALLS`, the service's vendors and Lyca's own both run, and both pay.
 
-**Known gap.** The service does not know which people Lyca's own vendors were asked about before the switch. A "Find another" for such a person can ask SalesQL again through the service.
+After switching back, a kind the service asked every source for (the `contact_store` row's `email_searched` / `phone_searched`) is not bought from SalesQL or BetterContact again: "Get contact" skips it and the panel shows "No email / number found". Values the service found are in the `contact_store` row and are shown as store values, so they are not bought again either.
+
+**Known gaps.**
+- The service does not know which people Lyca's own vendors were asked about before the switch. A "Find another" for such a person can ask SalesQL again through the service.
+- After switching back, a kind the service answered with a value that was then 👎'd can be bought again from SalesQL / BetterContact through "Find another": Lyca does not know which of the service's vendors the value came from.
 
 ## What is saved where
 
@@ -202,7 +215,7 @@ While the setting is off and `lyca` is still in `WATERFALLS`, the service's vend
 | --- | --- |
 | `CONTACT_ENRICHMENT_URL` | The contact-enrichment service. Unset: the store is skipped and the vendors run as before. |
 | `CONTACT_ENRICHMENT_API_KEY` | Lyca's key for that service. |
-| `CONTACT_ENRICHMENT_TIMEOUT_MS` | How long a reveal waits for the store (default **8000**; with `CONTACT_VENDORS_VIA_SERVICE` on, at least 20000). Keep 8000 on Lyca prod before ZipLabs on demand goes live on the store. Background saves and 👍/👎 have their own 3 s timeout. |
+| `CONTACT_ENRICHMENT_TIMEOUT_MS` | How long a reveal waits for the store (default **8000**; with `CONTACT_VENDORS_VIA_SERVICE` on, at least 25000; always within the request's deadline). Keep 8000 on Lyca prod before ZipLabs on demand goes live on the store. Background saves and 👍/👎 have their own 3 s timeout. |
 | `CONTACT_STORE_SYNC_SECRET` | The catch-up job's own key: the cron job sends it as header `x-contact-store-sync-secret`. While unset, `contact-store-sync` refuses every call. The cron job reads it from Supabase Vault. |
 | `CONTACT_VENDORS_VIA_SERVICE` | `true`: every vendor call goes through the contact service (HIR-537, above). Unset or anything else: Lyca's own vendors, as before. |
 | `SALESQL_API_KEY`, `BETTERCONTACT_API_KEY` | The vendors. Unset: that vendor is skipped. |

@@ -21,11 +21,15 @@ import {
   ServiceUnavailableError,
   VIA_SERVICE_MIN_TIMEOUT_MS,
   viaServiceTimeoutMs,
+  personFields,
+  PERSON_FIELD_MAX,
+  resetPersonFieldsSupport,
   type ServiceAnswer,
   type ServiceRowFields,
   type ViaServiceDeps,
 } from './via-service.ts'
-import type { PersonRows, StoredRow } from './flow.ts'
+import { serviceSearched, type PersonRows, type StoredRow } from './flow.ts'
+import { Deadline } from './deadline.ts'
 import type { ContactKind } from './vendors.ts'
 
 function assertEquals(actual: unknown, expected: unknown) {
@@ -163,16 +167,19 @@ Deno.test(
   },
 )
 
-Deno.test('setting on: the service gets at least 20 s', () => {
-  Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
-  assertEquals(viaServiceTimeoutMs(), VIA_SERVICE_MIN_TIMEOUT_MS)
-  assertEquals(VIA_SERVICE_MIN_TIMEOUT_MS, 20_000)
-  Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', '8000')
-  assertEquals(viaServiceTimeoutMs(), 20_000)
-  Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', '30000')
-  assertEquals(viaServiceTimeoutMs(), 30_000)
-  Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
-})
+Deno.test(
+  'setting on: the service gets at least 25 s (its own worst case is about 22 s)',
+  () => {
+    Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
+    assertEquals(viaServiceTimeoutMs(), VIA_SERVICE_MIN_TIMEOUT_MS)
+    assertEquals(VIA_SERVICE_MIN_TIMEOUT_MS, 25_000)
+    Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', '8000')
+    assertEquals(viaServiceTimeoutMs(), 25_000)
+    Deno.env.set('CONTACT_ENRICHMENT_TIMEOUT_MS', '30000')
+    assertEquals(viaServiceTimeoutMs(), 30_000)
+    Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
+  },
+)
 
 // --- "Get contact" ------------------------------------------------------------
 
@@ -234,7 +241,7 @@ onTest(
       email_searched: false,
       phone_searched: false,
       pending_kinds: null,
-      vendor_request_id: null,
+      pending_since: null,
       error: null,
     })
     assertEquals(serviceLookedUp(state.rows), true)
@@ -380,6 +387,7 @@ onTest(
         json({ error: { code, message: 'down' } }, 503),
         json({
           has: { email: true, phone: false },
+          found_in_by_kind: { email: 'salesql', phone: 'none' },
           emails: [
             {
               value: 'john.doe@example.com',
@@ -399,7 +407,7 @@ onTest(
         email_searched: false,
         phone_searched: false,
         pending_kinds: null,
-        vendor_request_id: null,
+        pending_since: null,
         error: SERVICE_UNREACHABLE,
       })
       assertEquals(serviceLookedUp(state.rows), false)
@@ -696,7 +704,13 @@ onTest(
       },
     }
     assertEquals(view(rows, [], 'phone').canFind, true)
-    const calls = stubFetch([json({ has: { phone: false }, phones: [] })])
+    const calls = stubFetch([
+      json({
+        has: { phone: false },
+        found_in_by_kind: { phone: 'none' },
+        phones: [],
+      }),
+    ])
     const { state, deps } = memory(rows)
     await runViaService(deps, URL_, 'backup', ['phone'])
     assertEquals(calls[0]!.url, `${SERVICE}/v1/contacts/lookup`)
@@ -764,6 +778,7 @@ Deno.test(
       has: { email: true, phone: false },
       pending: [],
       retryAfterMs: null,
+      waterfall: false,
     })
   },
 )
@@ -778,6 +793,7 @@ Deno.test(
       has: { email: false },
       pending: ['email'],
       retryAfterMs: 500,
+      waterfall: true,
     }
     const answer = await askWithPending(
       () => {
@@ -816,6 +832,7 @@ Deno.test(
           has: { email: true, phone: true },
           pending: [],
           retryAfterMs: null,
+          waterfall: true,
         },
       },
     )
@@ -1069,6 +1086,7 @@ onTest(
       stubFetch([
         json({
           has: { email: false, phone: false },
+          found_in_by_kind: { email: 'none', phone: 'none' },
           emails: [],
           phones: [],
           ...extra,
@@ -1226,7 +1244,7 @@ onTest(
 )
 
 onTest(
-  're-check: a pending email and an unavailable phone are re-checked together',
+  're-check: a pending email is re-checked; an unavailable phone is not (that could make the service pay without a click)',
   async () => {
     const rows: PersonRows = {
       shared: {
@@ -1236,19 +1254,271 @@ onTest(
         email_searched: false,
         phone_searched: false,
         pending_kinds: ['email'],
-        vendor_request_id: 'pending_since=2026-11-03T10:00:00.000Z',
+        pending_since: '2026-11-03T10:00:00.000Z',
         error: SOURCE_UNAVAILABLE,
       },
     }
     const now = Date.parse('2026-11-03T10:00:10.000Z')
-    assertEquals(kindsToRecheck(rows, now), ['email', 'phone'])
+    assertEquals(kindsToRecheck(rows, now), ['email'])
+    // The phone stays "temporarily unavailable" with "Try again" (a click, under the lookup limit).
+    assertEquals(
+      [
+        view(rows, [], 'phone', now).unavailable,
+        view(rows, [], 'phone', now).canFind,
+      ],
+      [true, true],
+    )
     // A row with no start time is past its window.
     assertEquals(
-      kindsToRecheck(
-        { shared: { ...rows.shared!, vendor_request_id: null } },
-        now,
-      ),
+      kindsToRecheck({ shared: { ...rows.shared!, pending_since: null } }, now),
       [],
     )
+  },
+)
+
+// --- HIR-537 review -------------------------------------------------------------
+
+const PERSON = {
+  linkedinUrl: URL_,
+  name: 'John Doe',
+  company: 'Example Corp',
+}
+
+/** Runs `fn` with console.warn / console.error captured. */
+async function logsOf(fn: () => Promise<void>): Promise<string[]> {
+  const saved = { warn: console.warn, error: console.error }
+  const logs: string[] = []
+  console.warn = (...a: unknown[]) => logs.push(`warn ${a.join(' ')}`)
+  console.error = (...a: unknown[]) => logs.push(`error ${a.join(' ')}`)
+  try {
+    await fn()
+  } finally {
+    Object.assign(console, saved)
+  }
+  return logs
+}
+
+onTest(
+  'cutover: has false without found_in_by_kind (Lyca not in WATERFALLS) is never "not found"; with it, it is',
+  async () => {
+    // Switch-on before the service lists lyca, or switch-back after it stopped:
+    // the service ran no vendor, so has false only means "call your backup".
+    stubFetch([
+      json({
+        found_in: 'none',
+        has: { email: false, phone: false },
+        emails: [],
+        phones: [],
+      }),
+    ])
+    const { state, deps } = memory()
+    const logs = await logsOf(() => runViaService(deps, URL_, 'lookup', []))
+    assertEquals(
+      [
+        state.rows.shared?.email_searched,
+        state.rows.shared?.phone_searched,
+        state.rows.shared?.status,
+        state.rows.shared?.error,
+      ],
+      [false, false, 'error', SOURCE_UNAVAILABLE],
+    )
+    // Like an outage: "temporarily unavailable", and "Try again" asks again
+    // ("Get contact" while not looked up), never stuck on "No email found".
+    assertEquals(serviceLookedUp(state.rows), false)
+    for (const kind of ['email', 'phone'] as const) {
+      const s = view(state.rows, [], kind)
+      assertEquals([kind, s.exhausted, s.unavailable], [kind, false, true])
+    }
+    if (!logs.some((l) => l.includes('WATERFALLS')))
+      throw new Error(logs.join('|'))
+
+    // Once lyca is in WATERFALLS, "Try again" gets the real answer: every source asked.
+    stubFetch([
+      json({
+        found_in: 'none',
+        found_in_by_kind: { email: 'none', phone: 'none' },
+        has: { email: false, phone: false },
+        emails: [],
+        phones: [],
+      }),
+    ])
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(
+      [state.rows.shared?.email_searched, state.rows.shared?.phone_searched],
+      [true, true],
+    )
+    assertEquals(view(state.rows, [], 'email').exhausted, true)
+  },
+)
+
+onTest(
+  'before contact-enrichment #19: a 422 for name / company is retried once without them, and they are left out for a while',
+  async () => {
+    resetPersonFieldsSupport()
+    const refused = json(
+      {
+        error: {
+          code: 'invalid_request',
+          message:
+            'property name should not exist; property company should not exist',
+        },
+      },
+      422,
+    )
+    const hit = json({
+      found_in_by_kind: { email: 'store' },
+      has: { email: true },
+      emails: [
+        { value: 'john.doe@example.com', status: 'unknown', verified: null },
+      ],
+    })
+    const calls = stubFetch([refused, hit, hit])
+    const { state, deps } = memory()
+    const logs = await logsOf(() => runViaService(deps, PERSON, 'lookup', []))
+    assertEquals(calls.length, 2)
+    assertEquals(calls[0]!.body, {
+      linkedin_url: URL_,
+      name: 'John Doe',
+      company: 'Example Corp',
+      kinds: ['email', 'phone'],
+    })
+    assertEquals(calls[1]!.body, {
+      linkedin_url: URL_,
+      kinds: ['email', 'phone'],
+    })
+    assertEquals(state.rows.shared?.status, 'found')
+    if (!logs.some((l) => l.includes('#19'))) throw new Error(logs.join('|'))
+    // The next call leaves them out straight away (no second 422).
+    const again = memory()
+    await runViaService(again.deps, PERSON, 'lookup', [])
+    assertEquals(calls.length, 3)
+    assertEquals('name' in calls[2]!.body, false)
+    resetPersonFieldsSupport()
+    noVendorCalls(calls)
+  },
+)
+
+onTest(
+  'after contact-enrichment #19: name / company are sent; any other 422 is an outage logged as an error, not retried',
+  async () => {
+    resetPersonFieldsSupport()
+    const calls = stubFetch([
+      json(
+        {
+          error: {
+            code: 'invalid_request',
+            message:
+              'linkedin_url must be shorter than or equal to 2048 characters',
+          },
+        },
+        422,
+      ),
+    ])
+    const { state, deps } = memory()
+    const logs = await logsOf(() => runViaService(deps, PERSON, 'lookup', []))
+    assertEquals(calls.length, 1)
+    assertEquals(calls[0]!.body.name, 'John Doe')
+    assertEquals(state.rows.shared?.error, SERVICE_UNREACHABLE)
+    if (!logs.some((l) => l.startsWith('error') && l.includes('422'))) {
+      throw new Error(logs.join('|'))
+    }
+  },
+)
+
+Deno.test(
+  'name / company longer than the service takes are cut to 200 characters',
+  () => {
+    const long = 'Example '.repeat(40) // 320 characters
+    const fields = personFields({
+      linkedinUrl: URL_,
+      name: 'John ' + 'Doe'.repeat(100),
+      company: long,
+    })
+    assertEquals(
+      [
+        fields.name!.length <= PERSON_FIELD_MAX,
+        fields.company!.length <= PERSON_FIELD_MAX,
+      ],
+      [true, true],
+    )
+    assertEquals(fields.company, long.slice(0, PERSON_FIELD_MAX).trim())
+    // Never half a character: a cut inside a surrogate pair drops it.
+    const emoji = 'a'.repeat(PERSON_FIELD_MAX - 1) + '\u{1F600}'
+    assertEquals(
+      personFields({ linkedinUrl: URL_, company: emoji }).company,
+      'a'.repeat(PERSON_FIELD_MAX - 1),
+    )
+  },
+)
+
+onTest(
+  'deadline: a two-kind "Find another" asks the second kind only with time left; no call is made with none left',
+  async () => {
+    const thumbsDownBoth: Verdict[] = [
+      {
+        contact_kind: 'email',
+        contact_value: 'john.doe@example.com',
+        verdict: 'bad',
+        reason: 'bounced',
+      },
+      {
+        contact_kind: 'phone',
+        contact_value: '+919876543210',
+        verdict: 'bad',
+        reason: 'not_reachable',
+      },
+    ]
+    const both: PersonRows = {
+      shared: {
+        status: 'found',
+        emails: [{ value: 'john.doe@example.com', type: null, status: null }],
+        phones: [{ value: '+919876543210', type: null, valid: null }],
+      },
+    }
+    let clock = 0
+    const calls = stubFetch([
+      () => {
+        clock += 40_000 // the first kind's call took 40 s
+        return json({
+          found_in_by_kind: { email: 'none' },
+          has: { email: false },
+          exhausted: true,
+          emails: [],
+        })()
+      },
+    ])
+    const { deps } = memory(both, thumbsDownBoth)
+    deps.deadline = new Deadline(55_000, () => clock)
+    await runViaService(deps, URL_, 'backup', ['email', 'phone'])
+    assertEquals(calls.length, 1) // the phone is left for the next click
+    assertEquals(calls[0]!.body.kind, 'email')
+
+    // Nothing left at all: no call, an outage (never "not found").
+    const none = memory()
+    none.deps.deadline = new Deadline(0)
+    const before = calls.length
+    await logsOf(() => runViaService(none.deps, URL_, 'lookup', []))
+    assertEquals(calls.length, before)
+    assertEquals(none.state.rows.shared?.error, SERVICE_UNREACHABLE)
+  },
+)
+
+Deno.test(
+  'switch-back: a kind the service asked every source for counts as searched with the setting off',
+  () => {
+    const rows: PersonRows = {
+      shared: {
+        status: 'not_found',
+        emails: [],
+        phones: [],
+        email_searched: true,
+        phone_searched: false,
+      },
+    }
+    assertEquals(
+      [serviceSearched(rows, 'email'), serviceSearched(rows, 'phone')],
+      [true, false],
+    )
+    assertEquals(serviceSearched({}, 'email'), false)
   },
 )
