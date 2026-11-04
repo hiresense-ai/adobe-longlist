@@ -150,6 +150,13 @@ LYCA_DEPLOY_CONFIRM=adfubeifnsgxwmpfslkt node scripts/lyca-deploy.mjs db-push
 LYCA_DEPLOY_CONFIRM=adfubeifnsgxwmpfslkt node scripts/lyca-deploy.mjs functions-deploy
 ```
 
+In that order: `functions-deploy` refuses while any migration of the checkout
+is not applied on Lyca. `db-push`, `functions-deploy` and `db-query` refuse
+uncommitted changes under `supabase/`, `workspaces/lyca/` or `scripts/`.
+`db-query <file>` runs only a committed file from `workspaces/lyca/ops/`, with
+its sha256 confirmed (`LYCA_DB_QUERY_SHA256`); see
+[CONTACT_REVEAL.md](CONTACT_REVEAL.md#going-live).
+
 Vercel needs `VITE_LYCA_SUPABASE_URL` / `VITE_LYCA_SUPABASE_ANON_KEY` (the
 publishable key only). Without them `/lyca` shows "unavailable" and never
 falls back to Adobe.

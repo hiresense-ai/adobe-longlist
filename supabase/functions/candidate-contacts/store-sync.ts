@@ -217,7 +217,7 @@ export interface UpsertClient {
       select(columns: string): {
         single(): PromiseLike<{
           data: unknown
-          error: { code?: string } | null
+          error: { code?: string; message?: string } | null
         }>
       }
     }
@@ -229,6 +229,11 @@ export interface UpsertClient {
  * a fresh updated_at and store_synced_at back to null, so the values just
  * written count as not yet in the store until a send of exactly this version
  * lands. Returns that version (id + updated_at) for the mark.
+ *
+ * Before migration 20261029000001 the column does not exist. The row is then
+ * saved without it (a vendor was already paid for these values: losing them
+ * would mean paying again on the next click). Only the mark is missing: the
+ * live send still goes, and marking it fails with a logged warning.
  */
 export async function upsertUnsynced(
   client: UpsertClient,
@@ -236,20 +241,39 @@ export async function upsertUnsynced(
   row: Record<string, unknown>,
   onConflict: string,
 ): Promise<RowVersion> {
-  const { data, error } = await client
-    .from(table)
-    .upsert(
-      { ...row, updated_at: new Date().toISOString(), store_synced_at: null },
-      { onConflict },
+  const values = { ...row, updated_at: new Date().toISOString() }
+  const write = (v: Record<string, unknown>) =>
+    client
+      .from(table)
+      .upsert(v, { onConflict })
+      .select('id, updated_at')
+      .single()
+  let { data, error } = await write({ ...values, store_synced_at: null })
+  if (isMissingSyncColumn(error)) {
+    console.warn(
+      `write ${table}: store_synced_at is missing (migration 20261029000001 not applied), saved without the sync mark`,
     )
-    .select('id, updated_at')
-    .single()
+    ;({ data, error } = await write(values))
+  }
   if (error) throw error
   const saved = data as Partial<RowVersion> | null
   if (!saved?.id || !saved.updated_at) {
     throw new SyncDbError(`write ${table}: no row returned`)
   }
   return { id: saved.id, updated_at: saved.updated_at }
+}
+
+/**
+ * PostgREST (PGRST204) or Postgres (42703) saying the table has no
+ * store_synced_at column: the functions run before migration 20261029000001.
+ */
+export function isMissingSyncColumn(
+  error: { code?: string; message?: string } | null,
+): boolean {
+  if (!error || (error.code !== 'PGRST204' && error.code !== '42703')) {
+    return false
+  }
+  return (error.message ?? '').includes('store_synced_at')
 }
 
 /** The profile URL for a key ("linkedin.com/in/jane-doe"), when no row has one. */
