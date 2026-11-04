@@ -122,7 +122,7 @@ export function useDashboardStatusBridge({
   // longlist:open-analytics handler below re-checks it before opening.
   const canViewAnalytics = canViewDashboardAnalytics(user?.role ?? 'viewer')
   // Contact lookup (email/phone): only in workspaces that have it set up;
-  // running a lookup spends vendor credits, so Admin/Super Admin only.
+  // every role can run one (Viewer, Admin, Super Admin; 4 Nov 2026).
   const contactsEnabled = WORKSPACE.contactLookup
   const canLookupContacts =
     contactsEnabled && canLookupCandidateContacts(user?.role ?? 'viewer')

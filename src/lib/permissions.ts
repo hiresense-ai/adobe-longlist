@@ -126,12 +126,15 @@ export function canUpdateCandidateStatus(_role: UserRole): boolean {
   return true
 }
 
-/** Running a contact lookup (spends SalesQL / BetterContact credits) —
- * Admin and Super Admin. Seeing contacts already found, and giving
- * 👍/👎 feedback on them, is open to anyone who can see the dashboard.
+/** Running a contact lookup ("Get contact", "Find another") — every role:
+ * Viewer, Admin and Super Admin (product owner, 4 Nov 2026; it was Admin
+ * and Super Admin only). Vendor credits stay protected by the server: a
+ * lookup only runs for a profile in the dashboard's own file, answers are
+ * cached and reused, and each person has a call limit per window. Seeing
+ * contacts and giving 👍/👎 is open to anyone who can see the dashboard.
  * Mirrored server-side in supabase/functions/candidate-contacts. */
 export function canLookupCandidateContacts(role: UserRole): boolean {
-  return isAtLeastAdmin(role)
+  return role === 'viewer' || isAtLeastAdmin(role)
 }
 
 /** Uploading, replacing, and deleting dashboards — Super Admin only.

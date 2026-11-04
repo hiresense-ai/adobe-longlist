@@ -56,7 +56,7 @@ sequenceDiagram
 ## The reveal
 
 **Who can do what:**
-- "Get contact" is for Admins and Super Admins only, because it can spend vendor credits.
+- "Get contact" and "Find another" are open to every role: Viewer, Admin and Super Admin (product owner, 4 Nov 2026; until then Admins and Super Admins only). They can spend vendor credits, so the limits below apply to everyone. "Find another" runs only when someone clicks it after a 👎, never on its own.
 - Anyone who can see a dashboard can read its contacts and give a 👍/👎.
 
 **A lookup only runs for a LinkedIn profile in that dashboard's own file.** Each person is limited to 60 vendor calls per 10 minutes.

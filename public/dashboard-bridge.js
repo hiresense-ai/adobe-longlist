@@ -2265,7 +2265,7 @@
   // vendor, never sees a key, and is never told which vendor a value came
   // from — it shows plain "Email" and "Phone" sections.
   //
-  // Searches (Admins only — canLookupContacts; HIR-491):
+  // Searches (every role since 4 Nov 2026 — canLookupContacts; HIR-491):
   //   "Get contact"                -> the shared contact store, then, for any
   //                                   kind it lacks, the vendors on their own.
   //   "Find another email/number"  -> offered (kindState.canFind, decided by

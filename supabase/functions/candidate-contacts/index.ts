@@ -10,7 +10,9 @@
 // Who:
 //   list / feedback — anyone who can see the dashboard (dashboards RLS,
 //                     checked with the CALLER's own client).
-//   lookup          — Admin and Super Admin only: it spends vendor credits.
+//   lookup          — every role (Viewer, Admin, Super Admin; product owner,
+//                     4 Nov 2026). It can spend vendor credits, so the three
+//                     protections below apply to every caller.
 //
 // Credits are protected three ways: a lookup is only made for a LinkedIn
 // profile that appears in the dashboard's own stored HTML (never a free-form
@@ -255,9 +257,8 @@ Deno.serve(async (req: Request) => {
       case 'list':
         return json({ contacts: await viewsFor(admin, candidates) }, 200, cors)
       case 'lookup': {
-        if (role !== 'admin' && role !== 'super_admin') {
-          throw new HttpError(403, 'Only Admins can look up contact details.')
-        }
+        // Every role may look up (4 Nov 2026); `role` above only confirms the
+        // caller has a profile in this workspace.
         const candidate = findCandidate(candidates, payload)
         const mode =
           payload.mode === 'backup' || payload.mode === 'refresh'
