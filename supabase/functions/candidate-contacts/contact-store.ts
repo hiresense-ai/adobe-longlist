@@ -79,6 +79,8 @@ interface StoreContact {
  * `detail` is the store's own error message (e.g. a validation failure:
  * "property name should not exist"), cut to 300 characters; it is not part of
  * the message, so it is only logged where a caller chooses to.
+ * `retryAfter` is the answer's Retry-After header as sent ('' when absent),
+ * e.g. on a 429 `rate_limited`.
  */
 export class ContactStoreUnavailable extends Error {
   constructor(
@@ -86,9 +88,19 @@ export class ContactStoreUnavailable extends Error {
     public status: number | null = null,
     public code = '',
     public detail = '',
+    public retryAfter = '',
   ) {
     super(message)
   }
+}
+
+/**
+ * The contact service refused the call because Lyca sent too many requests
+ * this minute (429 `rate_limited`, contact-enrichment #20). It answered, so
+ * it is not down: Lyca's own paid vendors must not stand in for it.
+ */
+export function isRateLimited(err: unknown): err is ContactStoreUnavailable {
+  return err instanceof ContactStoreUnavailable && err.status === 429
 }
 
 function settings(): { url: string; key: string } | null {
@@ -141,6 +153,7 @@ export async function post<T>(
       res.status,
       code,
       detail,
+      (res.headers.get('Retry-After') ?? '').trim().slice(0, 40),
     )
   }
   return (await res.json()) as T
@@ -167,7 +180,8 @@ export async function contactStoreReady(
  * The store's contacts (then ZipLabs', through the store) in this function's own shape. A value
  * another platform marked bad is left out. "not_found" when there is nothing usable. Throws
  * ContactStoreUnavailable when the store can't answer, ZipLabs being down included: the caller then
- * goes on to SalesQL exactly as before.
+ * goes on to SalesQL exactly as before. A 429 (rate limited) is thrown the same way, but the
+ * caller then calls no vendor (flow.ts storeFirst).
  */
 export async function contactStoreLookup(
   linkedinUrl: string,

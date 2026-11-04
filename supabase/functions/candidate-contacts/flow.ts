@@ -29,10 +29,19 @@
 //                    offered (as "Find email / number") for a kind with no
 //                    value at all that a vendor never answered for.
 
-import { logStoreFailure } from './contact-store.ts'
+import {
+  isRateLimited,
+  logStoreFailure,
+  type ContactStoreUnavailable,
+} from './contact-store.ts'
 import { normalizePhone } from './phone.ts'
 import { isInvalid } from './validity.ts'
-import type { ContactKind, VendorResult } from './vendors.ts'
+import type {
+  ContactEmail,
+  ContactKind,
+  ContactPhone,
+  VendorResult,
+} from './vendors.ts'
 
 export interface Found {
   emails: Array<{ value: string; status?: string | null }>
@@ -349,7 +358,7 @@ export async function askTwiceIfPending<T>(
 export interface StoreFirstOptions {
   /** How to wait for `retry_after_ms` (tests pass a fake). */
   sleep?: (ms: number) => Promise<void>
-  /** Called when the store could not answer (down, slow, an error answer). */
+  /** Called when the store could not answer (down, slow, an error answer, rate limited). */
   onUnavailable?: (err: unknown) => void
   /** The request's deadline: the `pending` wait is cut to what is left. */
   deadline?: { cap(ms: number): number }
@@ -365,16 +374,53 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * A kind the store answers as `pending` (ZipLabs still fetching it) is not
  * bought from a vendor yet: wait `retry_after_ms` (at most 5 s), ask once more,
  * and only what is then still missing (pending or not) goes to the vendors.
+ *
+ * A 429 (`rate_limited`: Lyca sent the service too many requests this minute)
+ * is the exception: the service is up, so Lyca's own vendors do NOT stand in
+ * for it, or hitting the limit would mean more vendor spend. Nothing is left
+ * for the vendors (`missing` empty), `rateLimited` is set, and onUnavailable
+ * is called, so the caller records it like an outage ("temporarily
+ * unavailable, try again", nothing final). The same holds when only the
+ * second ask (after `pending`) is rate limited.
  */
 export async function storeFirst(
   lookup: () => Promise<StoreAnswer>,
   kinds: ContactKind[],
   options: StoreFirstOptions = {},
-): Promise<{ fromStore: VendorResult | null; missing: ContactKind[] }> {
+): Promise<{
+  fromStore: VendorResult | null
+  missing: ContactKind[]
+  rateLimited?: true
+}> {
+  // The 429 of either ask, if any (the second ask's failure is swallowed by
+  // askTwiceIfPending, so it is noted here).
+  const limit: { err: ContactStoreUnavailable | null } = { err: null }
+  const call = async () => {
+    try {
+      return await lookup()
+    } catch (err) {
+      if (isRateLimited(err)) limit.err = err
+      throw err
+    }
+  }
+  const rateLimitedAnswer = (
+    err: ContactStoreUnavailable,
+    fromStore: VendorResult | null,
+  ) => {
+    console.warn(
+      `contact store rate limited (HTTP ${err.status}${err.code ? ` ${err.code}` : ''}, Retry-After: ${err.retryAfter || 'not sent'}): Lyca's own vendors not called; the panel says "temporarily unavailable"`,
+    )
+    options.onUnavailable?.(err)
+    return {
+      fromStore,
+      missing: [] as ContactKind[],
+      rateLimited: true as const,
+    }
+  }
   let asked: { first: StoreAnswer; again: StoreAnswer | null }
   try {
     asked = await askTwiceIfPending(
-      lookup,
+      call,
       (a) => ({
         pending: (Array.isArray(a.pending) ? a.pending : []).some((k) =>
           kinds.includes(k),
@@ -388,6 +434,7 @@ export async function storeFirst(
       },
     )
   } catch (err) {
+    if (isRateLimited(err)) return rateLimitedAnswer(err, null)
     logStoreFailure('contact store unavailable, using the vendors', err)
     options.onUnavailable?.(err)
     return { fromStore: null, missing: kinds }
@@ -398,8 +445,68 @@ export async function storeFirst(
     again && (again.status === 'found' || first.status !== 'found')
       ? again
       : first
+  // Only the second ask was rate limited: what the first brought is kept.
+  if (limit.err) {
+    return rateLimitedAnswer(
+      limit.err,
+      answer.status === 'found' ? answer : null,
+    )
+  }
   if (answer.status !== 'found') return { fromStore: null, missing: kinds }
   return { fromStore: answer, missing: kindsMissing(answer, kinds) }
+}
+
+export const STORE_UNREACHABLE = 'The contact store could not be reached.'
+
+/**
+ * The person's contact_store row after asking the store (index.ts askStore):
+ * what it held plus what the store gave now (no duplicates). 'found' with any
+ * value; 'error' when the store could not answer (down, slow, rate limited)
+ * and nothing is held: the store was not really asked, so the panel says
+ * "temporarily unavailable" and the next "Get contact" asks it again; else
+ * 'not_found'. Null: nothing to change (the store could not answer and the
+ * row already holds values).
+ */
+export function storeRowAfterAsk(
+  existing:
+    | {
+        status: VendorResult['status']
+        emails?: ContactEmail[] | null
+        phones?: ContactPhone[] | null
+      }
+    | null
+    | undefined,
+  got: VendorResult | null,
+  unavailable: boolean,
+): VendorResult | null {
+  if (unavailable && existing && existing.status === 'found' && !got) {
+    return null
+  }
+  const add = <T extends { value: string }>(
+    kind: ContactKind,
+    held: T[] | null | undefined,
+    fresh: T[] | null | undefined,
+  ): T[] => {
+    const out = [...(Array.isArray(held) ? held : [])]
+    for (const v of Array.isArray(fresh) ? fresh : []) {
+      if (!out.some((x) => sameContact(kind, x.value, v.value))) out.push(v)
+    }
+    return out
+  }
+  const emails = add('email', existing?.emails, got?.emails)
+  const phones = add('phone', existing?.phones, got?.phones)
+  const status: VendorResult['status'] =
+    emails.length || phones.length
+      ? 'found'
+      : unavailable
+        ? 'error'
+        : 'not_found'
+  return {
+    status,
+    emails,
+    phones,
+    error: status === 'error' ? STORE_UNREACHABLE : null,
+  }
 }
 
 export interface VendorsLeft {

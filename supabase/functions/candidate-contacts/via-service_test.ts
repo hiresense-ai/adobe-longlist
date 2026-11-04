@@ -446,6 +446,58 @@ onTest(
   },
 )
 
+const RATE_LIMITED = () =>
+  new Response(
+    JSON.stringify({
+      error: { code: 'rate_limited', message: 'Too many requests' },
+    }),
+    {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+    },
+  )
+
+onTest(
+  'a 429 rate_limited is an outage too: "temporarily unavailable", nothing final, no vendor',
+  async () => {
+    const calls = stubFetch([RATE_LIMITED])
+    const { state, deps } = memory()
+    await runViaService(deps, URL_, 'lookup', [])
+    assertEquals(calls.length, 1)
+    assertEquals(state.rows.shared, {
+      status: 'error',
+      emails: [],
+      phones: [],
+      email_searched: false,
+      phone_searched: false,
+      pending_kinds: null,
+      pending_since: null,
+      error: SERVICE_UNREACHABLE,
+      found_in_by_kind: null,
+    })
+    assertEquals(serviceLookedUp(state.rows), false)
+    for (const kind of ['email', 'phone'] as const) {
+      const s = view(state.rows, [], kind)
+      assertEquals([s.unavailable, s.exhausted], [true, false])
+    }
+    noVendorCalls(calls)
+
+    // "Find another": answers "temporarily unavailable" and records nothing.
+    const findCalls = stubFetch([RATE_LIMITED])
+    const found = memory(foundEmail, thumbsDown)
+    let threw = false
+    try {
+      await runViaService(found.deps, URL_, 'backup', ['email'])
+    } catch (err) {
+      threw = err instanceof ServiceUnavailableError
+    }
+    assertEquals(threw, true)
+    assertEquals(found.state.writes, 0)
+    assertEquals(found.state.rows.shared, foundEmail.shared)
+    noVendorCalls(findCalls)
+  },
+)
+
 onTest(
   'an outage on a person with a value: the value stays, the empty kind is "unavailable"',
   async () => {

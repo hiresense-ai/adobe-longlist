@@ -29,7 +29,9 @@
 //                                did not find. Store unconfigured or
 //                                unreachable (or slower than
 //                                CONTACT_ENRICHMENT_TIMEOUT_MS): the vendors,
-//                                as before. Every vendor answer and every 👍/👎
+//                                as before. Rate limited (429): no vendor,
+//                                "temporarily unavailable" (flow.ts
+//                                storeFirst). Every vendor answer and every 👍/👎
 //                                is written back in the background.
 //                                A person looked up before is only resumed:
 //                                kinds with no value that a vendor never
@@ -92,6 +94,7 @@ import {
   usableValuesOf,
   mergeContacts,
   storeFirst,
+  storeRowAfterAsk,
   takesFeedback,
   valuesByOrigin,
   type PersonRows,
@@ -621,6 +624,9 @@ async function runLookup(
       dashboardId,
       deadline,
     )
+    // Rate limited (429): no paid vendor stands in for the store. "Temporarily
+    // unavailable, try again", as a failed "Find another" through the service.
+    if (fromStore.rateLimited) throw new HttpError(503, UNAVAILABLE)
     const left = allowed.filter((k) => !fromStore.newKinds.includes(k))
     if (!left.length) return
     await runVendors(
@@ -663,7 +669,7 @@ async function runLookup(
     let current = lookups
     if (forStore.length) {
       await enforceLimit(admin, callerId)
-      await askStore(
+      const asked = await askStore(
         admin,
         candidate,
         forStore,
@@ -672,6 +678,9 @@ async function runLookup(
         dashboardId,
         deadline,
       )
+      // Rate limited (429): no vendor now; the row says "temporarily
+      // unavailable" and the next "Get contact" asks the store again.
+      if (asked.rateLimited) return
       current = (await rowsFor(admin, [candidate.linkedinKey])).lookups
     }
     const now = {
@@ -706,20 +715,21 @@ async function runLookup(
   // an error), the vendors run as before; that is recorded (a contact_store
   // row with status 'error'), so a later "Get contact" asks the store again
   // and the panel says "temporarily unavailable", not a final "not found".
+  // A 429 (rate limited) is recorded the same way, but no vendor runs.
   let missing: ContactKind[] = ['email', 'phone']
   if (contactStoreConfigured()) {
     await enforceLimit(admin, callerId)
-    missing = (
-      await askStore(
-        admin,
-        candidate,
-        missing,
-        lookups,
-        callerId,
-        dashboardId,
-        deadline,
-      )
-    ).missing
+    const asked = await askStore(
+      admin,
+      candidate,
+      missing,
+      lookups,
+      callerId,
+      dashboardId,
+      deadline,
+    )
+    if (asked.rateLimited) return
+    missing = asked.missing
   }
   // For every kind the store had nothing for, the vendors run now — no click.
   if (missing.length) {
@@ -830,7 +840,9 @@ function salesqlTimedOutRecently(row: LookupRow): boolean {
  * (not_found), or, when the store could not answer and the row holds nothing,
  * status 'error' (the store was not really asked). Returns the kinds still
  * missing, and the kinds it brought a value for that is new here: not shown
- * by any row yet and not marked 👎.
+ * by any row yet and not marked 👎. `rateLimited`: the store answered 429;
+ * `missing` is then empty and the caller must call no vendor (flow.ts
+ * storeFirst), the row saying "temporarily unavailable" like an outage.
  */
 async function askStore(
   admin: Admin,
@@ -840,7 +852,11 @@ async function askStore(
   callerId: string,
   dashboardId: string,
   deadline: Deadline,
-): Promise<{ missing: ContactKind[]; newKinds: ContactKind[] }> {
+): Promise<{
+  missing: ContactKind[]
+  newKinds: ContactKind[]
+  rateLimited?: true
+}> {
   if (!contactStoreConfigured()) return { missing: kinds, newKinds: [] }
   const existing = lookups.find((l) => l.vendor === 'contact_store') ?? null
   let unavailable = false
@@ -877,44 +893,17 @@ async function askStore(
       (v) => !shownBefore(kind, v.value) && !markedBad(kind, v.value),
     ),
   )
-  // The row: what it held plus what the store gave now (no duplicates).
-  const add = <T extends { value: string }>(
-    kind: ContactKind,
-    held: T[] | null | undefined,
-    fresh: T[] | null | undefined,
-  ): T[] => {
-    const out = [...(Array.isArray(held) ? held : [])]
-    for (const v of Array.isArray(fresh) ? fresh : []) {
-      if (!out.some((x) => sameContact(kind, x.value, v.value))) out.push(v)
-    }
-    return out
+  // The row: what it held plus what the store gave now (flow.ts). Null:
+  // nothing to change (a store outage on a row that already holds values).
+  const row = storeRowAfterAsk(existing, got, unavailable)
+  if (row) {
+    await store(admin, candidate, 'contact_store', row, callerId, dashboardId)
   }
-  const emails = add('email', existing?.emails, got?.emails)
-  const phones = add('phone', existing?.phones, got?.phones)
-  const status: VendorResult['status'] =
-    emails.length || phones.length
-      ? 'found'
-      : unavailable
-        ? 'error'
-        : 'not_found'
-  // Nothing to change: a store outage on a row that already holds values.
-  if (!(unavailable && existing && existing.status === 'found' && !got)) {
-    await store(
-      admin,
-      candidate,
-      'contact_store',
-      {
-        status,
-        emails,
-        phones,
-        error:
-          status === 'error' ? 'The contact store could not be reached.' : null,
-      },
-      callerId,
-      dashboardId,
-    )
+  return {
+    missing: answer.missing,
+    newKinds,
+    ...(answer.rateLimited ? { rateLimited: true as const } : {}),
   }
-  return { missing: answer.missing, newKinds }
 }
 
 /**

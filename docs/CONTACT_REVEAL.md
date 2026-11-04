@@ -88,6 +88,8 @@ sequenceDiagram
 
 **Outage is not "no contact".** If the store or a vendor failed and nothing usable came back, the panel says the lookup is temporarily unavailable and offers "Try again". It never shows a final "No email found" in that case. An unexpected failure answers the same generic "temporarily unavailable" text; the database's or vendor's own message stays in the function log.
 
+**A rate-limited store is not an outage.** When the contact service answers 429 `rate_limited` (Lyca sent too many requests that minute, contact-enrichment #20), Lyca does not fall back to its own SalesQL / BetterContact, which a store outage (5xx, timeout, no connection) still does: that would turn hitting the limit into more vendor spend. "Get contact" records it like an outage (the `contact_store` row gets status `error`, nothing is saved as "not found"), so the panel says "temporarily unavailable" and the next "Get contact" asks the store again; "Find another" answers 503 "temporarily unavailable". The same holds when only the second ask after `pending` is rate limited. The log gets a warning with the status and the `Retry-After` value.
+
 Known gaps: a store outage, once recorded, keeps showing "temporarily unavailable" until someone clicks "Try again" (the list never calls the store). A BetterContact error that needs an admin (no credits, key rejected, phone search not in the plan) also shows "Try again" until that is fixed.
 
 The dashboard only ever sees "Email" and "Phone", plus whether a value came from the store or from Lyca's own vendors. It is never told which vendor.
@@ -149,7 +151,7 @@ Lyca's vendor code stays, because switching back needs it. Turning the setting o
    - For both kinds at once, the second kind is asked only if the request still has 25 s left; otherwise it stays offered for the next click (one request never takes about 90 s).
    - "Find email / number", for an empty kind no source answered, is a lookup for that kind.
 4. **👍/👎** are saved in Lyca's table and reach the store (`POST /v1/contacts/feedback`), as before.
-5. **Outages.** Any failure is "temporarily unavailable, try again". That covers a 503 (`vendors_unavailable` or `store_unavailable`, including every vendor refusing), a timeout, a refused key, and a 409 `find_another_not_available` (Lyca missing from the service's `WATERFALLS`). Nothing final is recorded, and it is never "not found".
+5. **Outages.** Any failure is "temporarily unavailable, try again". That covers a 503 (`vendors_unavailable` or `store_unavailable`, including every vendor refusing), a 429 `rate_limited`, a timeout, a refused key, and a 409 `find_another_not_available` (Lyca missing from the service's `WATERFALLS`). Nothing final is recorded, and it is never "not found".
    - **Part of an answer unavailable.** A lookup or find-another answer lists in `unavailable` the kinds with no usable value because a vendor for them was down, timed out or refused (absent or `[]`: none). Such a kind is not marked as searched: it shows "temporarily unavailable" with "Try again", and the next "Get contact", "Try again" or re-check asks for it again. The row's `error` says a source was unavailable.
    - On "Get contact", the `contact_store` row records that the call failed (status `error` when it holds nothing).
    - On "Find another", nothing is written, and the request answers 503 with that message.

@@ -16,6 +16,8 @@ import {
   sameContact,
   storeAsked,
   storeFirst,
+  storeRowAfterAsk,
+  STORE_UNREACHABLE,
   type PersonRows,
   type StoreAnswer,
 } from './flow.ts'
@@ -24,6 +26,7 @@ import {
   contactStoreLookup,
   contactStoreSave,
   ContactStoreUnavailable,
+  isRateLimited,
   logStoreFailure,
   storeContactsFrom,
 } from './contact-store.ts'
@@ -919,5 +922,215 @@ Deno.test(
       Deno.env.delete('SALESQL_API_URL')
       Deno.env.delete('SALESQL_API_KEY')
     }
+  },
+)
+
+// --- 8. A rate-limited store never sends Lyca to its own vendors (HIR-537) ---
+//
+// The contact service answers 429 `rate_limited` (with Retry-After) when a
+// product sends too many requests a minute (contact-enrichment #20). With
+// CONTACT_VENDORS_VIA_SERVICE off, that must not fall through to Lyca's own
+// SalesQL / BetterContact the way a store outage does: index.ts runs the
+// vendors only for storeFirst's `missing`, and returns at once on
+// `rateLimited`.
+
+const STORE = 'http://contact-store.test'
+const PERSON = 'https://www.linkedin.com/in/john-doe/'
+const STORE_ENV = [
+  'CONTACT_ENRICHMENT_URL',
+  'CONTACT_ENRICHMENT_API_KEY',
+  'CONTACT_ENRICHMENT_TIMEOUT_MS',
+]
+
+/**
+ * The store answers from `answers` in order; every fetch is recorded. Any
+ * other host would be a vendor. Environment, fetch and console.warn are put
+ * back afterwards.
+ */
+async function withStore(
+  answers: Array<() => Response>,
+  fn: (urls: string[], warns: string[]) => Promise<void>,
+) {
+  const before = STORE_ENV.map((k) => Deno.env.get(k))
+  const realFetch = globalThis.fetch
+  const realWarn = console.warn
+  const urls: string[] = []
+  const warns: string[] = []
+  Deno.env.set('CONTACT_ENRICHMENT_URL', STORE)
+  Deno.env.set('CONTACT_ENRICHMENT_API_KEY', 'lyca-test-key')
+  Deno.env.delete('CONTACT_ENRICHMENT_TIMEOUT_MS')
+  let next = 0
+  globalThis.fetch = ((input: string | URL) => {
+    const url = String(input)
+    urls.push(url)
+    if (!url.startsWith(STORE)) {
+      return Promise.resolve(
+        new Response('vendor must not be called', { status: 599 }),
+      )
+    }
+    const answer = answers[next++]
+    if (!answer) return Promise.reject(new Error(`unexpected call ${url}`))
+    return Promise.resolve(answer())
+  }) as typeof fetch
+  console.warn = (...args: unknown[]) => warns.push(args.map(String).join(' '))
+  try {
+    await fn(urls, warns)
+  } finally {
+    console.warn = realWarn
+    globalThis.fetch = realFetch
+    STORE_ENV.forEach((k, i) => {
+      const v = before[i]
+      if (v === undefined) Deno.env.delete(k)
+      else Deno.env.set(k, v)
+    })
+  }
+}
+
+const storeReply =
+  (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  () =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json', ...headers },
+    })
+
+const RATE_LIMITED = storeReply(
+  { error: { code: 'rate_limited', message: 'Too many requests' } },
+  429,
+  { 'Retry-After': '30' },
+)
+
+const askStoreFor = (
+  kinds: ContactKind[],
+  onUnavailable: (err: unknown) => void,
+) =>
+  storeFirst(() => contactStoreLookup(PERSON, kinds), kinds, {
+    onUnavailable,
+    sleep: () => Promise.resolve(),
+  })
+
+Deno.test(
+  'rate limit: a store 429 calls no vendor, says "temporarily unavailable" and records no miss',
+  async () => {
+    await withStore([RATE_LIMITED], async (urls, warns) => {
+      let reported: unknown = null
+      const r = await askStoreFor(['email', 'phone'], (err) => {
+        reported = err
+      })
+      // Nothing for the vendors: index.ts calls neither SalesQL nor BetterContact.
+      assertEquals(r, { fromStore: null, missing: [], rateLimited: true })
+      assertEquals(urls, [`${STORE}/v1/contacts/lookup`])
+      assertEquals(isRateLimited(reported), true)
+      assertEquals((reported as ContactStoreUnavailable).retryAfter, '30')
+      // One warning, with the status and Retry-After, never a contact value.
+      assertEquals(warns.length, 1)
+      if (!warns[0]!.includes('HTTP 429 rate_limited, Retry-After: 30')) {
+        throw new Error(warns[0])
+      }
+      // Recorded as an outage (status 'error'), never 'not_found'.
+      const row = storeRowAfterAsk(null, r.fromStore, reported !== null)
+      assertEquals(row, {
+        status: 'error',
+        emails: [],
+        phones: [],
+        error: STORE_UNREACHABLE,
+      })
+      const rows: PersonRows = { shared: row! }
+      assertEquals(
+        [kindUnavailable(rows, 'email'), kindUnavailable(rows, 'phone')],
+        [true, true],
+      )
+      // Not final: the store counts as not asked, so the next "Get contact"
+      // asks it again before any vendor.
+      assertEquals(storeAsked(rows), false)
+      assertEquals(kindsForStore(rows, ['email', 'phone'], true), [
+        'email',
+        'phone',
+      ])
+      // A row that already holds a value is left as it was.
+      assertEquals(
+        storeRowAfterAsk(
+          {
+            status: 'found',
+            emails: [
+              { value: 'john.doe@example.com', type: null, status: null },
+            ],
+            phones: [],
+          },
+          r.fromStore,
+          true,
+        ),
+        null,
+      )
+    })
+  },
+)
+
+Deno.test(
+  'rate limit: a 429 on the second ask (after `pending`) keeps the first answer and calls no vendor',
+  async () => {
+    await withStore(
+      [
+        storeReply({
+          emails: [
+            {
+              value: 'john.doe@example.com',
+              status: 'unknown',
+              verified: null,
+            },
+          ],
+          phones: [],
+          pending: ['phone'],
+          retry_after_ms: 10,
+        }),
+        RATE_LIMITED,
+      ],
+      async (urls) => {
+        let reported = 0
+        const r = await askStoreFor(['email', 'phone'], () => reported++)
+        assertEquals(urls.length, 2)
+        assertEquals(r.missing, [])
+        assertEquals(r.rateLimited, true)
+        assertEquals(
+          r.fromStore?.emails.map((e) => e.value),
+          ['john.doe@example.com'],
+        )
+        assertEquals(reported, 1)
+      },
+    )
+  },
+)
+
+Deno.test(
+  'rate limit: a real outage (503, timeout, refused connection) still falls back to the vendors',
+  async () => {
+    for (const fail of [
+      storeReply({ error: { code: 'store_unavailable' } }, 503),
+      (): Response => {
+        throw new DOMException('timed out', 'TimeoutError')
+      },
+      (): Response => {
+        throw new TypeError('connection refused')
+      },
+    ]) {
+      await withStore([fail], async (urls) => {
+        let reported = 0
+        const r = await askStoreFor(['email', 'phone'], () => reported++)
+        assertEquals(r, { fromStore: null, missing: ['email', 'phone'] })
+        assertEquals([urls.length, reported], [1, 1])
+        assertEquals(storeRowAfterAsk(null, r.fromStore, true)?.status, 'error')
+      })
+    }
+    // A store that answered "nothing" is a real miss: the vendors run.
+    await withStore([storeReply({ emails: [], phones: [] })], async () => {
+      let reported = 0
+      const r = await askStoreFor(['email'], () => reported++)
+      assertEquals(r, { fromStore: null, missing: ['email'] })
+      assertEquals(reported, 0)
+      assertEquals(
+        storeRowAfterAsk(null, r.fromStore, false)?.status,
+        'not_found',
+      )
+    })
   },
 )
