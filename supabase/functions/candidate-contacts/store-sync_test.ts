@@ -327,6 +327,93 @@ Deno.test(
   },
 )
 
+Deno.test(
+  'functions deployed before migration 000001: the paid answer is still saved, without the mark',
+  async () => {
+    // The local PostgREST answer for an upsert naming a column the table lacks.
+    const missing = {
+      code: 'PGRST204',
+      message:
+        "Could not find the 'store_synced_at' column of 'candidate_contact_lookups' in the schema cache",
+    }
+    const sent: Array<Record<string, unknown>> = []
+    const client: UpsertClient = {
+      from: () => ({
+        upsert: (values) => {
+          sent.push(values)
+          return {
+            select: () => ({
+              single: () =>
+                Promise.resolve(
+                  'store_synced_at' in values
+                    ? { data: null, error: missing }
+                    : {
+                        data: { id: 'row-1', updated_at: values.updated_at },
+                        error: null,
+                      },
+                ),
+            }),
+          }
+        },
+      }),
+    }
+    const warn = console.warn
+    const logged: string[] = []
+    console.warn = (...args: unknown[]) => logged.push(args.join(' '))
+    try {
+      const version = await upsertUnsynced(
+        client,
+        'candidate_contact_lookups',
+        {
+          linkedin_key: 'linkedin.com/in/john-doe',
+          vendor: 'salesql',
+          status: 'found',
+          emails: [{ value: 'john.doe@example.com', type: null, status: null }],
+        },
+        'linkedin_key,vendor',
+      )
+      assertEquals(sent.length, 2)
+      assertEquals('store_synced_at' in sent[1]!, false)
+      assertEquals(sent[1]!.emails, sent[0]!.emails)
+      assertEquals(version, { id: 'row-1', updated_at: sent[1]!.updated_at })
+      assertEquals(logged.length, 1)
+      assertNoContactData(logged[0]!)
+    } finally {
+      console.warn = warn
+    }
+
+    // Any other missing column (or a code without the column name) still fails the write.
+    const other: UpsertClient = {
+      from: () => ({
+        upsert: () => ({
+          select: () => ({
+            single: () =>
+              Promise.resolve({
+                data: null,
+                error: {
+                  code: 'PGRST204',
+                  message: "Could not find the 'emails' column",
+                },
+              }),
+          }),
+        }),
+      }),
+    }
+    let threw = false
+    try {
+      await upsertUnsynced(
+        other,
+        'candidate_contact_lookups',
+        {},
+        'linkedin_key,vendor',
+      )
+    } catch {
+      threw = true
+    }
+    assertEquals(threw, true)
+  },
+)
+
 // --- The background send marks the row ---------------------------------------
 
 Deno.test(
